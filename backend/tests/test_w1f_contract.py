@@ -1,0 +1,300 @@
+"""W1F HIGH integration/recovery RED-first contract.
+
+Five sealed nodes bind the W1F backup/restore recovery boundary at the current
+W1 head. Four nodes are RED before the product/harness repair:
+
+1. A dynamic PowerShell probe proving ``restore-drill.ps1`` accepts the W1D
+   manifest revision and advances to artifact validation (not the unsupported
+   revision gate).
+2. The same dynamic probe for the W1E manifest revision.
+3. The postcheck contract exposing W1D/W1E exact-revision verifiers and markers.
+4. The ``scripts/test-w1f-postgres.ps1`` exact-SHA synthetic backup/restore live
+   gate contract.
+5. An ABS regression proving the existing W1C restore support and marker survive
+   (PASS from the first run and never weakened).
+
+Node meanings, names, and count are sealed. The W1D/W1E manifest probes and the
+final PostgreSQL restore are dynamic; the postcheck/wrapper/W1C checks are
+static source evidence and are auxiliary per the packet.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
+from typing import NoReturn
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_ROOT = REPO_ROOT / "scripts"
+RESTORE_DRILL = SCRIPTS_ROOT / "restore-drill.ps1"
+W1F_WRAPPER = SCRIPTS_ROOT / "test-w1f-postgres.ps1"
+POSTCHECK = REPO_ROOT / "backend" / "app" / "db" / "postcheck_w1a_vs1.py"
+
+W1C_REVISION = "20260730_0010_w1c_certification_ledgers"
+W1D_REVISION = "20260730_0011_w1d_recipient_contract"
+W1E_REVISION = "20260801_0012_w1e_care_assignment"
+
+UNSUPPORTED_REVISION_MARKER = "Unsupported backup Alembic revision"
+ARTIFACT_STAGE_MARKER = "Backup dump file is missing"
+
+
+def _fail(marker: str) -> NoReturn:
+    pytest.fail(marker, pytrace=False)
+
+
+def _powershell_executable() -> str:
+    system_root = os.environ.get("SystemRoot")
+    if system_root:
+        candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which("powershell") or shutil.which("powershell.exe")
+    if found:
+        return found
+    _fail("W1F_HARNESS_POWERSHELL_MISSING: powershell.exe could not be resolved")
+
+
+def _run_restore_drill_manifest_probe(revision: str) -> tuple[int, str]:
+    """Invoke restore-drill.ps1 against a synthetic manifest declaring ``revision``.
+
+    The synthetic backup directory intentionally omits the dump file so that a
+    restore that accepts the revision fails at artifact validation before any
+    database or filesystem mutation. No real PostgreSQL cluster is touched.
+    """
+
+    if not RESTORE_DRILL.is_file():
+        _fail("W1F_HARNESS_RESTORE_DRILL_MISSING: scripts/restore-drill.ps1 absent")
+    powershell = _powershell_executable()
+    with tempfile.TemporaryDirectory(prefix="w1f-restore-probe-") as tmp:
+        tmp_path = Path(tmp)
+        backup_directory = tmp_path / "backup"
+        backup_directory.mkdir()
+        manifest = {
+            "format_version": 1,
+            "database_name": "sswcenter_w1f_probe",
+            "alembic_revision": revision,
+            "dump_file": "database.dump",
+            "dump_sha256": "0" * 64,
+            "files": [],
+            "restore_target_policy": "*_review only",
+        }
+        (backup_directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        # A review data root that does not yet exist and matches the sealed prefix
+        # so the drill reaches the revision allowlist gate.
+        review_data_root = tmp_path / f"sswcenter-restore-review-{uuid.uuid4().hex}"
+        admin_url = "postgresql+psycopg://erp_owner@127.0.0.1:1/postgres"
+        review_database = "sswcenter_w1f_probe_review"
+        try:
+            completed = subprocess.run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(RESTORE_DRILL),
+                    "-BackupDirectory",
+                    str(backup_directory),
+                    "-AdminDatabaseUrl",
+                    admin_url,
+                    "-ReviewDatabaseName",
+                    review_database,
+                    "-ReviewDataRoot",
+                    str(review_data_root),
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                # PowerShell 5.1 emits localized (cp949) error formatting whose
+                # bytes are not valid UTF-8; decode robustly so the ASCII markers
+                # remain observable across locales instead of raising in the reader
+                # thread and losing stdout/stderr. This preserves the node meaning.
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            _fail("W1F_HARNESS_RESTORE_PROBE_UNRUNNABLE: restore-drill probe could not run")
+        # The probe must never create the review data root before failing.
+        if review_data_root.exists():
+            _fail("W1F_HARNESS_RESTORE_PROBE_LEFT_DATA_ROOT: probe mutated the review root")
+        return completed.returncode, completed.stdout + "\n" + completed.stderr
+
+
+def test_w1f_restore_drill_accepts_w1d_manifest_revision() -> None:
+    """Node 1: restore-drill must accept the W1D revision before artifact checks."""
+    returncode, output = _run_restore_drill_manifest_probe(W1D_REVISION)
+    if returncode == 0:
+        _fail("W1F_RESTORE_W1D_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
+    if UNSUPPORTED_REVISION_MARKER in output:
+        _fail(
+            "W1F_RESTORE_W1D_REVISION_REJECTED: restore-drill rejects "
+            + W1D_REVISION
+            + " before artifact validation"
+        )
+    if ARTIFACT_STAGE_MARKER not in output:
+        _fail(
+            "W1F_RESTORE_W1D_ARTIFACT_STAGE_NOT_REACHED: restore-drill did not reach "
+            "artifact validation for " + W1D_REVISION
+        )
+
+
+def test_w1f_restore_drill_accepts_w1e_manifest_revision() -> None:
+    """Node 2: restore-drill must accept the W1E revision before artifact checks."""
+    returncode, output = _run_restore_drill_manifest_probe(W1E_REVISION)
+    if returncode == 0:
+        _fail("W1F_RESTORE_W1E_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
+    if UNSUPPORTED_REVISION_MARKER in output:
+        _fail(
+            "W1F_RESTORE_W1E_REVISION_REJECTED: restore-drill rejects "
+            + W1E_REVISION
+            + " before artifact validation"
+        )
+    if ARTIFACT_STAGE_MARKER not in output:
+        _fail(
+            "W1F_RESTORE_W1E_ARTIFACT_STAGE_NOT_REACHED: restore-drill did not reach "
+            "artifact validation for " + W1E_REVISION
+        )
+
+
+def test_w1f_postcheck_declares_w1d_w1e_revision_contract() -> None:
+    """Node 3: postcheck must supply exact W1D/W1E verifiers and success markers."""
+    if not POSTCHECK.is_file():
+        _fail("W1F_POSTCHECK_MODULE_MISSING: backend/app/db/postcheck_w1a_vs1.py absent")
+    source = POSTCHECK.read_text(encoding="utf-8")
+    required_tokens = {
+        "W1F_POSTCHECK_W1D_REVISION_MISSING": f'"{W1D_REVISION}"',
+        "W1F_POSTCHECK_W1E_REVISION_MISSING": f'"{W1E_REVISION}"',
+        "W1F_POSTCHECK_W1D_MARKER_MISSING": "W1D_DB_POSTCHECK_OK",
+        "W1F_POSTCHECK_W1E_MARKER_MISSING": "W1E_DB_POSTCHECK_OK",
+        "W1F_POSTCHECK_W1D_VERIFIER_MISSING": "def _verify_w1d_contract",
+        "W1F_POSTCHECK_W1E_VERIFIER_MISSING": "def _verify_w1e_contract",
+        "W1F_POSTCHECK_W1D_TABLE_MISSING": "recipient_contract",
+        "W1F_POSTCHECK_W1E_TABLE_MISSING": "care_assignment",
+        "W1F_POSTCHECK_W1E_RECIPIENT_REVERSE_TRIGGER_MISSING": (
+            "ct_recipient_contract_assignment_reverse_guard"
+        ),
+        "W1F_POSTCHECK_W1E_POSITION_REVERSE_TRIGGER_MISSING": (
+            "ct_staff_position_care_assignment_reverse_guard"
+        ),
+        "W1F_POSTCHECK_W1E_QUALIFICATION_REVERSE_TRIGGER_MISSING": (
+            "ct_staff_service_qualification_assignment_reverse_guard"
+        ),
+        "W1F_POSTCHECK_W1E_TRIGGER_FUNCTION_BINDING_MISSING": "tgfoid",
+        "W1F_POSTCHECK_REVISION_TRIGGER_SET_MISSING": "expected_w1a_triggers",
+    }
+    for marker, token in required_tokens.items():
+        if token not in source:
+            _fail(f"{marker}: missing {token}")
+
+
+def test_w1f_postgres_gate_contract_is_sealed() -> None:
+    """Node 4: the exact-SHA synthetic backup/restore live gate must be sealed."""
+    if not W1F_WRAPPER.is_file():
+        _fail("W1F_WRAPPER_MISSING: scripts/test-w1f-postgres.ps1 absent")
+    source = W1F_WRAPPER.read_text(encoding="utf-8")
+    required_tokens = {
+        "W1F_WRAPPER_EXPECTED_SHA_MISSING": "$ExpectedSha",
+        "W1F_WRAPPER_EXACT_SHA_GATE_MISSING": "W1F_EXACT_SHA_OK",
+        "W1F_WRAPPER_BACKUP_STEP_MISSING": "backup-postgres.ps1",
+        "W1F_WRAPPER_RESTORE_STEP_MISSING": "restore-drill.ps1",
+        "W1F_WRAPPER_W1D_MARKER_MISSING": "W1D_DB_POSTCHECK_OK",
+        "W1F_WRAPPER_W1E_MARKER_MISSING": "W1E_DB_POSTCHECK_OK",
+        "W1F_WRAPPER_DOWNGRADE_STEP_MISSING": "W1F_STAGE_DOWNGRADE",
+        "W1F_WRAPPER_REUPGRADE_STEP_MISSING": "W1F_STAGE_REUPGRADE",
+        "W1F_WRAPPER_OFFLINE_STEP_MISSING": "W1F_STAGE_OFFLINE",
+        "W1F_WRAPPER_CANONICAL_HASH_MISSING": "W1F_CANONICAL",
+        "W1F_WRAPPER_FILE_HASH_MISSING": "Get-FileHash",
+        "W1F_WRAPPER_SYNTHETIC_W1A_MISSING": "staff_service_qualification_period",
+        "W1F_WRAPPER_CONTRACT_TABLE_MISSING": "recipient_contract",
+        "W1F_WRAPPER_ASSIGNMENT_TABLE_MISSING": "care_assignment",
+        "W1F_WRAPPER_CLEANUP_MISSING": "W1F_CLEANUP",
+        "W1F_WRAPPER_GREEN_MARKER_MISSING": "W1F_POSTGRES_GREEN",
+        "W1F_WRAPPER_PRODUCT_FAILURE_FLAG_NOT_SET": "$script:ProductFailure = $true",
+        "W1F_WRAPPER_PRODUCT_FAILURE_BRANCH_MISSING": "elseif ($ProductFailure)",
+        "W1F_WRAPPER_STDOUT_UTF8_MISSING": "StandardOutputEncoding = $utf8NoBom",
+        "W1F_WRAPPER_STDERR_UTF8_MISSING": "StandardErrorEncoding = $utf8NoBom",
+    }
+    for marker, token in required_tokens.items():
+        if token not in source:
+            _fail(f"{marker}: missing {token}")
+
+    canonical_match = re.search(
+        r"(?ms)^\$CanonicalSql = @'\r?\n(?P<sql>.*?)\r?\n'@$",
+        source,
+    )
+    if canonical_match is None:
+        _fail("W1F_WRAPPER_CANONICAL_SQL_BLOCK_MISSING")
+    canonical_sql = canonical_match.group("sql")
+    required_canonical_tables = (
+        "staff",
+        "user_account",
+        "staff_employment",
+        "staff_position_period",
+        "staff_license",
+        "staff_service_qualification_period",
+        "staff_onboarding_training",
+        "recipient",
+        "recipient_contract",
+        "care_assignment",
+    )
+    for table_name in required_canonical_tables:
+        full_row_pattern = (
+            rf"SELECT\s+'{re.escape(table_name)}:'\s*\|\|\s*"
+            rf"to_jsonb\([a-z_][a-z0-9_]*\)::text\s+AS\s+line\s+"
+            rf"FROM\s+erp\.{re.escape(table_name)}\s+AS\s+[a-z_][a-z0-9_]*"
+        )
+        if re.search(full_row_pattern, canonical_sql, flags=re.IGNORECASE) is None:
+            _fail(
+                "W1F_WRAPPER_CANONICAL_FULL_ROW_MISSING: "
+                f"erp.{table_name} is not hashed with to_jsonb(row)"
+            )
+
+    function_start = source.find("function Write-W1fProductFailure {")
+    function_end = source.find("function Get-W1fProcessSnapshot {", function_start + 1)
+    if function_start < 0 or function_end < 0:
+        _fail("W1F_WRAPPER_PRODUCT_FAILURE_FUNCTION_MISSING")
+    function_body = source[function_start:function_end]
+    flag_position = function_body.find("$script:ProductFailure = $true")
+    throw_position = function_body.find("throw $Marker")
+    if flag_position < 0 or throw_position < 0 or flag_position > throw_position:
+        _fail("W1F_WRAPPER_PRODUCT_FAILURE_FLAG_ORDER_INVALID")
+
+    timed_start = source.find("function Invoke-W1fTimedCommand {")
+    timed_end = source.find("function Invoke-W1fDetachedPgCtlStart {", timed_start + 1)
+    if timed_start < 0 or timed_end < 0:
+        _fail("W1F_WRAPPER_TIMED_COMMAND_FUNCTION_MISSING")
+    timed_body = source[timed_start:timed_end]
+    for marker, token in {
+        "W1F_WRAPPER_STDOUT_UTF8_OUTSIDE_TIMED_COMMAND": ("StandardOutputEncoding = $utf8NoBom"),
+        "W1F_WRAPPER_STDERR_UTF8_OUTSIDE_TIMED_COMMAND": ("StandardErrorEncoding = $utf8NoBom"),
+    }.items():
+        if token not in timed_body:
+            _fail(f"{marker}: missing {token}")
+
+
+def test_w1f_w1c_restore_and_marker_regression() -> None:
+    """Node 5 (ABS): existing W1C restore support and marker must be preserved."""
+    if not RESTORE_DRILL.is_file():
+        _fail("W1F_HARNESS_RESTORE_DRILL_MISSING: scripts/restore-drill.ps1 absent")
+    if not POSTCHECK.is_file():
+        _fail("W1F_POSTCHECK_MODULE_MISSING: backend/app/db/postcheck_w1a_vs1.py absent")
+    restore_source = RESTORE_DRILL.read_text(encoding="utf-8")
+    postcheck_source = POSTCHECK.read_text(encoding="utf-8")
+    if W1C_REVISION not in restore_source:
+        _fail("W1F_W1C_RESTORE_SUPPORT_LOST: restore-drill dropped the W1C revision")
+    if "W1C_DB_POSTCHECK_OK" not in restore_source:
+        _fail("W1F_W1C_RESTORE_MARKER_LOST: restore-drill dropped the W1C marker enforcement")
+    if f'"{W1C_REVISION}"' not in postcheck_source:
+        _fail("W1F_W1C_POSTCHECK_SUPPORT_LOST: postcheck dropped the W1C revision")
+    if "W1C_DB_POSTCHECK_OK" not in postcheck_source:
+        _fail("W1F_W1C_POSTCHECK_MARKER_LOST: postcheck dropped the W1C marker")
