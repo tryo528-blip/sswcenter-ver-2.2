@@ -38,14 +38,20 @@ param(
     [switch]$TestMode,
     [string]$MockResponsesPath = '',
     [ValidateRange(0, 1048576)]
-    [int]$ExpectedWriteBytes = 0
+    [int]$ExpectedWriteBytes = 0,
+    # Wall-clock and cumulative model-request budgets (minutes).
+    [ValidateRange(1, 10080)]
+    [int]$MaxElapsedMinutes = 60,
+    [ValidateRange(1, 10080)]
+    [int]$MaxApiElapsedMinutes = 50
 )
 
 $ErrorActionPreference = 'Stop'
 
 $script:RunnerName = 'deepseek-workspace-runner'
-$script:RunnerVersion = '2.6.0'
-$script:SchemaVersion = '2.1.0'
+$script:RunnerVersion = '2.8.0'
+$script:SchemaVersion = '2.3.0'
+$script:MutationAtomicityContract = 'rollback-backed exception-atomic under exclusive workspace ownership; not crash/power-loss atomic'
 $script:ProviderContextLimit = 1000000
 $script:ContextSoftLimit = 850000
 $script:ContextHardLimit = 950000
@@ -74,6 +80,7 @@ $script:EffectiveMaxTurns = $MaxTurns
 $script:ExtensionsUsed = 0
 $script:NoProgressRounds = 0
 $script:LastExtensionEditCount = 0
+$script:LastExtensionNetChangeFingerprint = ''
 $script:EditCount = 0
 $script:PatchCount = 0
 $script:ReadCallCount = 0
@@ -82,6 +89,7 @@ $script:ToolCallsByName = [ordered]@{}
 $script:ToolCallSequence = @()
 $script:ChangedPaths = [ordered]@{}
 $script:ChangedFileHashes = [ordered]@{}
+$script:BaseWriteState = [ordered]@{}
 $script:Errors = @()
 $script:Warnings = @()
 $script:FinishReasons = @()
@@ -105,6 +113,11 @@ $script:ApiKey = $null
 $script:ThinkingModeResolved = 'provider-default'
 $script:RequestDurationsMs = @()
 $script:RunStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+# Elapsed restored from prior process(es) on resume; live stopwatch is only this process.
+$script:ElapsedBeforeProcessMs = [int64]0
+$script:ApiElapsedBeforeProcessMs = [int64]0
+$script:MaxElapsedMinutes = $MaxElapsedMinutes
+$script:MaxApiElapsedMinutes = $MaxApiElapsedMinutes
 $script:FreshReadTokens = @{}
 $script:PriorFreshTokens = $null
 $script:FreshReadRecoveryTurn = $false
@@ -223,9 +236,620 @@ function Assert-CheckpointSuccessOrDemote {
     }
 }
 
+function Get-WritableFiles {
+    $files = New-Object System.Collections.Generic.List[object]
+    foreach ($root in $script:WriteRoots) {
+        $full = Get-FullPathFromRelative $root
+        if (-not (Test-Path -LiteralPath $full)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $full
+        if ($item.PSIsContainer) {
+            $pending = New-Object System.Collections.Generic.Stack[string]
+            $pending.Push($full)
+            while ($pending.Count -gt 0) {
+                $directory = $pending.Pop()
+                Assert-NoRepositoryReparsePoint -FullPath $directory
+                foreach ($child in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+                    if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        throw 'PATH_REPARSE_POINT_FORBIDDEN'
+                    }
+                    $relative = Get-RelativePathFromFull $child.FullName
+                    if (Test-SensitiveRelativePath $relative) {
+                        continue
+                    }
+                    if ($child.PSIsContainer) {
+                        $pending.Push($child.FullName)
+                        continue
+                    }
+                    [void]$files.Add([pscustomobject]@{
+                        relative = $relative
+                        full = $child.FullName
+                    })
+                }
+            }
+        }
+        elseif (-not (Test-SensitiveRelativePath $root)) {
+            [void]$files.Add([pscustomobject]@{ relative = (Get-RelativePathFromFull $full); full = $full })
+        }
+    }
+    $unique = @{}
+    foreach ($file in $files) {
+        $key = $file.relative.ToLowerInvariant()
+        if (-not $unique.ContainsKey($key)) {
+            $unique[$key] = $file
+        }
+    }
+    return @($unique.Values | Sort-Object relative)
+}
+
+function Get-WritePathState {
+    # SHA256 or MISSING for every writable path (leaf roots, files under dir roots, missing roots).
+    $state = [ordered]@{}
+    foreach ($file in @(Get-WritableFiles)) {
+        try {
+            $state[$file.relative] = Get-FileSha256 $file.full
+        }
+        catch {
+            $state[$file.relative] = 'UNREADABLE'
+        }
+    }
+    foreach ($root in $script:WriteRoots) {
+        if (-not $state.Contains($root)) {
+            $full = Get-FullPathFromRelative $root
+            if (-not (Test-Path -LiteralPath $full)) {
+                $state[$root] = 'MISSING'
+            }
+        }
+    }
+    return $state
+}
+
+function Seal-BaseWriteState {
+    $script:BaseWriteState = Get-WritePathState
+}
+
+function Get-NetChangedPaths {
+    param(
+        [AllowNull()][object]$CurrentWriteState = $null
+    )
+    $current = if ($null -ne $CurrentWriteState) { $CurrentWriteState } else { Get-WritePathState }
+    $keys = @{}
+    foreach ($key in @($script:BaseWriteState.Keys)) {
+        $keys[[string]$key] = $true
+    }
+    foreach ($key in @($current.Keys)) {
+        $keys[[string]$key] = $true
+    }
+    $changed = New-Object System.Collections.Generic.List[string]
+    foreach ($key in @($keys.Keys | Sort-Object)) {
+        $baseVal = if ($script:BaseWriteState.Contains($key)) { [string]$script:BaseWriteState[$key] } else { 'MISSING' }
+        $curVal = if ($current.Contains($key)) { [string]$current[$key] } else { 'MISSING' }
+        if ($baseVal -ne $curVal) {
+            [void]$changed.Add($key)
+        }
+    }
+    return @($changed.ToArray())
+}
+
+function Get-NetChangedFileHashes {
+    param(
+        [AllowNull()][object]$CurrentWriteState = $null
+    )
+    $current = if ($null -ne $CurrentWriteState) { $CurrentWriteState } else { Get-WritePathState }
+    $hashes = [ordered]@{}
+    foreach ($path in @(Get-NetChangedPaths -CurrentWriteState $current)) {
+        if ($current.Contains($path)) {
+            $hashes[$path] = [string]$current[$path]
+        }
+        else {
+            $hashes[$path] = 'MISSING'
+        }
+    }
+    return $hashes
+}
+
+function Get-NetChangeEvidenceFingerprint {
+    param(
+        [AllowNull()][object]$CurrentWriteState = $null
+    )
+    $parts = New-Object System.Collections.Generic.List[string]
+    $hashes = Get-NetChangedFileHashes -CurrentWriteState $CurrentWriteState
+    foreach ($path in @($hashes.Keys | Sort-Object)) {
+        [void]$parts.Add(([string]$path + '|' + [string]$hashes[$path]))
+    }
+    return (Get-Sha256Text ([string]::Join([Environment]::NewLine, @($parts.ToArray()))))
+}
+
+function Get-TestModeInjectedElapsedMs {
+    param(
+        [string]$EnvName,
+        [string]$PostRequestEnvName
+    )
+    if (-not $TestMode) {
+        return [int64]0
+    }
+    $raw = [System.Environment]::GetEnvironmentVariable($EnvName)
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return [int64]0
+    }
+    $postOnly = [System.Environment]::GetEnvironmentVariable($PostRequestEnvName)
+    if (-not [string]::IsNullOrWhiteSpace($postOnly) -and $postOnly -ne '0') {
+        # Post-request injection: apply only after at least one model request has been counted.
+        if ($script:RequestCount -le 0) {
+            return [int64]0
+        }
+    }
+    try {
+        return [int64]$raw
+    }
+    catch {
+        return [int64]0
+    }
+}
+
+function Get-TotalElapsedMs {
+    $total = [int64]$script:ElapsedBeforeProcessMs + [int64]$script:RunStopwatch.ElapsedMilliseconds
+    $inject = Get-TestModeInjectedElapsedMs -EnvName 'DEEPSEEK_RUNNER_TEST_ELAPSED_MS' -PostRequestEnvName 'DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST'
+    if ($inject -gt 0) {
+        $total = [Math]::Max($total, $inject)
+    }
+    return [int64]$total
+}
+
+function Get-TotalApiElapsedMs {
+    $currentSum = [int64]0
+    if ($null -ne $script:RequestDurationsMs -and @($script:RequestDurationsMs).Count -gt 0) {
+        $currentSum = [int64](($script:RequestDurationsMs | Measure-Object -Sum).Sum)
+    }
+    $total = [int64]$script:ApiElapsedBeforeProcessMs + $currentSum
+    $inject = Get-TestModeInjectedElapsedMs -EnvName 'DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS' -PostRequestEnvName 'DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST'
+    if ($inject -gt 0) {
+        $total = [Math]::Max($total, $inject)
+    }
+    return [int64]$total
+}
+
+function Get-MaxElapsedBudgetMs {
+    return ([int64]$script:MaxElapsedMinutes * [int64]60000)
+}
+
+function Get-MaxApiElapsedBudgetMs {
+    return ([int64]$script:MaxApiElapsedMinutes * [int64]60000)
+}
+
+function Get-RemainingWallBudgetMs {
+    return ([int64](Get-MaxElapsedBudgetMs) - [int64](Get-TotalElapsedMs))
+}
+
+function Get-RemainingApiBudgetMs {
+    return ([int64](Get-MaxApiElapsedBudgetMs) - [int64](Get-TotalApiElapsedMs))
+}
+
+function Get-RemainingTimeBudgetMs {
+    # Minimum remaining wall/API budget. Call only after a successful precheck so
+    # remaining is positive; clamp to at least 1 ms for HttpClient.Timeout.
+    $wall = Get-RemainingWallBudgetMs
+    $api = Get-RemainingApiBudgetMs
+    $remaining = $wall
+    if ($api -lt $remaining) {
+        $remaining = $api
+    }
+    if ($remaining -lt [int64]1) {
+        return [int64]1
+    }
+    return [int64]$remaining
+}
+
+function Get-EffectiveHttpClientTimeoutMs {
+    # Clamp configured request timeout to remaining wall and API budgets.
+    $configuredMs = [int64]$script:TimeoutSeconds * [int64]1000
+    if ($configuredMs -lt [int64]1) {
+        $configuredMs = [int64]1
+    }
+    $remainingMs = Get-RemainingTimeBudgetMs
+    if ($remainingMs -lt $configuredMs) {
+        return [int64]$remainingMs
+    }
+    return [int64]$configuredMs
+}
+
+function Test-TimeBudgetExceeded {
+    # Returns error code string when exceeded; otherwise $null.
+    if ((Get-TotalElapsedMs) -ge (Get-MaxElapsedBudgetMs)) {
+        return 'MAX_ELAPSED_TIME_REACHED'
+    }
+    if ((Get-TotalApiElapsedMs) -ge (Get-MaxApiElapsedBudgetMs)) {
+        return 'MAX_API_ELAPSED_TIME_REACHED'
+    }
+    return $null
+}
+
+function Stop-ForTimeBudget {
+    param([string]$Code)
+    Add-RunnerError $Code
+    $script:StopReason = $Code
+    # PARTIAL vs PARTIAL_AFTER_EDIT follows current net change vs BaseWriteState, not EditCount history.
+    if (@(Get-NetChangedPaths).Count -gt 0) {
+        $script:Status = 'PARTIAL_AFTER_EDIT'
+        $script:ExitCode = 2
+    }
+    else {
+        $script:Status = 'PARTIAL'
+        $script:ExitCode = 2
+    }
+    if (-not $DirectResponse) {
+        $saved = Save-Checkpoint 'time_budget'
+        if (-not $saved) {
+            Assert-CheckpointSuccessOrDemote -Saved $false -Context 'time_budget'
+        }
+    }
+}
+
+function Resolve-TextFileEncoding {
+    param([AllowNull()][byte[]]$Bytes)
+    if ($null -eq $Bytes) {
+        $Bytes = [byte[]]@()
+    }
+    if (
+        $Bytes.Length -ge 3 -and
+        $Bytes[0] -eq 0xEF -and
+        $Bytes[1] -eq 0xBB -and
+        $Bytes[2] -eq 0xBF
+    ) {
+        return (New-Object System.Text.UTF8Encoding($true))
+    }
+    if (
+        $Bytes.Length -ge 2 -and
+        $Bytes[0] -eq 0xFF -and
+        $Bytes[1] -eq 0xFE
+    ) {
+        return (New-Object System.Text.UnicodeEncoding($false, $true))
+    }
+    if (
+        $Bytes.Length -ge 2 -and
+        $Bytes[0] -eq 0xFE -and
+        $Bytes[1] -eq 0xFF
+    ) {
+        return (New-Object System.Text.UnicodeEncoding($true, $true))
+    }
+    return (New-Object System.Text.UTF8Encoding($false))
+}
+
+function Get-StringFromFileBytes {
+    param(
+        [AllowNull()][byte[]]$Bytes,
+        [System.Text.Encoding]$Encoding
+    )
+    if ($null -eq $Bytes) {
+        $Bytes = [byte[]]@()
+    }
+    if ($null -eq $Encoding) {
+        $Encoding = New-Object System.Text.UTF8Encoding($false)
+    }
+    $preamble = $Encoding.GetPreamble()
+    $offset = 0
+    if ($null -ne $preamble -and $preamble.Length -gt 0 -and $Bytes.Length -ge $preamble.Length) {
+        $matches = $true
+        for ($i = 0; $i -lt $preamble.Length; $i++) {
+            if ($Bytes[$i] -ne $preamble[$i]) {
+                $matches = $false
+                break
+            }
+        }
+        if ($matches) {
+            $offset = $preamble.Length
+        }
+    }
+    if ($offset -ge $Bytes.Length) {
+        return ''
+    }
+    return $Encoding.GetString($Bytes, $offset, ($Bytes.Length - $offset))
+}
+
+function Get-FileBytesFromString {
+    param(
+        [AllowNull()][string]$Text,
+        [System.Text.Encoding]$Encoding
+    )
+    if ($null -eq $Encoding) {
+        $Encoding = New-Object System.Text.UTF8Encoding($false)
+    }
+    if ($null -eq $Text) {
+        $Text = ''
+    }
+    $body = $Encoding.GetBytes($Text)
+    $preamble = $Encoding.GetPreamble()
+    if ($null -eq $preamble -or $preamble.Length -eq 0) {
+        return $body
+    }
+    $combined = New-Object byte[] ($preamble.Length + $body.Length)
+    [System.Buffer]::BlockCopy($preamble, 0, $combined, 0, $preamble.Length)
+    if ($body.Length -gt 0) {
+        [System.Buffer]::BlockCopy($body, 0, $combined, $preamble.Length, $body.Length)
+    }
+    return $combined
+}
+
+function Test-ByteArraysEqual {
+    param(
+        [AllowNull()][byte[]]$Left,
+        [AllowNull()][byte[]]$Right
+    )
+    if ($null -eq $Left -and $null -eq $Right) {
+        return $true
+    }
+    if ($null -eq $Left -or $null -eq $Right) {
+        return $false
+    }
+    if ($Left.Length -ne $Right.Length) {
+        return $false
+    }
+    for ($i = 0; $i -lt $Left.Length; $i++) {
+        if ($Left[$i] -ne $Right[$i]) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Convert-JsonMapToOrdered {
+    param(
+        [AllowNull()][object]$Value,
+        [ValidateSet('string', 'int', 'bool', 'raw')]
+        [string]$ValueKind = 'string'
+    )
+    $map = [ordered]@{}
+    if ($null -eq $Value) {
+        return $map
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            $name = [string]$key
+            if ($ValueKind -eq 'int') {
+                $map[$name] = [int]$Value[$key]
+            }
+            elseif ($ValueKind -eq 'bool') {
+                $map[$name] = $true
+            }
+            elseif ($ValueKind -eq 'raw') {
+                $map[$name] = $Value[$key]
+            }
+            else {
+                $map[$name] = [string]$Value[$key]
+            }
+        }
+        return $map
+    }
+    foreach ($property in $Value.PSObject.Properties) {
+        $name = [string]$property.Name
+        if ($ValueKind -eq 'int') {
+            $map[$name] = [int]$property.Value
+        }
+        elseif ($ValueKind -eq 'bool') {
+            $map[$name] = $true
+        }
+        elseif ($ValueKind -eq 'raw') {
+            $map[$name] = $property.Value
+        }
+        else {
+            $map[$name] = [string]$property.Value
+        }
+    }
+    return $map
+}
+
+function Get-RunnerStateObject {
+    # Structured mutable execution state persisted in checkpoints and restored on resume.
+    $writeState = Get-WritePathState
+    return [ordered]@{
+        turns_used = [int]$script:TurnsUsed
+        effective_max_turns = [int]$script:EffectiveMaxTurns
+        extensions_used = [int]$script:ExtensionsUsed
+        no_progress_rounds = [int]$script:NoProgressRounds
+        request_count = [int]$script:RequestCount
+        latest_prompt_tokens = [int64]$script:LatestPromptTokens
+        latest_completion_tokens = [int64]$script:LatestCompletionTokens
+        latest_context_tokens = [int64]$script:LatestContextTokens
+        latest_usage_known = [bool]$script:LatestUsageKnown
+        cumulative_prompt_tokens = [int64]$script:CumulativePromptTokens
+        cumulative_completion_tokens = [int64]$script:CumulativeCompletionTokens
+        edit_count = [int]$script:EditCount
+        patch_count = [int]$script:PatchCount
+        read_tool_calls = [int]$script:ReadCallCount
+        tool_calls = [int]$script:ToolCallCount
+        tool_calls_by_name = $script:ToolCallsByName
+        tool_call_sequence = @($script:ToolCallSequence)
+        changed_paths = @($script:ChangedPaths.Keys | Sort-Object)
+        changed_file_hashes = $script:ChangedFileHashes
+        base_write_state = $script:BaseWriteState
+        net_changed_paths = @(Get-NetChangedPaths -CurrentWriteState $writeState)
+        net_changed_file_hashes = (Get-NetChangedFileHashes -CurrentWriteState $writeState)
+        last_extension_edit_count = [int]$script:LastExtensionEditCount
+        last_extension_net_change_fingerprint = [string]$script:LastExtensionNetChangeFingerprint
+        last_checkpoint_edit_count = [int]$script:LastCheckpointEditCount
+        checkpoint_round = [int]$script:CheckpointRound
+        convergence_mode = [string]$script:ConvergenceMode
+        requested_write_strategy = [string]$script:RequestedWriteStrategy
+        effective_write_strategy = [string]$script:EffectiveWriteStrategy
+        expected_write_bytes = [int]$script:ExpectedWriteBytes
+        effective_expected_write_bytes = [int]$script:EffectiveExpectedWriteBytes
+        writer_budget_source = [string]$script:WriterBudgetSource
+        finish_reasons = @($script:FinishReasons)
+        leading_tool_failure = [bool]$script:LeadingToolFailure
+        expected_fingerprint = [string]$script:ExpectedFingerprint
+        # Totals at save time; resume loads them into *BeforeProcess* so live stopwatch is not double-counted.
+        elapsed_ms = (Get-TotalElapsedMs)
+        api_elapsed_ms = (Get-TotalApiElapsedMs)
+        max_elapsed_minutes = [int]$script:MaxElapsedMinutes
+        max_api_elapsed_minutes = [int]$script:MaxApiElapsedMinutes
+    }
+}
+
+function Assert-RunnerStateComplete {
+    param([AllowNull()][object]$State)
+    if ($null -eq $State) {
+        throw 'CHECKPOINT_RUNNER_STATE_MISSING'
+    }
+    $required = @(
+        'turns_used',
+        'effective_max_turns',
+        'extensions_used',
+        'no_progress_rounds',
+        'request_count',
+        'latest_prompt_tokens',
+        'latest_completion_tokens',
+        'latest_context_tokens',
+        'latest_usage_known',
+        'cumulative_prompt_tokens',
+        'cumulative_completion_tokens',
+        'edit_count',
+        'patch_count',
+        'read_tool_calls',
+        'tool_calls',
+        'tool_calls_by_name',
+        'tool_call_sequence',
+        'changed_paths',
+        'changed_file_hashes',
+        'base_write_state',
+        'last_extension_edit_count',
+        'last_extension_net_change_fingerprint',
+        'last_checkpoint_edit_count',
+        'checkpoint_round',
+        'convergence_mode',
+        'requested_write_strategy',
+        'effective_write_strategy',
+        'expected_write_bytes',
+        'effective_expected_write_bytes',
+        'writer_budget_source',
+        'finish_reasons',
+        'leading_tool_failure',
+        'expected_fingerprint',
+        'elapsed_ms',
+        'api_elapsed_ms',
+        'max_elapsed_minutes',
+        'max_api_elapsed_minutes'
+    )
+    $names = @()
+    if ($State -is [System.Collections.IDictionary]) {
+        $names = @($State.Keys | ForEach-Object { [string]$_ })
+    }
+    else {
+        $names = @($State.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    }
+    foreach ($key in $required) {
+        if ($names -notcontains $key) {
+            throw ('CHECKPOINT_RUNNER_STATE_INCOMPLETE:' + $key)
+        }
+    }
+}
+
+function Get-RunnerStateField {
+    param(
+        [object]$State,
+        [string]$Name
+    )
+    if ($State -is [System.Collections.IDictionary]) {
+        if (-not $State.Contains($Name)) {
+            throw ('CHECKPOINT_RUNNER_STATE_INCOMPLETE:' + $Name)
+        }
+        return $State[$Name]
+    }
+    $property = $State.PSObject.Properties | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+    if ($null -eq $property) {
+        throw ('CHECKPOINT_RUNNER_STATE_INCOMPLETE:' + $Name)
+    }
+    return $property.Value
+}
+
+function Restore-RunnerState {
+    param([object]$State)
+    Assert-RunnerStateComplete $State
+    $script:TurnsUsed = [int](Get-RunnerStateField -State $State -Name 'turns_used')
+    $script:EffectiveMaxTurns = [Math]::Min($HardTurnLimit, [Math]::Max($MaxTurns, [int](Get-RunnerStateField -State $State -Name 'effective_max_turns')))
+    $script:ExtensionsUsed = [int](Get-RunnerStateField -State $State -Name 'extensions_used')
+    $script:NoProgressRounds = [int](Get-RunnerStateField -State $State -Name 'no_progress_rounds')
+    $script:RequestCount = [int](Get-RunnerStateField -State $State -Name 'request_count')
+    $script:LatestPromptTokens = [int64](Get-RunnerStateField -State $State -Name 'latest_prompt_tokens')
+    $script:LatestCompletionTokens = [int64](Get-RunnerStateField -State $State -Name 'latest_completion_tokens')
+    $script:LatestContextTokens = [int64](Get-RunnerStateField -State $State -Name 'latest_context_tokens')
+    $script:LatestUsageKnown = [bool](Get-RunnerStateField -State $State -Name 'latest_usage_known')
+    $script:CumulativePromptTokens = [int64](Get-RunnerStateField -State $State -Name 'cumulative_prompt_tokens')
+    $script:CumulativeCompletionTokens = [int64](Get-RunnerStateField -State $State -Name 'cumulative_completion_tokens')
+    $script:EditCount = [int](Get-RunnerStateField -State $State -Name 'edit_count')
+    $script:PatchCount = [int](Get-RunnerStateField -State $State -Name 'patch_count')
+    $script:ReadCallCount = [int](Get-RunnerStateField -State $State -Name 'read_tool_calls')
+    $script:ToolCallCount = [int](Get-RunnerStateField -State $State -Name 'tool_calls')
+    $script:ToolCallsByName = Convert-JsonMapToOrdered -Value (Get-RunnerStateField -State $State -Name 'tool_calls_by_name') -ValueKind int
+    $sequence = @(Get-RunnerStateField -State $State -Name 'tool_call_sequence')
+    $script:ToolCallSequence = @()
+    foreach ($item in $sequence) {
+        if ($null -ne $item) {
+            $script:ToolCallSequence += (Convert-ToSafeObject $item)
+        }
+    }
+    $script:ChangedPaths = [ordered]@{}
+    foreach ($path in @(Get-RunnerStateField -State $State -Name 'changed_paths')) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+            $script:ChangedPaths[[string]$path] = $true
+        }
+    }
+    $script:ChangedFileHashes = Convert-JsonMapToOrdered -Value (Get-RunnerStateField -State $State -Name 'changed_file_hashes') -ValueKind string
+    $script:BaseWriteState = Convert-JsonMapToOrdered -Value (Get-RunnerStateField -State $State -Name 'base_write_state') -ValueKind string
+    $script:LastExtensionEditCount = [int](Get-RunnerStateField -State $State -Name 'last_extension_edit_count')
+    $script:LastExtensionNetChangeFingerprint = [string](Get-RunnerStateField -State $State -Name 'last_extension_net_change_fingerprint')
+    $script:LastCheckpointEditCount = [int](Get-RunnerStateField -State $State -Name 'last_checkpoint_edit_count')
+    $script:CheckpointRound = [int](Get-RunnerStateField -State $State -Name 'checkpoint_round')
+    $script:ConvergenceMode = [string](Get-RunnerStateField -State $State -Name 'convergence_mode')
+    $script:RequestedWriteStrategy = [string](Get-RunnerStateField -State $State -Name 'requested_write_strategy')
+    $script:EffectiveWriteStrategy = [string](Get-RunnerStateField -State $State -Name 'effective_write_strategy')
+    $script:ExpectedWriteBytes = [int](Get-RunnerStateField -State $State -Name 'expected_write_bytes')
+    $script:EffectiveExpectedWriteBytes = [int](Get-RunnerStateField -State $State -Name 'effective_expected_write_bytes')
+    $script:WriterBudgetSource = [string](Get-RunnerStateField -State $State -Name 'writer_budget_source')
+    $finish = Get-RunnerStateField -State $State -Name 'finish_reasons'
+    if ($null -eq $finish) {
+        $script:FinishReasons = @()
+    }
+    else {
+        $script:FinishReasons = @($finish | ForEach-Object { [string]$_ })
+    }
+    $script:LeadingToolFailure = [bool](Get-RunnerStateField -State $State -Name 'leading_tool_failure')
+    $script:ExpectedFingerprint = [string](Get-RunnerStateField -State $State -Name 'expected_fingerprint')
+    # Restore prior-process totals into before-process buckets. Do NOT reset RunStopwatch:
+    # it has already been counting this process's validation/snapshot/checkpoint-load work,
+    # and the saved totals came from the prior process only (no double count).
+    $script:ElapsedBeforeProcessMs = [int64](Get-RunnerStateField -State $State -Name 'elapsed_ms')
+    $script:ApiElapsedBeforeProcessMs = [int64](Get-RunnerStateField -State $State -Name 'api_elapsed_ms')
+    # Current-process request durations start empty; prior API time lives in ApiElapsedBeforeProcessMs.
+    $script:RequestDurationsMs = @()
+    # Tighten budgets: effective limit = min(CLI, saved). Loosening on resume is not allowed.
+    $savedMaxElapsed = [int](Get-RunnerStateField -State $State -Name 'max_elapsed_minutes')
+    $savedMaxApi = [int](Get-RunnerStateField -State $State -Name 'max_api_elapsed_minutes')
+    if ($savedMaxElapsed -le 0 -or $savedMaxApi -le 0) {
+        throw 'CHECKPOINT_BUDGET_LIMIT_INVALID'
+    }
+    if ($savedMaxApi -gt $savedMaxElapsed) {
+        throw 'CHECKPOINT_BUDGET_LIMIT_INVALID'
+    }
+    if ($savedMaxElapsed -lt $script:MaxElapsedMinutes) {
+        $script:MaxElapsedMinutes = $savedMaxElapsed
+    }
+    if ($savedMaxApi -lt $script:MaxApiElapsedMinutes) {
+        $script:MaxApiElapsedMinutes = $savedMaxApi
+    }
+    if ($script:MaxApiElapsedMinutes -gt $script:MaxElapsedMinutes) {
+        $script:MaxApiElapsedMinutes = $script:MaxElapsedMinutes
+    }
+}
+
 function Get-ProgressMetric {
-    # Explicit, measurable Writer progress. Read-only evidence gathering is not progress.
+    # Writer progress is positive net change vs sealed BaseWriteState, not tool call counts.
+    # Read-only evidence gathering is not progress.
+    $writeState = Get-WritePathState
+    $netPaths = @(Get-NetChangedPaths -CurrentWriteState $writeState)
     return [pscustomobject]@{
+        net_changed_path_count = [int]$netPaths.Count
+        net_change_fingerprint = (Get-NetChangeEvidenceFingerprint -CurrentWriteState $writeState)
         edit_count = [int]$script:EditCount
         patch_count = [int]$script:PatchCount
         changed_path_count = @($script:ChangedPaths.Keys).Count
@@ -240,13 +864,12 @@ function Test-HasPositiveProgress {
     if ($null -eq $Before -or $null -eq $After) {
         return $false
     }
-    if ([int]$After.edit_count -gt [int]$Before.edit_count) {
-        return $true
+    # Positive progress requires a non-empty net-change set that differs from the prior metric.
+    # A→B→A yields empty net_changed_paths and therefore is not progress.
+    if ([int]$After.net_changed_path_count -le 0) {
+        return $false
     }
-    if ([int]$After.patch_count -gt [int]$Before.patch_count) {
-        return $true
-    }
-    if ([int]$After.changed_path_count -gt [int]$Before.changed_path_count) {
+    if ([string]$After.net_change_fingerprint -ne [string]$Before.net_change_fingerprint) {
         return $true
     }
     return $false
@@ -264,12 +887,13 @@ function Test-ReadOnlyTerminalSuccess {
 }
 
 function Test-WriterTerminalSuccess {
-    # Writer success requires observable edits, clean error/tool state, and an
-    # unchanged workspace fingerprint relative to ExpectedFingerprint.
+    # Writer success requires at least one net-changed writable path vs sealed baseline,
+    # clean error/tool state, and fingerprint consistency. EditCount alone is insufficient
+    # (A→B→A leaves edit_count>0 with empty net change and must not PASS).
     # Checkpoint integrity is enforced separately via Assert-CheckpointSuccessOrDemote.
     return (
         $script:Mode -eq 'Writer' -and
-        $script:EditCount -gt 0 -and
+        (@(Get-NetChangedPaths).Count -gt 0) -and
         $script:Errors.Count -eq 0 -and
         -not $script:LeadingToolFailure -and
         (Test-ExpectedFingerprint)
@@ -295,12 +919,20 @@ function Resolve-TerminalCompletionState {
             ErrorCode = 'WORKSPACE_FINGERPRINT_MISMATCH'
         }
     }
-    if ($script:Mode -eq 'Writer' -and $script:EditCount -eq 0) {
+    if ($script:Mode -eq 'Writer' -and (@(Get-NetChangedPaths).Count -eq 0)) {
+        if ($script:EditCount -eq 0) {
+            return [pscustomobject]@{
+                Status = 'PARTIAL'
+                ExitCode = 2
+                StopReason = 'WRITER_COMPLETED_WITHOUT_EDIT'
+                ErrorCode = 'WRITER_COMPLETED_WITHOUT_EDIT'
+            }
+        }
         return [pscustomobject]@{
-            Status = 'PARTIAL'
+            Status = 'PARTIAL_AFTER_EDIT'
             ExitCode = 2
-            StopReason = 'WRITER_COMPLETED_WITHOUT_EDIT'
-            ErrorCode = 'WRITER_COMPLETED_WITHOUT_EDIT'
+            StopReason = 'WRITER_COMPLETED_WITHOUT_NET_CHANGE'
+            ErrorCode = 'WRITER_COMPLETED_WITHOUT_NET_CHANGE'
         }
     }
     if ($script:LeadingToolFailure -or $script:Errors.Count -gt 0) {
@@ -371,7 +1003,7 @@ function Resolve-WriteStrategy {
     if ($script:WriteRoots.Count -eq 0) {
         return 'ReplaceText'
     }
-    $hasExistingLeaf = $false
+    $existingLeafCount = 0
     $hasMissing = $false
     $hasDirectory = $false
     foreach ($root in $script:WriteRoots) {
@@ -380,21 +1012,27 @@ function Resolve-WriteStrategy {
             $hasDirectory = $true
         }
         elseif (Test-Path -LiteralPath $full -PathType Leaf) {
-            $hasExistingLeaf = $true
+            $existingLeafCount++
         }
         else {
             $hasMissing = $true
         }
     }
     # Any directory target or mixed existing/missing set => ambiguous
-    if ($hasDirectory -or ($hasExistingLeaf -and $hasMissing)) {
+    if ($hasDirectory -or ($existingLeafCount -gt 0 -and $hasMissing)) {
         throw 'WRITER_WRITE_STRATEGY_REQUIRED'
     }
     # All missing exact targets => ApplyPatch
-    if ($hasMissing -and -not $hasExistingLeaf) {
+    if ($hasMissing -and $existingLeafCount -eq 0) {
         return 'ApplyPatch'
     }
-    # All existing leaf targets => ReplaceText
+    # Exactly one existing exact leaf => ReplaceText; two or more => ApplyPatch
+    if ($existingLeafCount -eq 1) {
+        return 'ReplaceText'
+    }
+    if ($existingLeafCount -ge 2) {
+        return 'ApplyPatch'
+    }
     return 'ReplaceText'
 }
 
@@ -901,7 +1539,7 @@ function Write-AtomicBytes {
     if ($null -eq $Bytes) {
         $Bytes = [byte[]]@()
     }
-    # TestMode-only fault injection for atomic multi-file write/rollback contracts.
+    # TestMode-only fault injection for multi-file write/rollback contracts.
     if ($TestMode -and -not [string]::IsNullOrWhiteSpace($InjectionEnvName)) {
         $injected = [System.Environment]::GetEnvironmentVariable($InjectionEnvName)
         if (Test-PathMatchesInjectionSuffix -Path $Path -Injected $injected) {
@@ -1110,16 +1748,6 @@ function Invoke-SearchTextTool {
     }
 }
 
-function Set-ChangedFileState {
-    param([string]$RelativePath)
-    $script:ChangedPaths[$RelativePath] = $true
-    $snapshot = Get-WorkspaceSnapshot
-    $script:ExpectedFingerprint = $snapshot.fingerprint
-    if ($snapshot.file_hashes.Contains($RelativePath)) {
-        $script:ChangedFileHashes[$RelativePath] = $snapshot.file_hashes[$RelativePath]
-    }
-}
-
 function Test-ExpectedFingerprint {
     $current = (Get-WorkspaceSnapshot).fingerprint
     return ($current -eq $script:ExpectedFingerprint)
@@ -1136,9 +1764,13 @@ function Invoke-ReplaceTextTool {
     if ([string]::IsNullOrEmpty($oldText)) {
         return (New-ToolFailure 'OLD_TEXT_REQUIRED')
     }
+    # Path policy before no-effect: out-of-scope paths must not bypass allowlist via A==A.
     $relative = Get-NormalizedRelativePath $relative
     if (-not (Test-WriteAllowedRelativePath $relative)) {
         return (New-ToolFailure 'PATH_NOT_WRITE_ALLOWLISTED')
+    }
+    if ($oldText -eq $newText) {
+        return (New-ToolFailure 'NO_EFFECTIVE_CHANGE' 'replace_text old_text equals new_text')
     }
     if (-not (Test-ExpectedFingerprint)) {
         return (New-ToolFailure 'WORKSPACE_FINGERPRINT_MISMATCH')
@@ -1165,7 +1797,9 @@ function Invoke-ReplaceTextTool {
                 return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' has changed since last read. Use read_file to refresh before writing.")
             }
         }
-        $current = [System.IO.File]::ReadAllText($full)
+        $originalBytes = [System.IO.File]::ReadAllBytes($full)
+        $fileEncoding = Resolve-TextFileEncoding -Bytes $originalBytes
+        $current = Get-StringFromFileBytes -Bytes $originalBytes -Encoding $fileEncoding
         $first = $current.IndexOf($oldText, [System.StringComparison]::Ordinal)
         if ($first -lt 0) {
             return (New-ToolFailure 'OLD_TEXT_NOT_FOUND')
@@ -1175,6 +1809,10 @@ function Invoke-ReplaceTextTool {
             return (New-ToolFailure 'OLD_TEXT_NOT_UNIQUE')
         }
         $updated = $current.Substring(0, $first) + $newText + $current.Substring($first + $oldText.Length)
+        $updatedBytes = Get-FileBytesFromString -Text $updated -Encoding $fileEncoding
+        if ((Test-ByteArraysEqual -Left $updatedBytes -Right $originalBytes) -or ($updated -eq $current)) {
+            return (New-ToolFailure 'NO_EFFECTIVE_CHANGE' 'materialized replace_text postimage equals current bytes')
+        }
         if ($DryRun) {
             return (New-ToolSuccess ([ordered]@{
                 path = $relative
@@ -1182,12 +1820,20 @@ function Invoke-ReplaceTextTool {
                 changed = $false
             }))
         }
-        Write-AtomicText -Path $full -Text $updated
+        Write-AtomicBytes -Path $full -Bytes $updatedBytes -InjectionEnvName 'DEEPSEEK_RUNNER_TEST_FAIL_WRITE'
         $script:EditCount++
-        Set-ChangedFileState $relative
-        $hash = Get-FileSha256 $full
-        $script:ChangedFileHashes[$relative] = $hash
+        $script:ChangedPaths[$relative] = $true
         $script:FreshReadTokens.Remove($relative)
+        # One post-write workspace snapshot for the successful mutation batch.
+        $snapshot = Get-WorkspaceSnapshot
+        $script:ExpectedFingerprint = $snapshot.fingerprint
+        $hash = if ($snapshot.file_hashes.Contains($relative)) {
+            [string]$snapshot.file_hashes[$relative]
+        }
+        else {
+            Get-FileSha256 $full
+        }
+        $script:ChangedFileHashes[$relative] = $hash
         return [pscustomobject]@{
             ok = $true
             result = [ordered]@{
@@ -1274,6 +1920,8 @@ function Apply-UnifiedPatch {
                     return (New-ToolFailure 'PATCH_TARGET_EXISTS')
                 }
                 $newText = [string]::Join([Environment]::NewLine, @($addLines))
+                $addEncoding = New-Object System.Text.UTF8Encoding($false)
+                $candidateBytes = Get-FileBytesFromString -Text $newText -Encoding $addEncoding
                 $createdDirs = @(Get-MissingAncestorDirectories -FileFullPath $full -RepositoryRoot $script:RepositoryRoot)
                 [void]$plans.Add([pscustomobject]@{
                     relative = $relative
@@ -1284,6 +1932,7 @@ function Apply-UnifiedPatch {
                     originalSha256 = $null
                     createdDirs = $createdDirs
                     newText = $newText
+                    candidateBytes = $candidateBytes
                 })
                 continue
             }
@@ -1293,8 +1942,12 @@ function Apply-UnifiedPatch {
             }
             $originalBytes = [System.IO.File]::ReadAllBytes($full)
             $originalSha256 = Get-Sha256Bytes $originalBytes
-            $currentText = [System.IO.File]::ReadAllText($full)
+            $fileEncoding = Resolve-TextFileEncoding -Bytes $originalBytes
+            $currentText = Get-StringFromFileBytes -Bytes $originalBytes -Encoding $fileEncoding
             $normalized = $currentText.Replace($crlf, ([string][char]10)).Replace([char]13, [char]10)
+            # Preserve pre-hunk normalized text so context-only / mixed-EOL no-ops are detected
+            # before line-ending rematerialization can rewrite unrelated bytes.
+            $normalizedBefore = $normalized
             $hunks = New-Object System.Collections.Generic.List[object]
             $oldLines = New-Object System.Collections.Generic.List[string]
             $newLines = New-Object System.Collections.Generic.List[string]
@@ -1359,7 +2012,15 @@ function Apply-UnifiedPatch {
                 }
                 $normalized = $normalized.Substring(0, $first) + $hunk.new + $normalized.Substring($first + $hunk.old.Length)
             }
-            $updated = if ($currentText.Contains($crlf)) { $normalized.Replace(([string][char]10), $crlf) } else { $normalized }
+            if ($normalized -eq $normalizedBefore) {
+                # Semantic no-op (including context-only): keep original bytes; do not rematerialize EOLs.
+                $updated = $currentText
+                $candidateBytes = $originalBytes
+            }
+            else {
+                $updated = if ($currentText.Contains($crlf)) { $normalized.Replace(([string][char]10), $crlf) } else { $normalized }
+                $candidateBytes = Get-FileBytesFromString -Text $updated -Encoding $fileEncoding
+            }
             [void]$plans.Add([pscustomobject]@{
                 relative = $relative
                 full = $full
@@ -1369,7 +2030,18 @@ function Apply-UnifiedPatch {
                 originalSha256 = $originalSha256
                 createdDirs = @()
                 newText = $updated
+                candidateBytes = $candidateBytes
             })
+        }
+
+        # No-effect gate: reject whole batch if any plan is context-only or same postimage
+        # (encoding-aware candidate bytes, so BOM/UTF-16 context-only is NO_EFFECTIVE_CHANGE).
+        foreach ($plan in $plans) {
+            if ($plan.kind -eq 'Update') {
+                if (Test-ByteArraysEqual -Left $plan.candidateBytes -Right $plan.originalBytes) {
+                    return (New-ToolFailure 'NO_EFFECTIVE_CHANGE' ("apply_patch no-effect plan path=" + $plan.relative))
+                }
+            }
         }
 
         if ($DryRunOnly) {
@@ -1411,8 +2083,10 @@ function Apply-UnifiedPatch {
             }
         }
 
-        # Durable write phase: only after every plan revalidated. Roll back whole batch on failure.
-        # Track each plan before its first side effect so a failing Add/write is still rolled back.
+        # Durable write phase: only after every plan revalidated.
+        # Mutation contract: rollback-backed exception-atomic under exclusive workspace ownership;
+        # not crash/power-loss atomic. Track each plan before its first side effect so a failing
+        # Add/write is still rolled back.
         $applied = New-Object System.Collections.Generic.List[object]
         try {
             foreach ($plan in $plans) {
@@ -1431,7 +2105,7 @@ function Apply-UnifiedPatch {
                         }
                     }
                 }
-                Write-AtomicText -Path $plan.full -Text $plan.newText
+                Write-AtomicBytes -Path $plan.full -Bytes $plan.candidateBytes -InjectionEnvName 'DEEPSEEK_RUNNER_TEST_FAIL_WRITE'
             }
         }
         catch {
@@ -1551,14 +2225,24 @@ function Apply-UnifiedPatch {
             return (New-PathAwareToolFailure 'PATCH_BATCH_WRITE_FAILED' $writeError)
         }
 
-        $fileResults = New-Object System.Collections.Generic.List[object]
+        # One final workspace snapshot after all successful writes in the batch.
         foreach ($plan in $plans) {
             $script:EditCount++
             $script:PatchCount++
-            Set-ChangedFileState $plan.relative
-            $hash = Get-FileSha256 $plan.full
-            $script:ChangedFileHashes[$plan.relative] = $hash
+            $script:ChangedPaths[$plan.relative] = $true
             $script:FreshReadTokens.Remove($plan.relative)
+        }
+        $snapshot = Get-WorkspaceSnapshot
+        $script:ExpectedFingerprint = $snapshot.fingerprint
+        $fileResults = New-Object System.Collections.Generic.List[object]
+        foreach ($plan in $plans) {
+            $hash = if ($snapshot.file_hashes.Contains($plan.relative)) {
+                [string]$snapshot.file_hashes[$plan.relative]
+            }
+            else {
+                Get-FileSha256 $plan.full
+            }
+            $script:ChangedFileHashes[$plan.relative] = $hash
             [void]$fileResults.Add([ordered]@{
                 path = $plan.relative
                 changed = $true
@@ -1670,7 +2354,7 @@ function Get-ToolDefinitions {
                     type = 'function'
                     function = [ordered]@{
                         name = 'apply_patch'
-                        description = 'Apply one or more files from the write allowlist in one atomic batch using Codex patch format: *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, patch lines, and *** End Patch. Every file is validated (path, preimage/hash, parse, postimage) before any durable write; the whole batch rolls back on write failure. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
+                        description = 'Apply one or more files from the write allowlist in one batch using Codex patch format: *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, patch lines, and *** End Patch. Every file is validated (path, preimage/hash, parse, postimage) before any durable write; mutation is rollback-backed exception-atomic under exclusive workspace ownership; not crash/power-loss atomic. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
                         parameters = [ordered]@{
                             type = 'object'
                             properties = [ordered]@{ patch = [ordered]@{ type = 'string' } }
@@ -1743,7 +2427,7 @@ function Get-ToolDefinitions {
                 type = 'function'
                 function = [ordered]@{
                     name = 'apply_patch'
-                    description = 'Apply one or more files from the write allowlist in one atomic batch using Codex patch format: *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, patch lines, and *** End Patch. Every file is validated (path, preimage/hash, parse, postimage) before any durable write; the whole batch rolls back on write failure. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
+                    description = 'Apply one or more files from the write allowlist in one batch using Codex patch format: *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, patch lines, and *** End Patch. Every file is validated (path, preimage/hash, parse, postimage) before any durable write; mutation is rollback-backed exception-atomic under exclusive workspace ownership; not crash/power-loss atomic. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
                     parameters = [ordered]@{
                         type = 'object'
                         properties = [ordered]@{ patch = [ordered]@{ type = 'string' } }
@@ -1779,15 +2463,28 @@ function New-InitialSystemMessage {
     $writePathText = [string]::Join(', ', @(
         $script:WritePathDisplay | ForEach-Object { [string]$_ }
     ))
+    if ($script:Mode -eq 'ReadOnly') {
+        # Independent Reviewer prompt: no Writer/editing language; mutation explicitly prohibited.
+        return (
+            'You are the single sequential workspace Reviewer in ReadOnly mode. One model response is one turn. ' +
+            'Use only the provided read tools (read_file, search_text); there is no shell, command runner, commit, stage, push, dependency installation, or recursive runner. ' +
+            'Readable paths are: ' + $readPathText + '. ' +
+            'There are no writable paths in this role. You must not mutate, edit, write, patch, create, delete, rename, or otherwise change any workspace file or path. ' +
+            'Write tools are unavailable and any mutation attempt is forbidden. ' +
+            'Batch independent reads and searches in the same turn and do not reread unchanged files. ' +
+            'Gather evidence with reads and searches only, then stop with a concise review report. Never claim to have edited files.'
+        )
+    }
     $base = 'You are the single sequential workspace Writer. One model response is one turn. Use only the provided tools; there is no shell, command runner, commit, stage, push, dependency installation, or recursive runner. Readable paths are: ' + $readPathText + '. Writable paths are: ' + $writePathText + '. Read-only reference paths must never be edited. Batch independent reads and searches in the same turn and do not reread unchanged files. Read before editing, make minimal changes, begin editing once the required evidence is sufficient, and stop with a concise completion report only after the requested work is actually complete.'
+    $mutationContract = $script:MutationAtomicityContract
     if ($strategy -eq 'ReplaceText') {
         $base += ' Write strategy: ReplaceText. Only replace_text is available for writes. Replace exactly one occurrence in one file; use shortest unique context; do not copy whole large files. One replace_text call per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
     }
     elseif ($strategy -eq 'ApplyPatch') {
-        $base += ' Write strategy: ApplyPatch. Only apply_patch is available for writes. apply_patch accepts one or more files in one atomic batch and requires Codex markers *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, then *** End Patch; every file is validated before any durable write and the whole batch rolls back on write failure; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One apply_patch tool call per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
+        $base += ' Write strategy: ApplyPatch. Only apply_patch is available for writes. apply_patch accepts one or more files in one batch and requires Codex markers *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, then *** End Patch; every file is validated before any durable write; mutation is ' + $mutationContract + '; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One apply_patch tool call per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
     }
     else {
-        $base += ' apply_patch accepts one or more files in one atomic batch and requires Codex markers *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, then *** End Patch; every file is validated before any durable write and the whole batch rolls back on write failure; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One write tool call per turn; reread a changed file before another edit; use shortest unique context; do not copy whole large files; preserve valid JSON escaping for backslashes and prefer forward slashes for path arguments. A tool failure stops the turn and all later writes.'
+        $base += ' apply_patch accepts one or more files in one batch and requires Codex markers *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, then *** End Patch; every file is validated before any durable write; mutation is ' + $mutationContract + '; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One write tool call per turn; reread a changed file before another edit; use shortest unique context; do not copy whole large files; preserve valid JSON escaping for backslashes and prefer forward slashes for path arguments. A tool failure stops the turn and all later writes.'
     }
     return $base
 }
@@ -2035,9 +2732,16 @@ function Save-Checkpoint {
     if ([string]::IsNullOrWhiteSpace($script:CheckpointPathResolved)) {
         return $true
     }
+    $priorLastCheckpointEditCount = $script:LastCheckpointEditCount
+    $priorCheckpointRound = $script:CheckpointRound
     try {
-        $snapshot = Get-WorkspaceSnapshot
         $safeMessages = Convert-ToSafeObject @($script:Messages)
+        # Capture pre-increment checkpoint round into runner_state so resume restores the saved value.
+        $nextCheckpointRound = $script:CheckpointRound + 1
+        $script:LastCheckpointEditCount = $script:EditCount
+        $runnerState = Get-RunnerStateObject
+        $runnerState.checkpoint_round = $nextCheckpointRound
+        $runnerState.last_checkpoint_edit_count = $script:LastCheckpointEditCount
         $data = [ordered]@{
             schema_version = $script:SchemaVersion
             runner = $script:RunnerName
@@ -2053,6 +2757,9 @@ function Save-Checkpoint {
             final_head = (Get-GitHead)
             workspace_diff_sha256 = (Get-GitDiffHash)
             changed_file_hashes = $script:ChangedFileHashes
+            base_write_state = $script:BaseWriteState
+            net_changed_paths = $runnerState.net_changed_paths
+            net_changed_file_hashes = $runnerState.net_changed_file_hashes
             committed = $false
             turn = $script:TurnsUsed
             next_turn = ($script:TurnsUsed + 1)
@@ -2062,7 +2769,7 @@ function Save-Checkpoint {
             no_progress_rounds = $script:NoProgressRounds
             latest_prompt_tokens = $script:LatestPromptTokens
             latest_context_tokens = $script:LatestContextTokens
-            checkpoint_round = ($script:CheckpointRound + 1)
+            checkpoint_round = $nextCheckpointRound
             checkpoint_reason = $Reason
             requested_write_strategy = $script:RequestedWriteStrategy
             effective_write_strategy = $script:EffectiveWriteStrategy
@@ -2070,6 +2777,7 @@ function Save-Checkpoint {
             expected_write_bytes = $script:ExpectedWriteBytes
             effective_expected_write_bytes = $script:EffectiveExpectedWriteBytes
             writer_budget_source = $script:WriterBudgetSource
+            runner_state = $runnerState
             completion_criteria = 'The model must report completion after requested edits and tests are complete; this runner never commits.'
             remaining_work = if ([string]::IsNullOrWhiteSpace($script:StopReason)) { 'Continue from next_turn.' } else { $script:StopReason }
             message_boundary = [ordered]@{
@@ -2113,12 +2821,14 @@ function Save-Checkpoint {
                 Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
             }
         }
-        $script:CheckpointRound++
-        $script:LastCheckpointEditCount = $script:EditCount
+        $script:CheckpointRound = $nextCheckpointRound
         $script:CheckpointSaved = $true
         return $true
     }
     catch {
+        # Roll back in-memory checkpoint markers so a failed save cannot leak partial state.
+        $script:LastCheckpointEditCount = $priorLastCheckpointEditCount
+        $script:CheckpointRound = $priorCheckpointRound
         $script:CheckpointFailure = $true
         Add-RunnerError 'CHECKPOINT_WRITE_FAILED' $_.Exception.Message
         return $false
@@ -2175,25 +2885,18 @@ function Load-Checkpoint {
         if ($null -eq $data.messages) {
             throw 'CHECKPOINT_MESSAGES_MISSING'
         }
-        $script:ExpectedFingerprint = [string]$data.workspace_fingerprint
+        if ($null -eq $data.runner_state) {
+            throw 'CHECKPOINT_RUNNER_STATE_MISSING'
+        }
         $script:TaskId = [string]$data.task_id
         $script:Messages = @($data.messages)
-        $script:TurnsUsed = [int]$data.turn
-        $script:EffectiveMaxTurns = [Math]::Min($HardTurnLimit, [Math]::Max($MaxTurns, [int]$data.effective_max_turns))
-        $script:ExtensionsUsed = [int]$data.extensions_used
-        $script:NoProgressRounds = [int]$data.no_progress_rounds
-        $script:LatestPromptTokens = [int64]$data.latest_prompt_tokens
-        $script:LatestContextTokens = [int64]$data.latest_context_tokens
-        $script:CheckpointRound = [int]$data.checkpoint_round
-        # Restore write strategy and convergence state if present; retain preflight values for backward compatibility
-        if ($null -ne $data.requested_write_strategy -and -not [string]::IsNullOrWhiteSpace([string]$data.requested_write_strategy)) {
-            $script:RequestedWriteStrategy = [string]$data.requested_write_strategy
+        Restore-RunnerState $data.runner_state
+        # Fingerprint sealed in runner_state must match checkpoint envelope and live workspace.
+        if ([string]$script:ExpectedFingerprint -ne [string]$data.workspace_fingerprint) {
+            throw 'CHECKPOINT_FINGERPRINT_MISMATCH'
         }
-        if ($null -ne $data.effective_write_strategy -and -not [string]::IsNullOrWhiteSpace([string]$data.effective_write_strategy)) {
-            $script:EffectiveWriteStrategy = [string]$data.effective_write_strategy
-        }
-        if ($null -ne $data.convergence_mode -and -not [string]::IsNullOrWhiteSpace([string]$data.convergence_mode)) {
-            $script:ConvergenceMode = [string]$data.convergence_mode
+        if ([string]$script:ExpectedFingerprint -ne [string]$current.fingerprint) {
+            throw 'CHECKPOINT_FINGERPRINT_MISMATCH'
         }
         return $true
     }
@@ -2307,6 +3010,16 @@ function Invoke-ModelRequest {
         }
         $response = $script:MockResponses[$script:MockIndex]
         $script:MockIndex++
+        # Optional TestMode-only synthetic request duration for API-budget contracts (ignored outside TestMode).
+        $testDurationRaw = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_REQUEST_DURATION_MS')
+        if (-not [string]::IsNullOrWhiteSpace($testDurationRaw)) {
+            try {
+                $script:RequestDurationsMs += [int64]$testDurationRaw
+            }
+            catch {
+                # Ignore malformed injection values.
+            }
+        }
         return $response
     }
     $requestTimer = [System.Diagnostics.Stopwatch]::StartNew()
@@ -2342,7 +3055,10 @@ function Invoke-ModelRequest {
         $httpResponse = $null
         $httpContent = $null
         try {
-            $httpClient.Timeout = [TimeSpan]::FromSeconds($script:TimeoutSeconds)
+            # Clamp HTTP timeout to remaining wall/API budgets so a long provider call
+            # cannot overrun the hard budget after a precheck that only checked "before".
+            $effectiveTimeoutMs = Get-EffectiveHttpClientTimeoutMs
+            $httpClient.Timeout = [TimeSpan]::FromMilliseconds([double]$effectiveTimeoutMs)
             $httpClient.DefaultRequestHeaders.Authorization = New-Object `
                 System.Net.Http.Headers.AuthenticationHeaderValue('Bearer', $script:ApiKey)
             $httpContent = New-Object System.Net.Http.StringContent(
@@ -2388,6 +3104,10 @@ function Get-ResultObject {
     if ([string]::IsNullOrWhiteSpace($script:ExpectedFingerprint)) {
         $script:ExpectedFingerprint = $snapshot.fingerprint
     }
+    # One writable-tree pass for both net evidence fields.
+    $writeState = Get-WritePathState
+    $netChangedPaths = @(Get-NetChangedPaths -CurrentWriteState $writeState)
+    $netChangedHashes = Get-NetChangedFileHashes -CurrentWriteState $writeState
     return [ordered]@{
         status = $Status
         runner = $script:RunnerName
@@ -2403,9 +3123,12 @@ function Get-ResultObject {
         direct_response = [bool]$DirectResponse
         thinking_mode = $script:ThinkingModeResolved
         tools_enabled = (-not [bool]$DirectResponse)
-        elapsed_ms = [int64]$script:RunStopwatch.ElapsedMilliseconds
-        api_elapsed_ms = [int64](($script:RequestDurationsMs | Measure-Object -Sum).Sum)
+        elapsed_ms = (Get-TotalElapsedMs)
+        api_elapsed_ms = (Get-TotalApiElapsedMs)
         request_durations_ms = @($script:RequestDurationsMs)
+        max_elapsed_minutes = [int]$script:MaxElapsedMinutes
+        max_api_elapsed_minutes = [int]$script:MaxApiElapsedMinutes
+        mutation_atomicity_contract = $script:MutationAtomicityContract
         turns_used = $script:TurnsUsed
         max_turns = $MaxTurns
         effective_max_turns = $script:EffectiveMaxTurns
@@ -2437,6 +3160,9 @@ function Get-ResultObject {
         leading_tool_failure = $script:LeadingToolFailure
         changed_paths = @($script:ChangedPaths.Keys | Sort-Object)
         changed_file_hashes = $script:ChangedFileHashes
+        base_write_state = $script:BaseWriteState
+        net_changed_paths = $netChangedPaths
+        net_changed_file_hashes = $netChangedHashes
         read_paths = @($script:ReadPathDisplay)
         write_paths = @($script:WritePathDisplay)
         base_head = $script:BaseHead
@@ -2491,6 +3217,9 @@ try {
     $script:RepositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
     if (-not (Test-Path -LiteralPath $script:RepositoryRoot -PathType Container)) {
         throw 'REPOSITORY_ROOT_MISSING'
+    }
+    if ($MaxApiElapsedMinutes -gt $MaxElapsedMinutes) {
+        throw 'MAX_API_ELAPSED_EXCEEDS_MAX_ELAPSED'
     }
     if ($RequestTimeoutSeconds -ne 0 -and ($RequestTimeoutSeconds -lt 30 -or $RequestTimeoutSeconds -gt 600)) {
         throw 'REQUEST_TIMEOUT_OUT_OF_RANGE'
@@ -2595,6 +3324,11 @@ try {
     }
     $script:CheckpointPathResolved = Get-CheckpointPath $CheckpointPath
     $script:ExpectedFingerprint = (Get-WorkspaceSnapshot).fingerprint
+    # Fresh-run baseline seal over writable paths (SHA256 or MISSING). Resume restores sealed state
+    # from checkpoint and must not re-seal over post-edit bytes.
+    if ([string]::IsNullOrWhiteSpace($ResumeCheckpoint)) {
+        Seal-BaseWriteState
+    }
     $script:MockResponses = @(Load-MockResponses)
     if (-not [string]::IsNullOrWhiteSpace($MockResponsesPath) -and -not $TestMode) {
         throw 'MOCK_REQUIRES_TEST_MODE'
@@ -2641,8 +3375,12 @@ try {
         $duplicateBatchSeen = $false
         while ($true) {
             if ($script:TurnsUsed -ge $script:EffectiveMaxTurns) {
+                $writeStateExt = Get-WritePathState
+                $currentNetFp = Get-NetChangeEvidenceFingerprint -CurrentWriteState $writeStateExt
+                $hasPositiveNetChange = (@(Get-NetChangedPaths -CurrentWriteState $writeStateExt).Count -gt 0)
                 $eligible = ($script:EffectiveMaxTurns -lt $script:HardTurnLimit) -and
-                    ($script:EditCount -gt $script:LastExtensionEditCount) -and
+                    $hasPositiveNetChange -and
+                    ($currentNetFp -ne $script:LastExtensionNetChangeFingerprint) -and
                     (-not $script:LeadingToolFailure) -and
                     (-not $script:CheckpointFailure) -and
                     (Test-ExpectedFingerprint)
@@ -2650,6 +3388,7 @@ try {
                     $script:EffectiveMaxTurns = [Math]::Min($script:HardTurnLimit, $script:EffectiveMaxTurns + $script:ExtensionSize)
                     $script:ExtensionsUsed++
                     $script:LastExtensionEditCount = $script:EditCount
+                    $script:LastExtensionNetChangeFingerprint = $currentNetFp
                     [void](Save-Checkpoint 'extension')
                     continue
                 }
@@ -2664,9 +3403,21 @@ try {
             if ($script:TurnsUsed -ge $script:SoftTurn) {
                 Add-RunnerWarning 'SOFT_TURN_LIMIT_REACHED' 'Further turns require objective progress and safe extension checks.'
             }
+            # Wall-clock / API budgets: enforce before every model request.
+            $preBudgetCode = Test-TimeBudgetExceeded
+            if ($null -ne $preBudgetCode) {
+                Stop-ForTimeBudget $preBudgetCode
+                break
+            }
             $response = $null
             $script:RequestCount++
             $response = Invoke-ModelRequest
+            # Enforce again after the request returns; expired responses must not apply tools.
+            $postBudgetCode = Test-TimeBudgetExceeded
+            if ($null -ne $postBudgetCode) {
+                Stop-ForTimeBudget $postBudgetCode
+                break
+            }
             $runnerErrorProperty = $response.PSObject.Properties['__runner_error']
             if ($null -ne $runnerErrorProperty -and $null -ne $runnerErrorProperty.Value) {
                 $runnerDetailProperty = $response.PSObject.Properties['__runner_detail']
@@ -2774,7 +3525,7 @@ try {
             }
             $previousBatchFingerprint = $batchFingerprint
 
-            # --- Atomic local batch preflight ---
+            # --- Local tool-batch preflight (all-or-nothing validation before execution) ---
             $toolContracts = @{
                 'read_file'    = @('path')
                 'search_text'  = @('pattern')
@@ -2974,7 +3725,7 @@ try {
                 else {
                     # Compute the primary preflight code/detail from the first actual defective entry
                     $primaryCode = 'TOOL_PREFLIGHT_FAILED'
-                    $primaryDetail = 'One or more tool calls failed atomic preflight validation; no workspace tool executed.'
+                    $primaryDetail = 'One or more tool calls failed all-or-nothing preflight validation; no workspace tool executed.'
                     foreach ($entry in $preflightEntries) {
                         if ($null -ne $entry.parseErr) {
                             $primaryCode = $entry.parseErr
@@ -3021,10 +3772,13 @@ try {
                     $script:NoProgressRounds++
                 }
                 $script:FreshReadRecoveryTurn = $false
-                if ($script:EditCount -eq 0) {
-                    # Edit-start convergence and deadlines apply only to Writer.
-                    # ReadOnly may perform many read_file/search_text turns with zero edits.
-                    if ($Mode -eq 'Writer') {
+                $netChangedCount = @(Get-NetChangedPaths).Count
+                if ($netChangedCount -eq 0) {
+                    # No lasting net change: edit-start convergence applies only when no effective
+                    # edits exist yet. A→B→A leaves edit_count>0 with empty net and must not be
+                    # treated as post-edit progress debt (so final completion can fail closed on
+                    # WRITER_COMPLETED_WITHOUT_NET_CHANGE instead of a false POST_EDIT stop).
+                    if ($Mode -eq 'Writer' -and $script:EditCount -eq 0) {
                         if ($script:NoProgressRounds -ge 2 -and $script:ConvergenceMode -ne 'forced-write' -and $script:ConvergenceMode -ne 'write-only') {
                             $script:ConvergenceMode = 'forced-write'
                             Add-RunnerWarning 'EDIT_CONVERGENCE_MODE' 'No edits after 2 rounds; entering forced-write mode. Further search is disabled; read only if freshness is missing, then use the selected write tool for the smallest pending edit.'
@@ -3052,7 +3806,7 @@ try {
                     }
                 }
                 else {
-                    # Post-edit no-progress is Writer-only (ReadOnly never edits).
+                    # Post-edit no-progress is Writer-only and requires positive net change still present.
                     # Two consecutive successful-tool turns with no positive progress end as PARTIAL.
                     if ($Mode -eq 'Writer') {
                         if ($script:NoProgressRounds -ge 2) {
