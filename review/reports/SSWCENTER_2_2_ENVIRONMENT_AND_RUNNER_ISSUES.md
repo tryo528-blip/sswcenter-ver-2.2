@@ -8,10 +8,10 @@
 
 ### 현재 정본과 디자인 동결
 
-- 정본: `C:\sswcenter\2.2`, branch `main`. **사용자 `끝!` 선언 후 Git 마감(commit/push) 완료 기준.**
+- 정본: `C:\sswcenter\2.2`, branch `main`, HEAD `c50f49dfff3ac4ce5b5307eca1aa765dd26ab3c9` (**사용자 `끝!` 마감 commit**, origin/main 일치).
 - 현재 Git 의미 상태(마감 후 clean): **status_count=0**, **staged_count=0**, working tree clean. 구 문서의 status 23·25·41·42·43은 마감 이전 WIP 스냅샷이며 현재 값이 아니다.
 - 디자인 동결: `frontend/src/**`, `frontend/public/**`, `frontend/index.html`의 tracked 129개. 마감 전후 동결 집계 SHA-256: `98c93aac800e62d021d7fab27c3c95315739c2e09e612557eb7dea7a5aba60dc` (`aggregate_match=True`, frozen diff clean, frozen untracked 0).
-- HEAD/remote SHA는 마감 스크립트 결과의 LocalHead/RemoteHead와 동일(아래 ENV-GIT-FINISH-001 절 및 완료 보고). force push/reset/stash 없음.
+- force push/reset/stash 없음.
 - **임시 검수 번들은 최종 검수 후 제거됨.** 환경 로그 `review/environment/operator-environment-issues.jsonl`은 최종 기록으로 **보존**(비밀 없음).
 
 ### CLOSED — Runner

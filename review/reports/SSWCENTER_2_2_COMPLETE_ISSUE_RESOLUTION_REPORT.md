@@ -26,7 +26,7 @@
 | workspace seal 계약 | **120/120** | 자동 계약 증거 |
 | ai-tools 계약 | **61/61** | 자동 계약 증거 |
 | 환경 redaction 계약 | **11/11** | 자동 계약 증거 |
-| HEAD(Git 커밋 지점) | 마감 commit SHA(아래 최종 observer·완료 보고) | git finish |
+| HEAD(Git 커밋 지점) | `c50f49dfff3ac4ce5b5307eca1aa765dd26ab3c9` | git finish |
 | 디자인 동결 파일 수 | tracked **129** | observer |
 | 디자인 집계 해시(내용 지문) | `98c93aac…60dc` match | observer |
 | Git status 파일 수 | **status_count=0** (마감 후 clean) | observer |
@@ -427,7 +427,7 @@ CredMan secret byte-seal은 **UNKNOWN**(별항).
 | design frozen diff_clean | **True** |
 | design aggregate | `98c93aac800e62d021d7fab27c3c95315739c2e09e612557eb7dea7a5aba60dc` |
 | aggregate_match | **True** |
-| HEAD / remote SHA | 마감 스크립트 LocalHead = RemoteHead (완료 보고에 exact 기록) |
+| HEAD / remote SHA | `c50f49dfff3ac4ce5b5307eca1aa765dd26ab3c9` (local = origin/main) |
 
 ### ENV-GIT-FINISH-001 (요약)
 
