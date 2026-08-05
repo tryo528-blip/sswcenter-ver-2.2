@@ -247,11 +247,31 @@ try {
     ) 'final response optional tool_calls is guarded under StrictMode'
     Assert-True (
         $runnerSource.Contains('Never send diff --git format') -and
-        $runnerSource.Contains('apply_patch accepts one file only') -and
+        $runnerSource.Contains('apply_patch accepts one or more files in one atomic batch') -and
         $runnerSource.Contains('Readable paths are:') -and
         $runnerSource.Contains('Writable paths are:') -and
         $runnerSource.Contains('literal leading plus is encoded as ++')
-    ) 'apply patch custom single-file format is explicit to model'
+    ) 'apply patch custom atomic multi-file format is explicit to model'
+    Assert-True (
+        $runnerSource.Contains('function Get-ProgressMetric') -and
+        $runnerSource.Contains('function Test-HasPositiveProgress') -and
+        $runnerSource.Contains('function Test-ReadOnlyTerminalSuccess') -and
+        $runnerSource.Contains('function Test-WriterTerminalSuccess') -and
+        $runnerSource.Contains('function Resolve-TerminalCompletionState')
+    ) 'progress and terminal policy helpers are extracted'
+    Assert-True (
+        $runnerSource.Contains('PATCH_BATCH_WRITE_FAILED') -and
+        $runnerSource.Contains('PATCH_BATCH_ROLLBACK_FAILED') -and
+        $runnerSource.Contains('DEEPSEEK_RUNNER_TEST_FAIL_WRITE') -and
+        $runnerSource.Contains('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK') -and
+        $runnerSource.Contains('function Write-AtomicBytes') -and
+        $runnerSource.Contains('whole batch rolls back on write failure')
+    ) 'atomic multi-file batch rollback path is present'
+    Assert-True (
+        $runnerSource.Contains("RunnerVersion = '2.6.0'") -or
+        $runnerSource.Contains('RunnerVersion = "2.6.0"') -or
+        $runnerSource.Contains("`$script:RunnerVersion = '2.6.0'")
+    ) 'runner version bumped to 2.6.0'
     $allowedFile = Join-Path $testRoot 'allowed.txt'
     $leadFile = Join-Path $testRoot 'leading.txt'
     $usageFile = Join-Path $testRoot 'usage.txt'
@@ -296,6 +316,7 @@ try {
     Assert-True ($null -ne $offline.json) 'offline JSON'
     Assert-Equal $offline.json.status 'OFFLINE_CONFIG' 'offline status'
     Assert-Equal $offline.json.max_turns 48 'default 48 turns'
+    Assert-equal $offline.json.runner_version '2.6.0' 'offline runner version 2.6.0'
     Assert-Equal $offline.json.extension_size 8 'extension size'
     Assert-Equal $offline.json.checkpoint_turn 64 'checkpoint turn'
     Assert-Equal $offline.json.soft_turn 80 'soft turn'
@@ -1164,16 +1185,6 @@ try {
             role = 'assistant'
             content = $null
             tool_calls = @((New-ToolCall 'pp-s2' 'search_text' ([ordered]@{ pattern = 'q2' })))
-        })),
-        (New-Response -Message ([ordered]@{
-            role = 'assistant'
-            content = $null
-            tool_calls = @((New-ToolCall 'pp-s3' 'search_text' ([ordered]@{ pattern = 'q3' })))
-        })),
-        (New-Response -Message ([ordered]@{
-            role = 'assistant'
-            content = $null
-            tool_calls = @((New-ToolCall 'pp-s4' 'search_text' ([ordered]@{ pattern = 'q4' })))
         }))
     )
     $postProgressRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('post-progress.txt') -ResponsesPath $postProgressResponses -Checkpoint (New-ExternalCheckpoint 'post-progress') -Turns 10
@@ -1182,7 +1193,7 @@ try {
     Assert-True ($postProgressRun.json.warnings.code -contains 'POST_EDIT_NO_PROGRESS_WARNING') 'post-edit no-progress warning'
     Assert-True ($postProgressRun.json.errors.code -contains 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED') 'post-edit no-progress error'
     Assert-Equal $postProgressRun.json.stop_reason 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED' 'post-edit no-progress stop reason'
-    Assert-Equal $postProgressRun.json.no_progress_rounds 4 'post-edit no-progress rounds'
+    Assert-Equal $postProgressRun.json.no_progress_rounds 2 'post-edit two-turn no-progress rounds'
     Assert-Equal $postProgressRun.json.edit_count 1 'post-edit no-progress edit count'
     Assert-Equal (Read-TestText $postProgressFile) 'after' 'post-edit no-progress final text'
 
@@ -1731,6 +1742,457 @@ access_token residual check is a pattern name, not a credential.
     $textRun = Invoke-Runner -Root $testRoot -Offline -WithoutJson
     Assert-Equal $textRun.rc 0 'text output exit'
     Assert-True $textRun.raw.Contains('DEEPSEEK_WORKSPACE_RUNNER=OFFLINE_CONFIG') 'text compatibility summary'
+
+    # --- atomic multi-file apply_patch batch contracts ---
+    $batchDir = Join-Path $testRoot 'batch'
+    $batchA = Join-Path $batchDir 'a.txt'
+    $batchB = Join-Path $batchDir 'b.txt'
+    $batchC = Join-Path $batchDir 'c.txt'
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    Write-TestText $batchC 'gamma-before'
+
+    $batchSuccessPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-after'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-after'
+        '*** End Patch'
+    ))
+    $batchSuccessResponses = Join-Path $testRoot 'batch-success-responses.json'
+    Save-Responses $batchSuccessResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bs-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'bs-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bs-patch' 'apply_patch' ([ordered]@{ patch = $batchSuccessPatch })))
+        })),
+        (New-Response -Message ([ordered]@{ role = 'assistant'; content = 'batch complete'; tool_calls = @() }) -FinishReason 'stop')
+    )
+    $batchSuccessRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchSuccessResponses -Checkpoint (New-ExternalCheckpoint 'batch-success') -Turns 5 -Strategy ApplyPatch
+    Assert-equal $batchSuccessRun.rc 0 'atomic multi-file batch success exit'
+    Assert-equal $batchSuccessRun.json.status 'PASS' 'atomic multi-file batch success status'
+    Assert-equal $batchSuccessRun.json.edit_count 2 'atomic multi-file batch success edit count'
+    Assert-equal $batchSuccessRun.json.patch_count 2 'atomic multi-file batch success patch count'
+    Assert-equal (Read-TestText $batchA) 'alpha-after' 'atomic multi-file batch success a'
+    Assert-equal (Read-TestText $batchB) 'beta-after' 'atomic multi-file batch success b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchOosPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-partial'
+        '*** Update File: outside-scope.txt'
+        '@@'
+        '-x'
+        '+y'
+        '*** End Patch'
+    ))
+    $batchOosResponses = Join-Path $testRoot 'batch-oos-responses.json'
+    Save-Responses $batchOosResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bo-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bo-patch' 'apply_patch' ([ordered]@{ patch = $batchOosPatch })))
+        }))
+    )
+    $batchOosRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchOosResponses -Checkpoint (New-ExternalCheckpoint 'batch-oos') -Turns 4 -Strategy ApplyPatch
+    Assert-equal $batchOosRun.rc 2 'atomic multi-file out-of-scope exit'
+    Assert-True ($batchOosRun.json.errors.code -contains 'PATH_NOT_WRITE_ALLOWLISTED') 'atomic multi-file out-of-scope error'
+    Assert-equal $batchOosRun.json.edit_count 0 'atomic multi-file out-of-scope no edits'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'atomic multi-file out-of-scope preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'atomic multi-file out-of-scope preserves b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchStalePatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-stale'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-stale'
+        '*** End Patch'
+    ))
+    $batchStaleResponses = Join-Path $testRoot 'batch-stale-responses.json'
+    Save-Responses $batchStaleResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bst-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bst-patch' 'apply_patch' ([ordered]@{ patch = $batchStalePatch })))
+        }))
+    )
+    $batchStaleRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchStaleResponses -Checkpoint (New-ExternalCheckpoint 'batch-stale') -Turns 4 -Strategy ApplyPatch
+    Assert-True ($batchStaleRun.rc -ne 0) 'atomic multi-file stale preimage nonzero exit'
+    Assert-True ($batchStaleRun.json.warnings.code -contains 'WRITE_REQUIRES_FRESH_READ') 'atomic multi-file stale preimage warning'
+    Assert-equal $batchStaleRun.json.edit_count 0 'atomic multi-file stale preimage no edits'
+    Assert-equal $batchStaleRun.json.patch_count 0 'atomic multi-file stale preimage no patches'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'atomic multi-file stale preimage preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'atomic multi-file stale preimage preserves b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchBadHunkPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-bad'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-not-the-real-content'
+        '+beta-bad'
+        '*** End Patch'
+    ))
+    $batchBadHunkResponses = Join-Path $testRoot 'batch-bad-hunk-responses.json'
+    Save-Responses $batchBadHunkResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bbh-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'bbh-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bbh-patch' 'apply_patch' ([ordered]@{ patch = $batchBadHunkPatch })))
+        }))
+    )
+    $batchBadHunkRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchBadHunkResponses -Checkpoint (New-ExternalCheckpoint 'batch-bad-hunk') -Turns 4 -Strategy ApplyPatch
+    Assert-equal $batchBadHunkRun.rc 2 'atomic multi-file bad hunk exit'
+    Assert-True ($batchBadHunkRun.json.errors.code -contains 'PATCH_CONTEXT_NOT_FOUND') 'atomic multi-file bad hunk error'
+    Assert-equal $batchBadHunkRun.json.edit_count 0 'atomic multi-file bad hunk no edits'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'atomic multi-file bad hunk preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'atomic multi-file bad hunk preserves b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchRollbackPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-rolled'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-rolled'
+        '*** End Patch'
+    ))
+    $batchRollbackResponses = Join-Path $testRoot 'batch-rollback-responses.json'
+    Save-Responses $batchRollbackResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'br-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'br-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'br-patch' 'apply_patch' ([ordered]@{ patch = $batchRollbackPatch })))
+        }))
+    )
+    $prevFailWrite = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        $batchRollbackRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchRollbackResponses -Checkpoint (New-ExternalCheckpoint 'batch-rollback') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevFailWrite)
+    }
+    Assert-equal $batchRollbackRun.rc 2 'atomic multi-file rollback exit'
+    Assert-True ($batchRollbackRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'atomic multi-file rollback error'
+    Assert-equal $batchRollbackRun.json.edit_count 0 'atomic multi-file rollback no edits'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'atomic multi-file rollback restores a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'atomic multi-file rollback preserves b'
+
+    # byte-exact rollback preserves UTF-8 BOM preimage
+    $batchBom = Join-Path $batchDir 'bom.txt'
+    $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+    [System.IO.File]::WriteAllText($batchBom, 'bom-before', $bomEncoding)
+    $bomBytesBefore = [System.IO.File]::ReadAllBytes($batchBom)
+    Write-TestText $batchB 'beta-before'
+    $batchBomPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/bom.txt'
+        '@@'
+        '-bom-before'
+        '+bom-after'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-bom-fail'
+        '*** End Patch'
+    ))
+    $batchBomResponses = Join-Path $testRoot 'batch-bom-responses.json'
+    Save-Responses $batchBomResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bbom-r1' 'read_file' ([ordered]@{ path = 'batch/bom.txt' })),
+                (New-ToolCall 'bbom-r2' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bbom-patch' 'apply_patch' ([ordered]@{ patch = $batchBomPatch })))
+        }))
+    )
+    $prevBomFail = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        $batchBomRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchBomResponses -Checkpoint (New-ExternalCheckpoint 'batch-bom') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevBomFail)
+    }
+    Assert-equal $batchBomRun.rc 2 'atomic multi-file bom rollback exit'
+    Assert-True ($batchBomRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'atomic multi-file bom rollback error'
+    Assert-equal $batchBomRun.json.edit_count 0 'atomic multi-file bom rollback no edits'
+    $bomBytesAfter = [System.IO.File]::ReadAllBytes($batchBom)
+    Assert-equal $bomBytesAfter.Length $bomBytesBefore.Length 'atomic multi-file bom rollback byte length'
+    $bomEqual = $true
+    for ($bi = 0; $bi -lt $bomBytesBefore.Length; $bi++) {
+        if ($bomBytesAfter[$bi] -ne $bomBytesBefore[$bi]) { $bomEqual = $false; break }
+    }
+    Assert-True $bomEqual 'atomic multi-file bom rollback byte-exact'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'atomic multi-file bom rollback preserves b'
+
+    # rollback failure leaves divergent path accounted for (PARTIAL_AFTER_EDIT observability)
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchRbFailPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-divergent'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-divergent'
+        '*** End Patch'
+    ))
+    $batchRbFailResponses = Join-Path $testRoot 'batch-rb-fail-responses.json'
+    Save-Responses $batchRbFailResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'brf-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'brf-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'brf-patch' 'apply_patch' ([ordered]@{ patch = $batchRbFailPatch })))
+        }))
+    )
+    $prevFailWrite2 = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    $prevFailRb = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK', 'batch\a.txt')
+        $batchRbFailRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchRbFailResponses -Checkpoint (New-ExternalCheckpoint 'batch-rb-fail') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevFailWrite2)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK', $prevFailRb)
+    }
+    Assert-equal $batchRbFailRun.rc 2 'atomic multi-file rollback-fail exit'
+    Assert-equal $batchRbFailRun.json.status 'PARTIAL_AFTER_EDIT' 'atomic multi-file rollback-fail status'
+    Assert-True ($batchRbFailRun.json.errors.code -contains 'PATCH_BATCH_ROLLBACK_FAILED') 'atomic multi-file rollback-fail error'
+    Assert-equal $batchRbFailRun.json.edit_count 1 'atomic multi-file rollback-fail edit count'
+    Assert-equal $batchRbFailRun.json.patch_count 1 'atomic multi-file rollback-fail patch count'
+    Assert-True ($batchRbFailRun.json.changed_paths -contains 'batch\a.txt' -or $batchRbFailRun.json.changed_paths -contains 'batch/a.txt') 'atomic multi-file rollback-fail changed path'
+    Assert-True ($null -ne $batchRbFailRun.json.changed_file_hashes) 'atomic multi-file rollback-fail hashes present'
+    Assert-equal (Read-TestText $batchA) 'alpha-divergent' 'atomic multi-file rollback-fail leaves a divergent'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'atomic multi-file rollback-fail preserves unwritten b'
+
+    # Add-batch rollback removes newly created empty directories
+    $nestedAddPath = 'batch/nested/deep/new-add.txt'
+    $nestedAddFull = Join-Path $batchDir 'nested\deep\new-add.txt'
+    $nestedDeepDir = Join-Path $batchDir 'nested\deep'
+    $nestedDir = Join-Path $batchDir 'nested'
+    Write-TestText $batchB 'beta-before'
+    $batchAddDirPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Add File: batch/nested/deep/new-add.txt'
+        '+created-nested'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-nested-fail'
+        '*** End Patch'
+    ))
+    $batchAddDirResponses = Join-Path $testRoot 'batch-add-dir-responses.json'
+    Save-Responses $batchAddDirResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bad-r1' 'read_file' ([ordered]@{ path = 'batch/nested/deep/new-add.txt' })),
+                (New-ToolCall 'bad-r2' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bad-patch' 'apply_patch' ([ordered]@{ patch = $batchAddDirPatch })))
+        }))
+    )
+    $prevAddFail = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        $batchAddDirRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchAddDirResponses -Checkpoint (New-ExternalCheckpoint 'batch-add-dir') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevAddFail)
+    }
+    Assert-equal $batchAddDirRun.rc 2 'atomic multi-file add-dir rollback exit'
+    Assert-True ($batchAddDirRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'atomic multi-file add-dir rollback error'
+    Assert-equal $batchAddDirRun.json.edit_count 0 'atomic multi-file add-dir rollback no edits'
+    Assert-True (-not (Test-Path -LiteralPath $nestedAddFull)) 'atomic multi-file add-dir rollback removes file'
+    Assert-True (-not (Test-Path -LiteralPath $nestedDeepDir)) 'atomic multi-file add-dir rollback removes deep dir'
+    Assert-True (-not (Test-Path -LiteralPath $nestedDir)) 'atomic multi-file add-dir rollback removes nested dir'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'atomic multi-file add-dir rollback preserves b'
+
+    # First Add File itself write-injected after nested dirs prepared: full cleanup, no edits
+    $firstAddRel = 'batch/nested/deep/first-add.txt'
+    $firstAddFull = Join-Path $batchDir 'nested\deep\first-add.txt'
+    $firstAddDeepDir = Join-Path $batchDir 'nested\deep'
+    $firstAddNestedDir = Join-Path $batchDir 'nested'
+    $batchFirstAddPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Add File: batch/nested/deep/first-add.txt'
+        '+first-add-content'
+        '*** End Patch'
+    ))
+    $batchFirstAddResponses = Join-Path $testRoot 'batch-first-add-fail-responses.json'
+    Save-Responses $batchFirstAddResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bfa-r1' 'read_file' ([ordered]@{ path = 'batch/nested/deep/first-add.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bfa-patch' 'apply_patch' ([ordered]@{ patch = $batchFirstAddPatch })))
+        }))
+    )
+    $prevFirstAddFail = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\nested\deep\first-add.txt')
+        $batchFirstAddRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchFirstAddResponses -Checkpoint (New-ExternalCheckpoint 'batch-first-add-fail') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevFirstAddFail)
+    }
+    Assert-equal $batchFirstAddRun.rc 2 'atomic first-add write-fail exit'
+    Assert-True ($batchFirstAddRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'atomic first-add write-fail error'
+    Assert-equal $batchFirstAddRun.json.edit_count 0 'atomic first-add write-fail no edits'
+    Assert-equal $batchFirstAddRun.json.patch_count 0 'atomic first-add write-fail no patches'
+    Assert-True (-not (Test-Path -LiteralPath $firstAddFull)) 'atomic first-add write-fail removes file'
+    Assert-True (-not (Test-Path -LiteralPath $firstAddDeepDir)) 'atomic first-add write-fail removes deep dir'
+    Assert-True (-not (Test-Path -LiteralPath $firstAddNestedDir)) 'atomic first-add write-fail removes nested dir'
+
+    Write-TestText $batchA 'alpha-ro'
+    Write-TestText $batchB 'beta-ro'
+    $batchRoPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-ro'
+        '+alpha-mutated'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-ro'
+        '+beta-mutated'
+        '*** End Patch'
+    ))
+    $batchRoResponses = Join-Path $testRoot 'batch-ro-responses.json'
+    Save-Responses $batchRoResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bro-patch' 'apply_patch' ([ordered]@{ patch = $batchRoPatch })))
+        }))
+    )
+    $batchRoRun = Invoke-Runner -Root $testRoot -RunMode ReadOnly -Read @('batch') -ResponsesPath $batchRoResponses -Checkpoint (New-ExternalCheckpoint 'batch-ro') -Turns 2
+    Assert-equal $batchRoRun.rc 2 'ReadOnly multi-file no-mutation exit'
+    Assert-True ($batchRoRun.json.errors.code -contains 'WRITER_TOOL_NOT_ALLOWED' -or $batchRoRun.json.errors.code -contains 'TOOL_NOT_ALLOWED') 'ReadOnly multi-file no-mutation error'
+    Assert-equal $batchRoRun.json.edit_count 0 'ReadOnly multi-file no-mutation edit count'
+    Assert-equal (Read-TestText $batchA) 'alpha-ro' 'ReadOnly multi-file no-mutation preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-ro' 'ReadOnly multi-file no-mutation preserves b'
+
+    $roProgressResponses = Join-Path $testRoot 'ro-progress-responses.json'
+    Save-Responses $roProgressResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rop1' 'read_file' ([ordered]@{ path = 'batch/a.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rop2' 'read_file' ([ordered]@{ path = 'batch/b.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rop3' 'search_text' ([ordered]@{ pattern = 'alpha' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'ReadOnly review complete with evidence; no mutation required.'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $roProgressRun = Invoke-Runner -Root $testRoot -RunMode ReadOnly -Read @('batch') -ResponsesPath $roProgressResponses -Checkpoint (New-ExternalCheckpoint 'ro-progress') -Turns 6
+    Assert-equal $roProgressRun.rc 0 'ReadOnly no false progress stop exit'
+    Assert-equal $roProgressRun.json.status 'PASS' 'ReadOnly no false progress stop status'
+    Assert-True (-not ($roProgressRun.json.errors.code -contains 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED')) 'ReadOnly no post-edit progress error'
+    Assert-equal $roProgressRun.json.edit_count 0 'ReadOnly no false progress stop edit count'
+    Assert-equal (Read-TestText $batchA) 'alpha-ro' 'ReadOnly no false progress stop preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-ro' 'ReadOnly no false progress stop preserves b'
+    Assert-equal (Read-TestText $batchC) 'gamma-before' 'ReadOnly no false progress stop preserves c'
 }
 catch {
     $script:Failed++

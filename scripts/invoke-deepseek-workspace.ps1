@@ -44,7 +44,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $script:RunnerName = 'deepseek-workspace-runner'
-$script:RunnerVersion = '2.5.0'
+$script:RunnerVersion = '2.6.0'
 $script:SchemaVersion = '2.1.0'
 $script:ProviderContextLimit = 1000000
 $script:ContextSoftLimit = 850000
@@ -220,6 +220,136 @@ function Assert-CheckpointSuccessOrDemote {
     }
     if ([string]::IsNullOrWhiteSpace($script:StopReason) -or $script:StopReason -eq 'MODEL_COMPLETED') {
         $script:StopReason = 'CHECKPOINT_WRITE_FAILED'
+    }
+}
+
+function Get-ProgressMetric {
+    # Explicit, measurable Writer progress. Read-only evidence gathering is not progress.
+    return [pscustomobject]@{
+        edit_count = [int]$script:EditCount
+        patch_count = [int]$script:PatchCount
+        changed_path_count = @($script:ChangedPaths.Keys).Count
+    }
+}
+
+function Test-HasPositiveProgress {
+    param(
+        [AllowNull()][object]$Before,
+        [AllowNull()][object]$After
+    )
+    if ($null -eq $Before -or $null -eq $After) {
+        return $false
+    }
+    if ([int]$After.edit_count -gt [int]$Before.edit_count) {
+        return $true
+    }
+    if ([int]$After.patch_count -gt [int]$Before.patch_count) {
+        return $true
+    }
+    if ([int]$After.changed_path_count -gt [int]$Before.changed_path_count) {
+        return $true
+    }
+    return $false
+}
+
+function Test-ReadOnlyTerminalSuccess {
+    # Reviewer/ReadOnly success: completed without errors, leading tool failure,
+    # or workspace fingerprint drift. Filesystem mutation is independently forbidden.
+    return (
+        $script:Mode -eq 'ReadOnly' -and
+        $script:Errors.Count -eq 0 -and
+        -not $script:LeadingToolFailure -and
+        (Test-ExpectedFingerprint)
+    )
+}
+
+function Test-WriterTerminalSuccess {
+    # Writer success requires observable edits, clean error/tool state, and an
+    # unchanged workspace fingerprint relative to ExpectedFingerprint.
+    # Checkpoint integrity is enforced separately via Assert-CheckpointSuccessOrDemote.
+    return (
+        $script:Mode -eq 'Writer' -and
+        $script:EditCount -gt 0 -and
+        $script:Errors.Count -eq 0 -and
+        -not $script:LeadingToolFailure -and
+        (Test-ExpectedFingerprint)
+    )
+}
+
+function Resolve-TerminalCompletionState {
+    # Mode-specific terminal outcome when the model emits a completion message.
+    # Fingerprint mismatch is never silent PASS/PARTIAL without the explicit code.
+    if (-not (Test-ExpectedFingerprint)) {
+        if ($script:EditCount -gt 0) {
+            return [pscustomobject]@{
+                Status = 'PARTIAL_AFTER_EDIT'
+                ExitCode = 2
+                StopReason = 'WORKSPACE_FINGERPRINT_MISMATCH'
+                ErrorCode = 'WORKSPACE_FINGERPRINT_MISMATCH'
+            }
+        }
+        return [pscustomobject]@{
+            Status = 'FAIL'
+            ExitCode = 1
+            StopReason = 'WORKSPACE_FINGERPRINT_MISMATCH'
+            ErrorCode = 'WORKSPACE_FINGERPRINT_MISMATCH'
+        }
+    }
+    if ($script:Mode -eq 'Writer' -and $script:EditCount -eq 0) {
+        return [pscustomobject]@{
+            Status = 'PARTIAL'
+            ExitCode = 2
+            StopReason = 'WRITER_COMPLETED_WITHOUT_EDIT'
+            ErrorCode = 'WRITER_COMPLETED_WITHOUT_EDIT'
+        }
+    }
+    if ($script:LeadingToolFailure -or $script:Errors.Count -gt 0) {
+        if ($script:EditCount -gt 0) {
+            return [pscustomobject]@{
+                Status = 'PARTIAL_AFTER_EDIT'
+                ExitCode = 2
+                StopReason = 'MODEL_COMPLETED'
+                ErrorCode = $null
+            }
+        }
+        return [pscustomobject]@{
+            Status = 'PARTIAL'
+            ExitCode = 2
+            StopReason = 'MODEL_COMPLETED'
+            ErrorCode = $null
+        }
+    }
+    if ($script:Mode -eq 'ReadOnly') {
+        if (Test-ReadOnlyTerminalSuccess) {
+            return [pscustomobject]@{
+                Status = 'PASS'
+                ExitCode = 0
+                StopReason = 'MODEL_COMPLETED'
+                ErrorCode = $null
+            }
+        }
+    }
+    elseif (Test-WriterTerminalSuccess) {
+        return [pscustomobject]@{
+            Status = 'PASS'
+            ExitCode = 0
+            StopReason = 'MODEL_COMPLETED'
+            ErrorCode = $null
+        }
+    }
+    if ($script:EditCount -gt 0) {
+        return [pscustomobject]@{
+            Status = 'PARTIAL_AFTER_EDIT'
+            ExitCode = 2
+            StopReason = 'MODEL_COMPLETED'
+            ErrorCode = $null
+        }
+    }
+    return [pscustomobject]@{
+        Status = 'PARTIAL'
+        ExitCode = 2
+        StopReason = 'MODEL_COMPLETED'
+        ErrorCode = $null
     }
 }
 
@@ -692,19 +822,102 @@ function Get-EnvValue {
     return $environmentValue
 }
 
-function Write-AtomicText {
+function Test-PathMatchesInjectionSuffix {
     param(
         [string]$Path,
-        [string]$Text
+        [string]$Injected
     )
+    if ([string]::IsNullOrWhiteSpace($Injected)) {
+        return $false
+    }
+    $normInjected = ([string]$Injected).Replace('/', '\').Trim().TrimStart('\')
+    $normPath = ([string]$Path).Replace('/', '\')
+    return (
+        $normPath.Equals($normInjected, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $normPath.EndsWith('\' + $normInjected, [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Get-Sha256Bytes {
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes) {
+        $Bytes = [byte[]]@()
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($Bytes)
+        return ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-MissingAncestorDirectories {
+    param(
+        [string]$FileFullPath,
+        [string]$RepositoryRoot
+    )
+    $missing = New-Object System.Collections.Generic.List[string]
+    $rootFull = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
+    $dir = Split-Path -Parent $FileFullPath
+    while (
+        -not [string]::IsNullOrWhiteSpace($dir) -and
+        $dir.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not (Test-Path -LiteralPath $dir)
+    ) {
+        [void]$missing.Insert(0, $dir)
+        $parent = Split-Path -Parent $dir
+        if ($parent -eq $dir) {
+            break
+        }
+        $dir = $parent
+    }
+    return @($missing.ToArray())
+}
+
+function Remove-EmptyTrackedDirectories {
+    param([object[]]$DirectoriesDeepestFirst)
+    foreach ($dir in $DirectoriesDeepestFirst) {
+        if ([string]::IsNullOrWhiteSpace([string]$dir)) {
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+            continue
+        }
+        $remaining = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) {
+            Remove-Item -LiteralPath $dir -Force -ErrorAction Stop
+        }
+    }
+}
+
+function Write-AtomicBytes {
+    param(
+        [string]$Path,
+        [byte[]]$Bytes,
+        [string]$InjectionEnvName = 'DEEPSEEK_RUNNER_TEST_FAIL_WRITE'
+    )
+    if ($null -eq $Bytes) {
+        $Bytes = [byte[]]@()
+    }
+    # TestMode-only fault injection for atomic multi-file write/rollback contracts.
+    if ($TestMode -and -not [string]::IsNullOrWhiteSpace($InjectionEnvName)) {
+        $injected = [System.Environment]::GetEnvironmentVariable($InjectionEnvName)
+        if (Test-PathMatchesInjectionSuffix -Path $Path -Injected $injected) {
+            if ($InjectionEnvName -eq 'DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK') {
+                throw 'TEST_INJECTED_ROLLBACK_FAILURE'
+            }
+            throw 'TEST_INJECTED_WRITE_FAILURE'
+        }
+    }
     $directory = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $directory)) {
         [System.IO.Directory]::CreateDirectory($directory) | Out-Null
     }
     $temp = Join-Path $directory ('.runner-write-' + [guid]::NewGuid().ToString('N') + '.tmp')
-    $encoding = New-Object System.Text.UTF8Encoding($false)
     try {
-        [System.IO.File]::WriteAllText($temp, $Text, $encoding)
+        [System.IO.File]::WriteAllBytes($temp, $Bytes)
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
             try {
                 [System.IO.File]::Replace($temp, $Path, $null, $true)
@@ -722,6 +935,19 @@ function Write-AtomicText {
             Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
         }
     }
+}
+
+function Write-AtomicText {
+    param(
+        [string]$Path,
+        [string]$Text
+    )
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    if ($null -eq $Text) {
+        $Text = ''
+    }
+    $bytes = $encoding.GetBytes($Text)
+    Write-AtomicBytes -Path $Path -Bytes $bytes -InjectionEnvName 'DEEPSEEK_RUNNER_TEST_FAIL_WRITE'
 }
 
 function Get-ToolArgument {
@@ -992,163 +1218,368 @@ function Apply-UnifiedPatch {
     if ($lines.Count -lt 3 -or $lines[0] -ne '*** Begin Patch' -or $lines[$lines.Count - 1] -ne '*** End Patch') {
         return (New-ToolFailure 'PATCH_FORMAT_INVALID')
     }
-    $updateIndexes = @()
-    $addIndexes = @()
+    # Collect every file marker. Multi-file batches are allowed: all plans are
+    # fully prevalidated (path, preimage/hash, parse, postimage) before any durable write.
+    $markers = New-Object System.Collections.Generic.List[object]
     for ($i = 1; $i -lt ($lines.Count - 1); $i++) {
         if ($lines[$i].StartsWith('*** Update File: ')) {
-            $updateIndexes += $i
+            [void]$markers.Add([pscustomobject]@{ index = $i; kind = 'Update'; raw = $lines[$i] })
         }
         elseif ($lines[$i].StartsWith('*** Add File: ')) {
-            $addIndexes += $i
+            [void]$markers.Add([pscustomobject]@{ index = $i; kind = 'Add'; raw = $lines[$i] })
         }
     }
-    if (($updateIndexes.Count + $addIndexes.Count) -ne 1) {
-        return (New-ToolFailure 'PATCH_SINGLE_FILE_ONLY' "update_markers=$($updateIndexes.Count) add_markers=$($addIndexes.Count)")
-    }
-    $marker = if ($updateIndexes.Count -eq 1) { $lines[$updateIndexes[0]] } else { $lines[$addIndexes[0]] }
-    $relative = Get-NormalizedRelativePath ($marker.Substring($marker.IndexOf(':') + 1).Trim())
-    if (-not (Test-WriteAllowedRelativePath $relative)) {
-        return (New-ToolFailure 'PATH_NOT_WRITE_ALLOWLISTED')
+    if ($markers.Count -eq 0) {
+        return (New-ToolFailure 'PATCH_SINGLE_FILE_ONLY' 'update_markers=0 add_markers=0')
     }
     if (-not (Test-ExpectedFingerprint)) {
         return (New-ToolFailure 'WORKSPACE_FINGERPRINT_MISMATCH')
     }
     try {
-        $full = Get-FullPathFromRelative $relative
-        if ($addIndexes.Count -eq 1) {
-            # Validate Add File content lines and markers before any freshness check
-            $addStart = $addIndexes[0] + 1
-            $addLines = New-Object System.Collections.Generic.List[string]
-            for ($j = $addStart; $j -lt ($lines.Count - 1); $j++) {
-                $addLine = $lines[$j]
-                if ($addLine.StartsWith('***')) {
-                    return (New-ToolFailure 'PATCH_ADD_MARKER_INVALID')
-                }
-                if (-not $addLine.StartsWith('+')) {
-                    return (New-ToolFailure 'PATCH_ADD_LINE_PREFIX_REQUIRED')
-                }
-                # Strip exactly the patch prefix. A literal leading plus is encoded as "++".
-                $addLine = $addLine.Substring(1)
-                [void]$addLines.Add($addLine)
-            }
-            # Fresh-current-byte write gate for Add File (after content validation)
-            if ($null -ne $script:PriorFreshTokens) {
-                if (-not $script:PriorFreshTokens.ContainsKey($relative) -or $script:PriorFreshTokens[$relative] -ne 'MISSING') {
-                    return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' must be confirmed missing via read_file in a prior turn before Add File.")
-                }
-            }
-            if (Test-Path -LiteralPath $full) {
-                return (New-ToolFailure 'PATCH_TARGET_EXISTS')
-            }
-            $newText = [string]::Join([Environment]::NewLine, @($addLines))
-            if (-not $DryRunOnly) {
-                Write-AtomicText -Path $full -Text $newText
-                $script:EditCount++
-                $script:PatchCount++
-                Set-ChangedFileState $relative
-                $script:ChangedFileHashes[$relative] = Get-FileSha256 $full
-                $script:FreshReadTokens.Remove($relative)
-            }
-            return [pscustomobject]@{
-                ok = $true
-                result = [ordered]@{ path = $relative; changed = (-not $DryRunOnly); dry_run = $DryRunOnly }
-                error_code = $null
-                error_detail = $null
-                changed = (-not $DryRunOnly)
-            }
-        }
-        # Update File path
-        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
-            return (New-ToolFailure 'FILE_NOT_FOUND')
-        }
-        $currentText = [System.IO.File]::ReadAllText($full)
+        $plans = New-Object System.Collections.Generic.List[object]
+        $seenPaths = @{}
         $crlf = ([string][char]13) + ([string][char]10)
-        $normalized = $currentText.Replace($crlf, ([string][char]10)).Replace([char]13, [char]10)
-        $cursor = $updateIndexes[0] + 1
-        $hunks = New-Object System.Collections.Generic.List[object]
-        $oldLines = New-Object System.Collections.Generic.List[string]
-        $newLines = New-Object System.Collections.Generic.List[string]
-        $flush = {
-            if ($oldLines.Count -gt 0) {
-                [void]$hunks.Add([pscustomobject]@{
-                    old = [string]::Join([char]10, @($oldLines))
-                    new = [string]::Join([char]10, @($newLines))
-                })
+        for ($m = 0; $m -lt $markers.Count; $m++) {
+            $marker = $markers[$m]
+            $bodyStart = $marker.index + 1
+            $bodyEnd = if ($m -lt ($markers.Count - 1)) { $markers[$m + 1].index } else { ($lines.Count - 1) }
+            $relative = Get-NormalizedRelativePath ($marker.raw.Substring($marker.raw.IndexOf(':') + 1).Trim())
+            if (-not (Test-WriteAllowedRelativePath $relative)) {
+                return (New-ToolFailure 'PATH_NOT_WRITE_ALLOWLISTED')
             }
-            $oldLines.Clear()
-            $newLines.Clear()
-        }
-        for ($j = $cursor; $j -lt ($lines.Count - 1); $j++) {
-            $line = $lines[$j]
-            if ($line.StartsWith('@@')) {
-                & $flush
+            if ($seenPaths.ContainsKey($relative)) {
+                return (New-ToolFailure 'PATCH_DUPLICATE_PATH' $relative)
+            }
+            $seenPaths[$relative] = $true
+            $full = Get-FullPathFromRelative $relative
+            if ($marker.kind -eq 'Add') {
+                $addLines = New-Object System.Collections.Generic.List[string]
+                for ($j = $bodyStart; $j -lt $bodyEnd; $j++) {
+                    $addLine = $lines[$j]
+                    if ($addLine.StartsWith('***')) {
+                        return (New-ToolFailure 'PATCH_ADD_MARKER_INVALID')
+                    }
+                    if (-not $addLine.StartsWith('+')) {
+                        return (New-ToolFailure 'PATCH_ADD_LINE_PREFIX_REQUIRED')
+                    }
+                    # Strip exactly the patch prefix. A literal leading plus is encoded as "++".
+                    [void]$addLines.Add($addLine.Substring(1))
+                }
+                if ($null -ne $script:PriorFreshTokens) {
+                    if (-not $script:PriorFreshTokens.ContainsKey($relative) -or $script:PriorFreshTokens[$relative] -ne 'MISSING') {
+                        return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' must be confirmed missing via read_file in a prior turn before Add File.")
+                    }
+                }
+                if (Test-Path -LiteralPath $full) {
+                    return (New-ToolFailure 'PATCH_TARGET_EXISTS')
+                }
+                $newText = [string]::Join([Environment]::NewLine, @($addLines))
+                $createdDirs = @(Get-MissingAncestorDirectories -FileFullPath $full -RepositoryRoot $script:RepositoryRoot)
+                [void]$plans.Add([pscustomobject]@{
+                    relative = $relative
+                    full = $full
+                    kind = 'Add'
+                    existed = $false
+                    originalBytes = $null
+                    originalSha256 = $null
+                    createdDirs = $createdDirs
+                    newText = $newText
+                })
                 continue
             }
-            if ($line.StartsWith('***')) {
-                return (New-ToolFailure 'PATCH_UPDATE_MARKER_INVALID')
+            # Update File path
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+                return (New-ToolFailure 'FILE_NOT_FOUND')
             }
-            if ($line.StartsWith(' ')) {
-                [void]$oldLines.Add($line.Substring(1))
-                [void]$newLines.Add($line.Substring(1))
+            $originalBytes = [System.IO.File]::ReadAllBytes($full)
+            $originalSha256 = Get-Sha256Bytes $originalBytes
+            $currentText = [System.IO.File]::ReadAllText($full)
+            $normalized = $currentText.Replace($crlf, ([string][char]10)).Replace([char]13, [char]10)
+            $hunks = New-Object System.Collections.Generic.List[object]
+            $oldLines = New-Object System.Collections.Generic.List[string]
+            $newLines = New-Object System.Collections.Generic.List[string]
+            $flush = {
+                if ($oldLines.Count -gt 0) {
+                    [void]$hunks.Add([pscustomobject]@{
+                        old = [string]::Join([char]10, @($oldLines))
+                        new = [string]::Join([char]10, @($newLines))
+                    })
+                }
+                $oldLines.Clear()
+                $newLines.Clear()
             }
-            elseif ($line.StartsWith('-')) {
-                [void]$oldLines.Add($line.Substring(1))
+            for ($j = $bodyStart; $j -lt $bodyEnd; $j++) {
+                $line = $lines[$j]
+                if ($line.StartsWith('@@')) {
+                    & $flush
+                    continue
+                }
+                if ($line.StartsWith('***')) {
+                    return (New-ToolFailure 'PATCH_UPDATE_MARKER_INVALID')
+                }
+                if ($line.StartsWith(' ')) {
+                    [void]$oldLines.Add($line.Substring(1))
+                    [void]$newLines.Add($line.Substring(1))
+                }
+                elseif ($line.StartsWith('-')) {
+                    [void]$oldLines.Add($line.Substring(1))
+                }
+                elseif ($line.StartsWith('+')) {
+                    [void]$newLines.Add($line.Substring(1))
+                }
+                else {
+                    $category = if ([string]::IsNullOrEmpty($line)) { 'empty' } else { 'prefix=' + $line[0] }
+                    return (New-ToolFailure 'PATCH_HUNK_LINE_INVALID' "line=$($j+1) $category")
+                }
             }
-            elseif ($line.StartsWith('+')) {
-                [void]$newLines.Add($line.Substring(1))
+            & $flush
+            if ($hunks.Count -eq 0) {
+                return (New-ToolFailure 'PATCH_HUNK_MISSING')
             }
-            else {
-                $category = if ([string]::IsNullOrEmpty($line)) { 'empty' } else { 'prefix=' + $line[0] }
-                return (New-ToolFailure 'PATCH_HUNK_LINE_INVALID' "line=$($j+1) $category")
+            # Fresh-current-byte / preimage gate after parse, before postimage materialization.
+            if ($null -ne $script:PriorFreshTokens) {
+                if (-not $script:PriorFreshTokens.ContainsKey($relative)) {
+                    return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' must be read with read_file in a prior turn before writing.")
+                }
+                if ($script:PriorFreshTokens[$relative] -eq 'MISSING') {
+                    return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' was confirmed missing; it must exist for Update File. Use read_file to refresh.")
+                }
+                if ($originalSha256 -ne $script:PriorFreshTokens[$relative]) {
+                    return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' has changed since last read. Use read_file to refresh before writing.")
+                }
             }
+            foreach ($hunk in $hunks) {
+                $first = $normalized.IndexOf($hunk.old, [System.StringComparison]::Ordinal)
+                if ($first -lt 0) {
+                    return (New-ToolFailure 'PATCH_CONTEXT_NOT_FOUND')
+                }
+                $second = $normalized.IndexOf($hunk.old, $first + $hunk.old.Length, [System.StringComparison]::Ordinal)
+                if ($second -ge 0) {
+                    return (New-ToolFailure 'PATCH_CONTEXT_NOT_UNIQUE')
+                }
+                $normalized = $normalized.Substring(0, $first) + $hunk.new + $normalized.Substring($first + $hunk.old.Length)
+            }
+            $updated = if ($currentText.Contains($crlf)) { $normalized.Replace(([string][char]10), $crlf) } else { $normalized }
+            [void]$plans.Add([pscustomobject]@{
+                relative = $relative
+                full = $full
+                kind = 'Update'
+                existed = $true
+                originalBytes = $originalBytes
+                originalSha256 = $originalSha256
+                createdDirs = @()
+                newText = $updated
+            })
         }
-        & $flush
-        if ($hunks.Count -eq 0) {
-            return (New-ToolFailure 'PATCH_HUNK_MISSING')
-        }
-        # Fresh-current-byte write gate for Update File (after hunk validation, before hunk application)
-        if ($null -ne $script:PriorFreshTokens) {
-            if (-not $script:PriorFreshTokens.ContainsKey($relative)) {
-                return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' must be read with read_file in a prior turn before writing.")
-            }
-            if ($script:PriorFreshTokens[$relative] -eq 'MISSING') {
-                return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' was confirmed missing; it must exist for Update File. Use read_file to refresh.")
-            }
-            $currentHash = Get-FileSha256 $full
-            if ($currentHash -ne $script:PriorFreshTokens[$relative]) {
-                return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' has changed since last read. Use read_file to refresh before writing.")
-            }
-        }
-        foreach ($hunk in $hunks) {
-            $first = $normalized.IndexOf($hunk.old, [System.StringComparison]::Ordinal)
-            if ($first -lt 0) {
-                return (New-ToolFailure 'PATCH_CONTEXT_NOT_FOUND')
-            }
-            $second = $normalized.IndexOf($hunk.old, $first + $hunk.old.Length, [System.StringComparison]::Ordinal)
-            if ($second -ge 0) {
-                return (New-ToolFailure 'PATCH_CONTEXT_NOT_UNIQUE')
-            }
-            $normalized = $normalized.Substring(0, $first) + $hunk.new + $normalized.Substring($first + $hunk.old.Length)
-        }
-        $updated = if ($currentText.Contains($crlf)) { $normalized.Replace(([string][char]10), $crlf) } else { $normalized }
+
         if ($DryRunOnly) {
+            $dryPaths = @($plans | ForEach-Object { $_.relative })
+            $dryResult = [ordered]@{
+                path = $dryPaths[0]
+                paths = $dryPaths
+                changed = $false
+                dry_run = $true
+                batch_size = $plans.Count
+            }
             return [pscustomobject]@{
                 ok = $true
-                result = [ordered]@{ path = $relative; changed = $false; dry_run = $true }
+                result = $dryResult
                 error_code = $null
                 error_detail = $null
                 changed = $false
             }
         }
-        Write-AtomicText -Path $full -Text $updated
-        $script:EditCount++
-        $script:PatchCount++
-        Set-ChangedFileState $relative
-        $script:ChangedFileHashes[$relative] = Get-FileSha256 $full
-        $script:FreshReadTokens.Remove($relative)
+
+        # Close TOCTOU: re-validate workspace fingerprint and every plan preimage immediately before first durable write.
+        if (-not (Test-ExpectedFingerprint)) {
+            return (New-ToolFailure 'WORKSPACE_FINGERPRINT_MISMATCH')
+        }
+        foreach ($plan in $plans) {
+            if ($plan.kind -eq 'Add') {
+                if (Test-Path -LiteralPath $plan.full) {
+                    return (New-ToolFailure 'PATCH_TARGET_EXISTS' $plan.relative)
+                }
+            }
+            else {
+                if (-not (Test-Path -LiteralPath $plan.full -PathType Leaf)) {
+                    return (New-ToolFailure 'FILE_NOT_FOUND' $plan.relative)
+                }
+                $liveHash = Get-FileSha256 $plan.full
+                if ($liveHash -ne $plan.originalSha256) {
+                    return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$($plan.relative)' has changed since plan validation. Use read_file to refresh before writing.")
+                }
+            }
+        }
+
+        # Durable write phase: only after every plan revalidated. Roll back whole batch on failure.
+        # Track each plan before its first side effect so a failing Add/write is still rolled back.
+        $applied = New-Object System.Collections.Generic.List[object]
+        try {
+            foreach ($plan in $plans) {
+                if ($plan.kind -eq 'Add') {
+                    # Snapshot missing ancestors before any create so rollback can prune only batch-created dirs.
+                    $plan.createdDirs = @(Get-MissingAncestorDirectories -FileFullPath $plan.full -RepositoryRoot $script:RepositoryRoot)
+                }
+                else {
+                    $plan.createdDirs = @()
+                }
+                [void]$applied.Add($plan)
+                if ($plan.kind -eq 'Add') {
+                    foreach ($dir in @($plan.createdDirs)) {
+                        if (-not (Test-Path -LiteralPath $dir)) {
+                            [System.IO.Directory]::CreateDirectory($dir) | Out-Null
+                        }
+                    }
+                }
+                Write-AtomicText -Path $plan.full -Text $plan.newText
+            }
+        }
+        catch {
+            $writeError = $_
+            # Disable write injection during rollback; rollback has its own injection env.
+            $savedWriteInject = $null
+            if ($TestMode) {
+                $savedWriteInject = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+                [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $null)
+            }
+            $rollbackFailures = New-Object System.Collections.Generic.List[string]
+            try {
+                for ($r = $applied.Count - 1; $r -ge 0; $r--) {
+                    $rolled = $applied[$r]
+                    try {
+                        if ($rolled.existed) {
+                            Write-AtomicBytes -Path $rolled.full -Bytes $rolled.originalBytes -InjectionEnvName 'DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK'
+                            $restoredHash = Get-FileSha256 $rolled.full
+                            if ($restoredHash -ne $rolled.originalSha256) {
+                                throw ('ROLLBACK_HASH_MISMATCH:' + $rolled.relative)
+                            }
+                        }
+                        else {
+                            if ($TestMode) {
+                                $rbInject = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK')
+                                if (Test-PathMatchesInjectionSuffix -Path $rolled.full -Injected $rbInject) {
+                                    throw 'TEST_INJECTED_ROLLBACK_FAILURE'
+                                }
+                            }
+                            if (Test-Path -LiteralPath $rolled.full -PathType Leaf) {
+                                Remove-Item -LiteralPath $rolled.full -Force -ErrorAction Stop
+                            }
+                            $deepestFirst = @($rolled.createdDirs)
+                            if ($deepestFirst.Count -gt 0) {
+                                [Array]::Reverse($deepestFirst)
+                                Remove-EmptyTrackedDirectories -DirectoriesDeepestFirst $deepestFirst
+                            }
+                        }
+                    }
+                    catch {
+                        $detail = [string]$_.Exception.Message
+                        if ([string]::IsNullOrWhiteSpace($detail)) {
+                            $detail = [string]$_
+                        }
+                        [void]$rollbackFailures.Add(($rolled.relative + ':' + $detail))
+                    }
+                }
+            }
+            finally {
+                if ($TestMode) {
+                    [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $savedWriteInject)
+                }
+            }
+
+            # Divergence is measured from actual filesystem vs plan preimage, not from rollback bookkeeping.
+            $divergentPaths = New-Object System.Collections.Generic.List[string]
+            $divergentMarkers = New-Object System.Collections.Generic.List[string]
+            foreach ($appliedPlan in $applied) {
+                $isDivergent = $false
+                $marker = $null
+                if ($appliedPlan.existed) {
+                    if (-not (Test-Path -LiteralPath $appliedPlan.full -PathType Leaf)) {
+                        $isDivergent = $true
+                        $marker = 'MISSING'
+                    }
+                    else {
+                        $liveHash = Get-FileSha256 $appliedPlan.full
+                        if ($liveHash -ne $appliedPlan.originalSha256) {
+                            $isDivergent = $true
+                            $marker = $liveHash
+                        }
+                    }
+                }
+                else {
+                    $fileStillExists = (Test-Path -LiteralPath $appliedPlan.full -PathType Leaf)
+                    $residueDirs = @()
+                    foreach ($dir in @($appliedPlan.createdDirs)) {
+                        if (-not [string]::IsNullOrWhiteSpace([string]$dir) -and (Test-Path -LiteralPath $dir)) {
+                            $residueDirs += [string]$dir
+                        }
+                    }
+                    if ($fileStillExists -or $residueDirs.Count -gt 0) {
+                        $isDivergent = $true
+                        if ($fileStillExists) {
+                            $marker = Get-FileSha256 $appliedPlan.full
+                        }
+                        else {
+                            $marker = 'DIRECTORY_RESIDUE'
+                        }
+                    }
+                }
+                if ($isDivergent) {
+                    [void]$divergentPaths.Add($appliedPlan.relative)
+                    [void]$divergentMarkers.Add(([string]$appliedPlan.relative + '=' + [string]$marker))
+                    $script:EditCount++
+                    $script:PatchCount++
+                    $script:ChangedPaths[$appliedPlan.relative] = $true
+                    $script:ChangedFileHashes[$appliedPlan.relative] = $marker
+                    $script:FreshReadTokens.Remove($appliedPlan.relative)
+                }
+            }
+            if ($divergentPaths.Count -gt 0) {
+                $snapshot = Get-WorkspaceSnapshot
+                $script:ExpectedFingerprint = $snapshot.fingerprint
+                $rbDetail = 'write_error=' + (Redact-Text ([string]$writeError.Exception.Message)) + '; rollback_failures=' + ([string]::Join('|', @($rollbackFailures))) + '; divergent=' + ([string]::Join(',', @($divergentMarkers)))
+                return [pscustomobject]@{
+                    ok = $false
+                    result = [ordered]@{
+                        divergent_paths = @($divergentPaths.ToArray())
+                        rollback_failures = @($rollbackFailures.ToArray())
+                    }
+                    error_code = 'PATCH_BATCH_ROLLBACK_FAILED'
+                    error_detail = $rbDetail
+                    changed = $true
+                }
+            }
+            return (New-PathAwareToolFailure 'PATCH_BATCH_WRITE_FAILED' $writeError)
+        }
+
+        $fileResults = New-Object System.Collections.Generic.List[object]
+        foreach ($plan in $plans) {
+            $script:EditCount++
+            $script:PatchCount++
+            Set-ChangedFileState $plan.relative
+            $hash = Get-FileSha256 $plan.full
+            $script:ChangedFileHashes[$plan.relative] = $hash
+            $script:FreshReadTokens.Remove($plan.relative)
+            [void]$fileResults.Add([ordered]@{
+                path = $plan.relative
+                changed = $true
+                sha256 = $hash
+            })
+        }
+        $paths = @($plans | ForEach-Object { $_.relative })
+        $result = [ordered]@{
+            path = $paths[0]
+            paths = $paths
+            changed = $true
+            dry_run = $false
+            batch_size = $plans.Count
+            files = @($fileResults.ToArray())
+        }
+        if ($plans.Count -eq 1) {
+            $result.sha256 = $script:ChangedFileHashes[$paths[0]]
+        }
         return [pscustomobject]@{
             ok = $true
-            result = [ordered]@{ path = $relative; changed = $true; dry_run = $false; sha256 = $script:ChangedFileHashes[$relative] }
+            result = $result
             error_code = $null
             error_detail = $null
             changed = $true
@@ -1239,7 +1670,7 @@ function Get-ToolDefinitions {
                     type = 'function'
                     function = [ordered]@{
                         name = 'apply_patch'
-                        description = 'Apply exactly one file from the write allowlist using Codex patch format: *** Begin Patch, then *** Update File: path or *** Add File: path, patch lines, and *** End Patch. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
+                        description = 'Apply one or more files from the write allowlist in one atomic batch using Codex patch format: *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, patch lines, and *** End Patch. Every file is validated (path, preimage/hash, parse, postimage) before any durable write; the whole batch rolls back on write failure. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
                         parameters = [ordered]@{
                             type = 'object'
                             properties = [ordered]@{ patch = [ordered]@{ type = 'string' } }
@@ -1312,7 +1743,7 @@ function Get-ToolDefinitions {
                 type = 'function'
                 function = [ordered]@{
                     name = 'apply_patch'
-                    description = 'Apply exactly one file from the write allowlist using Codex patch format: *** Begin Patch, then *** Update File: path or *** Add File: path, patch lines, and *** End Patch. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
+                    description = 'Apply one or more files from the write allowlist in one atomic batch using Codex patch format: *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, patch lines, and *** End Patch. Every file is validated (path, preimage/hash, parse, postimage) before any durable write; the whole batch rolls back on write failure. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
                     parameters = [ordered]@{
                         type = 'object'
                         properties = [ordered]@{ patch = [ordered]@{ type = 'string' } }
@@ -1350,13 +1781,13 @@ function New-InitialSystemMessage {
     ))
     $base = 'You are the single sequential workspace Writer. One model response is one turn. Use only the provided tools; there is no shell, command runner, commit, stage, push, dependency installation, or recursive runner. Readable paths are: ' + $readPathText + '. Writable paths are: ' + $writePathText + '. Read-only reference paths must never be edited. Batch independent reads and searches in the same turn and do not reread unchanged files. Read before editing, make minimal changes, begin editing once the required evidence is sufficient, and stop with a concise completion report only after the requested work is actually complete.'
     if ($strategy -eq 'ReplaceText') {
-        $base += ' Write strategy: ReplaceText. Only replace_text is available for writes. Replace exactly one occurrence in one file; use shortest unique context; do not copy whole large files. One write per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
+        $base += ' Write strategy: ReplaceText. Only replace_text is available for writes. Replace exactly one occurrence in one file; use shortest unique context; do not copy whole large files. One replace_text call per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
     }
     elseif ($strategy -eq 'ApplyPatch') {
-        $base += ' Write strategy: ApplyPatch. Only apply_patch is available for writes. apply_patch accepts one file only and requires Codex markers *** Begin Patch, then *** Update File: path or *** Add File: path, then *** End Patch; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One write per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
+        $base += ' Write strategy: ApplyPatch. Only apply_patch is available for writes. apply_patch accepts one or more files in one atomic batch and requires Codex markers *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, then *** End Patch; every file is validated before any durable write and the whole batch rolls back on write failure; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One apply_patch tool call per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
     }
     else {
-        $base += ' apply_patch accepts one file only and requires Codex markers *** Begin Patch, then *** Update File: path or *** Add File: path, then *** End Patch; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One write per turn; reread a changed file before another edit; use shortest unique context; do not copy whole large files; preserve valid JSON escaping for backslashes and prefer forward slashes for path arguments. A tool failure stops the turn and all later writes.'
+        $base += ' apply_patch accepts one or more files in one atomic batch and requires Codex markers *** Begin Patch, then one or more *** Update File: path or *** Add File: path sections, then *** End Patch; every file is validated before any durable write and the whole batch rolls back on write failure; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One write tool call per turn; reread a changed file before another edit; use shortest unique context; do not copy whole large files; preserve valid JSON escaping for backslashes and prefer forward slashes for path arguments. A tool failure stops the turn and all later writes.'
     }
     return $base
 }
@@ -2292,7 +2723,7 @@ try {
                 break
             }
             Add-AssistantMessage $message
-            $turnEditStart = $script:EditCount
+            $turnProgressStart = Get-ProgressMetric
             if ($toolCalls.Count -eq 0) {
                 if ($finishReason -eq 'length') {
                     if ($script:EditCount -eq 0) {
@@ -2307,27 +2738,13 @@ try {
                 }
                 if ($null -ne $message.content -and -not [string]::IsNullOrWhiteSpace([string]$message.content)) {
                     $script:FinalResponse = [string]$message.content
-                    if ($Mode -eq 'Writer' -and $script:EditCount -eq 0) {
-                        Add-RunnerError 'WRITER_COMPLETED_WITHOUT_EDIT'
-                        $script:Status = 'PARTIAL'
-                        $script:ExitCode = 2
-                        $script:StopReason = 'WRITER_COMPLETED_WITHOUT_EDIT'
-                        break
+                    $completion = Resolve-TerminalCompletionState
+                    if (-not [string]::IsNullOrWhiteSpace([string]$completion.ErrorCode)) {
+                        Add-RunnerError ([string]$completion.ErrorCode)
                     }
-                    if ($script:LeadingToolFailure -or $script:Errors.Count -gt 0) {
-                        if ($script:EditCount -gt 0) {
-                            $script:Status = 'PARTIAL_AFTER_EDIT'
-                        }
-                        else {
-                            $script:Status = 'PARTIAL'
-                        }
-                        $script:ExitCode = 2
-                    }
-                    else {
-                        $script:Status = 'PASS'
-                        $script:ExitCode = 0
-                    }
-                    $script:StopReason = 'MODEL_COMPLETED'
+                    $script:Status = [string]$completion.Status
+                    $script:ExitCode = [int]$completion.ExitCode
+                    $script:StopReason = [string]$completion.StopReason
                     if (-not $DirectResponse) {
                         # Checkpoint is required for non-direct runs that reached model completion.
                         # A write/integrity/redaction failure must not leave PASS/exit 0.
@@ -2596,7 +3013,9 @@ try {
             if ($batchFailed) {
                 break
             }
-            if ($script:EditCount -eq $turnEditStart) {
+            $turnProgressEnd = Get-ProgressMetric
+            $madeProgress = Test-HasPositiveProgress -Before $turnProgressStart -After $turnProgressEnd
+            if (-not $madeProgress) {
                 # C: do not increment no-progress counter for a fresh-read recovery turn
                 if (-not $script:FreshReadRecoveryTurn) {
                     $script:NoProgressRounds++
@@ -2634,17 +3053,14 @@ try {
                 }
                 else {
                     # Post-edit no-progress is Writer-only (ReadOnly never edits).
+                    # Two consecutive successful-tool turns with no positive progress end as PARTIAL.
                     if ($Mode -eq 'Writer') {
                         if ($script:NoProgressRounds -ge 2) {
-                            if ($script:NoProgressRounds -eq 2) {
-                                Add-RunnerWarning 'POST_EDIT_NO_PROGRESS_WARNING' 'Edits exist but recent turns produced no progress. Perform only necessary verification and return a completion report.'
-                                $script:Messages += [ordered]@{
-                                    role    = 'system'
-                                    content = 'Edits have been made. If requested edits are complete, minimally verify and report; otherwise continue only the missing edit after required fresh reads.'
-                                }
+                            Add-RunnerWarning 'POST_EDIT_NO_PROGRESS_WARNING' 'Edits exist but recent turns produced no progress. Perform only necessary verification and return a completion report.'
+                            $script:Messages += [ordered]@{
+                                role    = 'system'
+                                content = 'Edits have been made. If requested edits are complete, minimally verify and report; otherwise continue only the missing edit after required fresh reads.'
                             }
-                        }
-                        if ($script:NoProgressRounds -ge 4) {
                             Add-RunnerError 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED' 'No progress in consecutive turns after edits were made.'
                             $script:StopReason = 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED'
                             break
@@ -2654,6 +3070,7 @@ try {
             }
             else {
                 $script:NoProgressRounds = 0
+                $script:FreshReadRecoveryTurn = $false
                 if ($Mode -eq 'Writer' -and ($script:ConvergenceMode -eq 'forced-write' -or $script:ConvergenceMode -eq 'write-only')) {
                     $script:ConvergenceMode = 'normal'
                 }
