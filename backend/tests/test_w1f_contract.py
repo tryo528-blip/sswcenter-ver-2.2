@@ -41,6 +41,8 @@ POSTCHECK = REPO_ROOT / "backend" / "app" / "db" / "postcheck_w1a_vs1.py"
 W1C_REVISION = "20260730_0010_w1c_certification_ledgers"
 W1D_REVISION = "20260730_0011_w1d_recipient_contract"
 W1E_REVISION = "20260801_0012_w1e_care_assignment"
+CONTINUING_EDUCATION_REVISION = "20260802_0013_staff_continuing_education"
+RECIPIENT_PLAN_NOTIFICATION_REVISION = "20260803_0014_recipient_plan_notification"
 
 UNSUPPORTED_REVISION_MARKER = "Unsupported backup Alembic revision"
 ARTIFACT_STAGE_MARKER = "Backup dump file is missing"
@@ -166,8 +168,44 @@ def test_w1f_restore_drill_accepts_w1e_manifest_revision() -> None:
         )
 
 
+def test_w1f_restore_drill_accepts_continuing_education_manifest_revision() -> None:
+    """Node 2a: restore-drill must accept the 0013 revision before artifact checks."""
+    returncode, output = _run_restore_drill_manifest_probe(CONTINUING_EDUCATION_REVISION)
+    if returncode == 0:
+        _fail("W1F_RESTORE_0013_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
+    if UNSUPPORTED_REVISION_MARKER in output:
+        _fail(
+            "W1F_RESTORE_0013_REVISION_REJECTED: restore-drill rejects "
+            + CONTINUING_EDUCATION_REVISION
+            + " before artifact validation"
+        )
+    if ARTIFACT_STAGE_MARKER not in output:
+        _fail(
+            "W1F_RESTORE_0013_ARTIFACT_STAGE_NOT_REACHED: restore-drill did not reach "
+            "artifact validation for " + CONTINUING_EDUCATION_REVISION
+        )
+
+
+def test_w1f_restore_drill_accepts_recipient_plan_notification_manifest_revision() -> None:
+    """Node 2b: restore-drill must accept the 0014 revision before artifact checks."""
+    returncode, output = _run_restore_drill_manifest_probe(RECIPIENT_PLAN_NOTIFICATION_REVISION)
+    if returncode == 0:
+        _fail("W1F_RESTORE_0014_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
+    if UNSUPPORTED_REVISION_MARKER in output:
+        _fail(
+            "W1F_RESTORE_0014_REVISION_REJECTED: restore-drill rejects "
+            + RECIPIENT_PLAN_NOTIFICATION_REVISION
+            + " before artifact validation"
+        )
+    if ARTIFACT_STAGE_MARKER not in output:
+        _fail(
+            "W1F_RESTORE_0014_ARTIFACT_STAGE_NOT_REACHED: restore-drill did not reach "
+            "artifact validation for " + RECIPIENT_PLAN_NOTIFICATION_REVISION
+        )
+
+
 def test_w1f_postcheck_declares_w1d_w1e_revision_contract() -> None:
-    """Node 3: postcheck must supply exact W1D/W1E verifiers and success markers."""
+    """Node 3: postcheck must supply exact W1D/W1E/0013/0014 verifiers and success markers."""
     if not POSTCHECK.is_file():
         _fail("W1F_POSTCHECK_MODULE_MISSING: backend/app/db/postcheck_w1a_vs1.py absent")
     source = POSTCHECK.read_text(encoding="utf-8")
@@ -191,6 +229,13 @@ def test_w1f_postcheck_declares_w1d_w1e_revision_contract() -> None:
         ),
         "W1F_POSTCHECK_W1E_TRIGGER_FUNCTION_BINDING_MISSING": "tgfoid",
         "W1F_POSTCHECK_REVISION_TRIGGER_SET_MISSING": "expected_w1a_triggers",
+        "W1F_POSTCHECK_0013_REVISION_MISSING": f'"{CONTINUING_EDUCATION_REVISION}"',
+        "W1F_POSTCHECK_0013_MARKER_MISSING": "STAFF_CONTINUING_EDUCATION_DB_POSTCHECK_OK",
+        "W1F_POSTCHECK_0014_REVISION_MISSING": f'"{RECIPIENT_PLAN_NOTIFICATION_REVISION}"',
+        "W1F_POSTCHECK_0014_MARKER_MISSING": "RECIPIENT_PLAN_NOTIFICATION_DB_POSTCHECK_OK",
+        "W1F_POSTCHECK_0014_VERIFIER_MISSING": "def _verify_recipient_plan_notification_contract",
+        "W1F_POSTCHECK_0014_TABLE_MISSING": "recipient_plan_notification",
+        "W1F_POSTCHECK_0014_LINEAGE_MISSING": "W1E_LINEAGE_REVISIONS",
     }
     for marker, token in required_tokens.items():
         if token not in source:

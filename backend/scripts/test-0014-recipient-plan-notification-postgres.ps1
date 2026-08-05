@@ -1,9 +1,22 @@
 param(
+    # CleanHead is the only supported 2.2 candidate. The LegacyStaged21
+    # (2.1 staged compatibility) mode is retired.
+    [ValidateSet('CleanHead')]
+    [string]$CandidateMode = 'CleanHead',
+    # PreflightOnly runs candidate identity, reviewed-byte binding, required
+    # executable/file checks, process/artifact baselines, port availability, and
+    # postflight cleanup/git invariants; it stops before creating a temp root or
+    # starting PostgreSQL/FastAPI/Vite/Playwright.
+    [switch]$PreflightOnly,
+    # Optional override for the Python interpreter.  If blank, the script uses
+    # backend\.venv\Scripts\python.exe relative to itself.
+    [string]$PythonExecutable = '',
     # The operator must bind the exact candidate explicitly.  An omitted value
     # fails before any PostgreSQL process or temp root is created.
     [string]$ExpectedSha = "",
     # A script cannot safely embed its own digest.  The independent reviewer
     # supplies the reviewed wrapper SHA-256 at invocation time instead.
+    # Required in LegacyStaged21; optional in CleanHead (verified if supplied).
     [string]$ExpectedWrapperSha256 = "",
     [ValidateRange(1024, 65535)][int]$Port = 55445,
     [ValidateRange(1024, 65535)][int]$BackendPort = 18094,
@@ -22,7 +35,12 @@ Set-StrictMode -Version Latest
 $BackendRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $WorkspaceRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $BackendRoot))
 $FrontendRoot = Join-Path $WorkspaceRoot "frontend"
-$PythonExe = Join-Path $BackendRoot ".venv\Scripts\python.exe"
+if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
+    $PythonExe = Join-Path $BackendRoot ".venv\Scripts\python.exe"
+}
+else {
+    $PythonExe = [System.IO.Path]::GetFullPath($PythonExecutable)
+}
 $PowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $InitDbExe = Join-Path $PostgresBin "initdb.exe"
 $PgCtlExe = Join-Path $PostgresBin "pg_ctl.exe"
@@ -112,6 +130,10 @@ $OutputRoot = $null
 $ExpectedTempPrefix = $null
 $InitialGitSnapshot = $null
 $InitialReviewedManifest = $null
+$script:CleanHeadInitialFileHashes = @{}
+$script:CleanHeadInitialMigrationHash = $null
+$PreflightOnlyCompleted = $false
+$PreflightOnlySentinel = "SSWCENTER_0014_INTERNAL_PREFLIGHT_ONLY_COMPLETE"
 $BeforeArtifacts = @()
 $BeforeProcessSet = @{}
 $ArtifactBaselineCaptured = $false
@@ -546,71 +568,128 @@ function Get-RpnGitSnapshot {
 }
 
 function Get-RpnReviewedManifest {
-    param([string]$WrapperSha256)
-    $expected = [ordered]@{}
-    $expected[$WrapperRelativePath] = $WrapperSha256.ToUpperInvariant()
-    foreach ($entry in $ExpectedReviewedFileSha256.GetEnumerator()) {
-        $expected[[string]$entry.Key] = ([string]$entry.Value).ToUpperInvariant()
-    }
+    param([string]$BindingMode, [string]$WrapperSha256)
+
+    $reviewFilePaths = @(
+        $WrapperRelativePath,
+        "backend/tests/test_recipient_plan_notification_postgres.py",
+        "frontend/e2e/recipient-plan-notification-real-pg.spec.ts",
+        "frontend/e2e/recipient-plan-notification-real-pg.config.ts",
+        "frontend/e2e/recipient-plan-notification-real-pg.vite.config.ts"
+    )
+
+    $trackedPaths = @(
+        (Invoke-RpnGit @("ls-files")) -split "`n" |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    $trackedSet = @{}
+    foreach ($path in $trackedPaths) { $trackedSet[[string]$path] = $true }
 
     $untrackedPaths = @(
         (Invoke-RpnGit @("ls-files", "--others", "--exclude-standard")) -split "`n" |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     )
-    $trackedPaths = @(
-        (Invoke-RpnGit @("ls-files")) -split "`n" |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    )
     $untrackedSet = @{}
     foreach ($path in $untrackedPaths) { $untrackedSet[[string]$path] = $true }
-    $trackedSet = @{}
-    foreach ($path in $trackedPaths) { $trackedSet[[string]$path] = $true }
 
     $reviewNamespacePaths = @(
-        $untrackedPaths | Where-Object {
+        $untrackedPaths + $trackedPaths | Where-Object {
             $_ -like "backend/scripts/test-0014-recipient-plan-notification-postgres*" -or
             $_ -like "backend/tests/test_recipient_plan_notification_postgres*" -or
             $_ -like "frontend/e2e/recipient-plan-notification-real-pg*"
         }
     )
+
     $expectedSet = @{}
-    foreach ($path in $expected.Keys) { $expectedSet[[string]$path] = $true }
+    foreach ($path in $reviewFilePaths) { $expectedSet[[string]$path] = $true }
     $actualSet = @{}
     foreach ($path in $reviewNamespacePaths) { $actualSet[[string]$path] = $true }
-    $missing = @($expected.Keys | Where-Object { -not $actualSet.ContainsKey($_) })
+    $missing = @($reviewFilePaths | Where-Object { -not $actualSet.ContainsKey($_) })
     $extra = @($reviewNamespacePaths | Where-Object { -not $expectedSet.ContainsKey($_) })
+    $exactSetMatch = $missing.Count -eq 0 -and $extra.Count -eq 0
 
     $rows = New-Object System.Collections.ArrayList
     $expectedLines = New-Object System.Collections.ArrayList
     $actualLines = New-Object System.Collections.ArrayList
     $bytesMatch = $true
     $provenanceMatch = $true
-    foreach ($path in $expected.Keys) {
-        $absolutePath = Join-Path $WorkspaceRoot ([string]$path)
-        $actualSha = "MISSING"
-        if (Test-Path -LiteralPath $absolutePath -PathType Leaf) {
-            $actualSha = (Get-FileHash -LiteralPath $absolutePath -Algorithm SHA256).Hash
+    $wrapperMatched = $true
+
+    if ($BindingMode -eq "LegacyStaged21") {
+        $expected = [ordered]@{}
+        $expected[$WrapperRelativePath] = $WrapperSha256.ToUpperInvariant()
+        foreach ($entry in $ExpectedReviewedFileSha256.GetEnumerator()) {
+            $expected[[string]$entry.Key] = ([string]$entry.Value).ToUpperInvariant()
         }
-        $provenance = if ($untrackedSet.ContainsKey([string]$path)) {
-            "untracked"
+        foreach ($path in $expected.Keys) {
+            $absolutePath = Join-Path $WorkspaceRoot ([string]$path)
+            $actualSha = "MISSING"
+            if (Test-Path -LiteralPath $absolutePath -PathType Leaf) {
+                $actualSha = (Get-FileHash -LiteralPath $absolutePath -Algorithm SHA256).Hash
+            }
+            $provenance = if ($untrackedSet.ContainsKey([string]$path)) {
+                "untracked"
+            }
+            elseif ($trackedSet.ContainsKey([string]$path)) {
+                "tracked"
+            }
+            else {
+                "absent"
+            }
+            $expectedSha = [string]$expected[$path]
+            if ($actualSha -ne $expectedSha) { $bytesMatch = $false }
+            if ($provenance -ne "untracked") { $provenanceMatch = $false }
+            [void]$expectedLines.Add(("{0}={1}" -f $path, $expectedSha))
+            [void]$actualLines.Add(("{0}={1}" -f $path, $actualSha))
+            [void]$rows.Add([pscustomobject]@{
+                Path = [string]$path
+                ExpectedSha256 = $expectedSha
+                ActualSha256 = $actualSha
+                Provenance = $provenance
+            })
         }
-        elseif ($trackedSet.ContainsKey([string]$path)) {
-            "tracked"
+    }
+    else {
+        # CleanHead: no historical fixed hashes; capture actual bytes as baseline.
+        foreach ($path in $reviewFilePaths) {
+            $absolutePath = Join-Path $WorkspaceRoot ([string]$path)
+            $actualSha = "MISSING"
+            if (Test-Path -LiteralPath $absolutePath -PathType Leaf) {
+                $actualSha = (Get-FileHash -LiteralPath $absolutePath -Algorithm SHA256).Hash
+            }
+            $provenance = if ($trackedSet.ContainsKey([string]$path)) {
+                "tracked"
+            }
+            elseif ($untrackedSet.ContainsKey([string]$path)) {
+                "untracked"
+            }
+            else {
+                "absent"
+            }
+            if ($provenance -ne "tracked") { $provenanceMatch = $false }
+            # Wrapper digest optional; if supplied, must match actual bytes.
+            if ($path -eq $WrapperRelativePath) {
+                if (-not [string]::IsNullOrWhiteSpace($WrapperSha256)) {
+                    if ($actualSha -ne $WrapperSha256.ToUpperInvariant()) {
+                        $wrapperMatched = $false
+                    }
+                }
+            }
+            if (-not $script:CleanHeadInitialFileHashes.ContainsKey([string]$path)) {
+                $script:CleanHeadInitialFileHashes[[string]$path] = $actualSha
+            }
+            $expectedSha = [string]$script:CleanHeadInitialFileHashes[[string]$path]
+            if ($actualSha -ne $expectedSha) { $bytesMatch = $false }
+            [void]$expectedLines.Add(("{0}={1}" -f $path, $expectedSha))
+            [void]$actualLines.Add(("{0}={1}" -f $path, $actualSha))
+            [void]$rows.Add([pscustomobject]@{
+                Path = [string]$path
+                ExpectedSha256 = $expectedSha
+                ActualSha256 = $actualSha
+                Provenance = $provenance
+            })
         }
-        else {
-            "absent"
-        }
-        $expectedSha = [string]$expected[$path]
-        if ($actualSha -ne $expectedSha) { $bytesMatch = $false }
-        if ($provenance -ne "untracked") { $provenanceMatch = $false }
-        [void]$expectedLines.Add(("{0}={1}" -f $path, $expectedSha))
-        [void]$actualLines.Add(("{0}={1}" -f $path, $actualSha))
-        [void]$rows.Add([pscustomobject]@{
-            Path = [string]$path
-            ExpectedSha256 = $expectedSha
-            ActualSha256 = $actualSha
-            Provenance = $provenance
-        })
+        $bytesMatch = $bytesMatch -and $wrapperMatched
     }
 
     $migrationPath = Join-Path $WorkspaceRoot $MigrationRelativePath
@@ -618,7 +697,30 @@ function Get-RpnReviewedManifest {
         (Get-FileHash -LiteralPath $migrationPath -Algorithm SHA256).Hash
     }
     else { "MISSING" }
-    $exactSetMatch = $missing.Count -eq 0 -and $extra.Count -eq 0
+    $migrationTracked = $trackedSet.ContainsKey($MigrationRelativePath)
+    if ($BindingMode -eq "LegacyStaged21") {
+        $migrationExpectedSha = $ExpectedMigrationWorktreeSha256
+        $migrationMatch = $migrationActualSha -eq $ExpectedMigrationWorktreeSha256
+    }
+    else {
+        if ($null -eq $script:CleanHeadInitialMigrationHash) {
+            $script:CleanHeadInitialMigrationHash = $migrationActualSha
+        }
+        $migrationExpectedSha = [string]$script:CleanHeadInitialMigrationHash
+        $migrationMatch = (
+            (-not [string]::IsNullOrWhiteSpace($migrationActualSha)) -and
+            $migrationActualSha -ne "MISSING" -and
+            $migrationTracked -and
+            $migrationActualSha -eq $migrationExpectedSha
+        )
+    }
+    $matchesExpected = if ($BindingMode -eq "LegacyStaged21") {
+        $bytesMatch -and $provenanceMatch -and $exactSetMatch -and $migrationMatch
+    }
+    else {
+        $bytesMatch -and $provenanceMatch -and $exactSetMatch -and $migrationMatch
+    }
+
     return [pscustomobject]@{
         Rows = @($rows)
         ExpectedManifestSha256 = Get-RpnSha256 ($expectedLines -join "`n")
@@ -628,13 +730,10 @@ function Get-RpnReviewedManifest {
         ExactSetMatch = $exactSetMatch
         Missing = [string[]]$missing
         Extra = [string[]]$extra
-        MigrationExpectedSha256 = $ExpectedMigrationWorktreeSha256
+        MigrationExpectedSha256 = $migrationExpectedSha
         MigrationActualSha256 = $migrationActualSha
-        MigrationMatch = $migrationActualSha -eq $ExpectedMigrationWorktreeSha256
-        MatchesExpected = (
-            $bytesMatch -and $provenanceMatch -and $exactSetMatch -and
-            $migrationActualSha -eq $ExpectedMigrationWorktreeSha256
-        )
+        MigrationMatch = $migrationMatch
+        MatchesExpected = $matchesExpected
     }
 }
 
@@ -1010,7 +1109,17 @@ try {
         Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_EXPECTED_SHA_INVALID" $ExpectedSha
     }
     $ExpectedSha = $ExpectedSha.ToLowerInvariant()
-    if ($ExpectedWrapperSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    if ($CandidateMode -eq "LegacyStaged21") {
+        if ($ExpectedWrapperSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+            Write-RpnHarnessFailure `
+                "SSWCENTER_0014_HARNESS_EXPECTED_WRAPPER_SHA256_INVALID" `
+                $ExpectedWrapperSha256
+        }
+    }
+    elseif (
+        -not [string]::IsNullOrWhiteSpace($ExpectedWrapperSha256) -and
+        $ExpectedWrapperSha256 -notmatch '^[0-9a-fA-F]{64}$'
+    ) {
         Write-RpnHarnessFailure `
             "SSWCENTER_0014_HARNESS_EXPECTED_WRAPPER_SHA256_INVALID" `
             $ExpectedWrapperSha256
@@ -1027,45 +1136,58 @@ try {
     )) {
         Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_GIT_ROOT_MISMATCH" $gitRoot
     }
-    if (-not $WorkspaceRoot.Equals(
-        $ExpectedWorkspaceRoot,
-        [StringComparison]::OrdinalIgnoreCase
-    )) {
-        Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_PRIMARY_ROOT_REQUIRED" $WorkspaceRoot
-    }
     $observedBranch = (Invoke-RpnGit @("branch", "--show-current")).Trim()
-    if ($observedBranch -ne $ExpectedBranch) {
-        Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_BRANCH_MISMATCH" (
-            "expected={0};actual={1}" -f $ExpectedBranch, $observedBranch
-        )
-    }
     $InitialGitSnapshot = Get-RpnGitSnapshot
     if ($InitialGitSnapshot.Head -ne $ExpectedSha) {
         Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_EXACT_SHA_MISMATCH" (
             "expected={0};actual={1}" -f $ExpectedSha, $InitialGitSnapshot.Head
         )
     }
-    $expectedSet = @{}
-    foreach ($path in $ExpectedStagedPaths) { $expectedSet[$path] = $true }
-    $actualSet = @{}
-    foreach ($path in $InitialGitSnapshot.StagedPaths) { $actualSet[$path] = $true }
-    $missing = @($ExpectedStagedPaths | Where-Object { -not $actualSet.ContainsKey($_) })
-    $extra = @($InitialGitSnapshot.StagedPaths | Where-Object { -not $expectedSet.ContainsKey($_) })
-    if (
-        $InitialGitSnapshot.StagedCount -ne 21 -or
-        $missing.Count -ne 0 -or
-        $extra.Count -ne 0 -or
-        $InitialGitSnapshot.StagedManifestSha256 -ne $ExpectedStagedManifestSha256
+    if ($CandidateMode -eq "LegacyStaged21") {
+        if (-not $WorkspaceRoot.Equals(
+            $ExpectedWorkspaceRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_PRIMARY_ROOT_REQUIRED" $WorkspaceRoot
+        }
+        if ($observedBranch -ne $ExpectedBranch) {
+            Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_BRANCH_MISMATCH" (
+                "expected={0};actual={1}" -f $ExpectedBranch, $observedBranch
+            )
+        }
+        $expectedSet = @{}
+        foreach ($path in $ExpectedStagedPaths) { $expectedSet[$path] = $true }
+        $actualSet = @{}
+        foreach ($path in $InitialGitSnapshot.StagedPaths) { $actualSet[$path] = $true }
+        $missing = @($ExpectedStagedPaths | Where-Object { -not $actualSet.ContainsKey($_) })
+        $extra = @($InitialGitSnapshot.StagedPaths | Where-Object { -not $expectedSet.ContainsKey($_) })
+        if (
+            $InitialGitSnapshot.StagedCount -ne 21 -or
+            $missing.Count -ne 0 -or
+            $extra.Count -ne 0 -or
+            $InitialGitSnapshot.StagedManifestSha256 -ne $ExpectedStagedManifestSha256
+        ) {
+            Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_STAGED_21_MISMATCH" (
+                "count={0};missing={1};extra={2};manifest={3}" -f
+                $InitialGitSnapshot.StagedCount,
+                ($missing -join ","),
+                ($extra -join ","),
+                $InitialGitSnapshot.StagedManifestSha256
+            )
+        }
+    }
+    elseif (
+        $InitialGitSnapshot.StatusCount -ne 0 -or
+        $InitialGitSnapshot.StagedCount -ne 0
     ) {
-        Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_STAGED_21_MISMATCH" (
-            "count={0};missing={1};extra={2};manifest={3}" -f
-            $InitialGitSnapshot.StagedCount,
-            ($missing -join ","),
-            ($extra -join ","),
-            $InitialGitSnapshot.StagedManifestSha256
+        Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_CLEAN_HEAD_REQUIRED" (
+            "status={0};staged={1}" -f
+            $InitialGitSnapshot.StatusCount,
+            $InitialGitSnapshot.StagedCount
         )
     }
     $InitialReviewedManifest = Get-RpnReviewedManifest `
+        -BindingMode $CandidateMode `
         -WrapperSha256 $ExpectedWrapperSha256
     Write-RpnReviewedManifest -Snapshot $InitialReviewedManifest -Phase "preflight"
     if (-not $InitialReviewedManifest.MatchesExpected) {
@@ -1080,7 +1202,8 @@ try {
         )
     }
     Write-Output (
-        "SSWCENTER_0014_PREFLIGHT_GIT cwd={0} branch={1} head={2} status={3} staged={4} manifest={5} index={6}" -f
+        "SSWCENTER_0014_PREFLIGHT_GIT mode={0} cwd={1} branch={2} head={3} status={4} staged={5} manifest={6} index={7}" -f
+        $CandidateMode,
         $WorkspaceRoot,
         $observedBranch,
         $InitialGitSnapshot.Head,
@@ -1107,6 +1230,11 @@ try {
         "SSWCENTER_0014_PREFLIGHT_PORTS postgres={0} backend={1} frontend={2}" -f
         $Port, $BackendPort, $FrontendPort
     )
+
+    if ($PreflightOnly) {
+        $PreflightOnlyCompleted = $true
+        throw $PreflightOnlySentinel
+    }
 
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_LOCALAPPDATA_MISSING"
@@ -1341,11 +1469,11 @@ try {
     else { 0 }
     Write-Output ("SSWCENTER_0014_STAGE_BACKEND_EXIT={0}" -f $pytestRun.ExitCode)
     Write-Output (
-        "SSWCENTER_0014_BACKEND_COUNTS passed={0} failed={1} expected=3" -f
+        "SSWCENTER_0014_BACKEND_COUNTS passed={0} failed={1} expected=6" -f
         $backendPassed, $backendFailed
     )
     if ([int]$pytestRun.ExitCode -eq 0) {
-        if ($backendPassed -ne 3 -or $backendFailed -ne 0) {
+        if ($backendPassed -ne 6 -or $backendFailed -ne 0) {
             Write-RpnHarnessFailure "SSWCENTER_0014_HARNESS_BACKEND_COUNT_MISMATCH" (
                 "passed={0};failed={1}" -f $backendPassed, $backendFailed
             )
@@ -1360,7 +1488,7 @@ try {
             }
         }
     }
-    elseif ($pytestText -match 'collected\s+3\s+items?') {
+    elseif ($pytestText -match 'collected\s+6\s+items?') {
         $script:ProductFailure = $true
         Write-Output "SSWCENTER_0014_STAGE_BACKEND_PRODUCT_RED"
     }
@@ -1465,36 +1593,45 @@ try {
 catch {
     $ScriptExitCode = 1
     $message = [string]$_.Exception.Message
-    try {
-        if ($null -ne $BackendStdoutPath -or $null -ne $BackendStderrPath) {
-            Write-RpnRuntimeLogEvidence `
-                -Stage "backend" `
-                -StdoutPath $BackendStdoutPath `
-                -StderrPath $BackendStderrPath
-        }
-        if ($null -ne $FrontendStdoutPath -or $null -ne $FrontendStderrPath) {
-            Write-RpnRuntimeLogEvidence `
-                -Stage "vite" `
-                -StdoutPath $FrontendStdoutPath `
-                -StderrPath $FrontendStderrPath
-        }
-    }
-    catch {
-        $script:HarnessFailure = $true
-        Write-Output (
-            "SSWCENTER_0014_HARNESS_RUNTIME_DIAGNOSTIC_FAILED: {0}" -f
-            (Protect-RpnEvidenceText ([string]$_.Exception.Message))
-        )
-    }
-    if ($script:HarnessFailure -or $message -match "SSWCENTER_0014_HARNESS_") {
-        Write-Output ("SSWCENTER_0014_WRAPPER_HARNESS_FAILURE: {0}" -f $message)
-    }
-    elseif ($script:ProductFailure) {
-        Write-Output ("SSWCENTER_0014_WRAPPER_PRODUCT_FAILURE: {0}" -f $message)
+    if (
+        $PreflightOnly -and
+        $PreflightOnlyCompleted -and
+        $message -eq $PreflightOnlySentinel
+    ) {
+        $ScriptExitCode = 0
     }
     else {
-        $script:HarnessFailure = $true
-        Write-Output ("SSWCENTER_0014_WRAPPER_HARNESS_FAILURE: {0}" -f $message)
+        try {
+            if ($null -ne $BackendStdoutPath -or $null -ne $BackendStderrPath) {
+                Write-RpnRuntimeLogEvidence `
+                    -Stage "backend" `
+                    -StdoutPath $BackendStdoutPath `
+                    -StderrPath $BackendStderrPath
+            }
+            if ($null -ne $FrontendStdoutPath -or $null -ne $FrontendStderrPath) {
+                Write-RpnRuntimeLogEvidence `
+                    -Stage "vite" `
+                    -StdoutPath $FrontendStdoutPath `
+                    -StderrPath $FrontendStderrPath
+            }
+        }
+        catch {
+            $script:HarnessFailure = $true
+            Write-Output (
+                "SSWCENTER_0014_HARNESS_RUNTIME_DIAGNOSTIC_FAILED: {0}" -f
+                (Protect-RpnEvidenceText ([string]$_.Exception.Message))
+            )
+        }
+        if ($script:HarnessFailure -or $message -match "SSWCENTER_0014_HARNESS_") {
+            Write-Output ("SSWCENTER_0014_WRAPPER_HARNESS_FAILURE: {0}" -f $message)
+        }
+        elseif ($script:ProductFailure) {
+            Write-Output ("SSWCENTER_0014_WRAPPER_PRODUCT_FAILURE: {0}" -f $message)
+        }
+        else {
+            $script:HarnessFailure = $true
+            Write-Output ("SSWCENTER_0014_WRAPPER_HARNESS_FAILURE: {0}" -f $message)
+        }
     }
 }
 finally {
@@ -1704,6 +1841,7 @@ finally {
             $finalGit = Get-RpnGitSnapshot
             if ($null -ne $InitialReviewedManifest) {
                 $finalReviewedManifest = Get-RpnReviewedManifest `
+                    -BindingMode $CandidateMode `
                     -WrapperSha256 $ExpectedWrapperSha256
                 Write-RpnReviewedManifest `
                     -Snapshot $finalReviewedManifest `
@@ -1730,7 +1868,14 @@ finally {
                 $finalGit.FullIndexSha256 -ne $InitialGitSnapshot.FullIndexSha256 -or
                 $finalGit.StagedManifestSha256 -ne $InitialGitSnapshot.StagedManifestSha256 -or
                 $finalGit.CachedDiffSha256 -ne $InitialGitSnapshot.CachedDiffSha256 -or
-                $finalGit.StagedCount -ne 21
+                (
+                    $CandidateMode -eq "LegacyStaged21" -and
+                    $finalGit.StagedCount -ne 21
+                ) -or
+                (
+                    $CandidateMode -eq "CleanHead" -and
+                    $finalGit.StagedCount -ne 0
+                )
             ) { $IndexResidual = 1 }
             Write-Output (
                 "SSWCENTER_0014_POST_GIT head={0} status={1} staged={2} manifest={3} index={4}" -f
@@ -1767,6 +1912,26 @@ finally {
         $script:HarnessFailure = $true
         Write-Output "SSWCENTER_0014_HARNESS_CLEANUP_RESIDUAL_NONZERO"
     }
+}
+
+if ($PreflightOnly) {
+    if (
+        $PreflightOnlyCompleted -and
+        -not $script:ProductFailure -and
+        -not $script:HarnessFailure -and
+        $ScriptExitCode -eq 0 -and
+        $ListenerResidual -eq 0 -and $ProcessResidual -eq 0 -and
+        $TempResidual -eq 0 -and $ArtifactResidual -eq 0 -and
+        $GitResidual -eq 0 -and $IndexResidual -eq 0
+    ) {
+        Write-Output "SSWCENTER_0014_PREFLIGHT_ONLY_GREEN"
+        exit 0
+    }
+    if (-not $script:HarnessFailure) {
+        $script:HarnessFailure = $true
+    }
+    Write-Output "SSWCENTER_0014_WRAPPER_HARNESS_FAILURE: SSWCENTER_0014_PREFLIGHT_ONLY_GATE"
+    exit 1
 }
 
 if (

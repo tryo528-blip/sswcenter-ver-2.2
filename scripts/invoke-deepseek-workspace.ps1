@@ -5,7 +5,10 @@ param(
     [string]$Mode = 'ReadOnly',
     [ValidateSet('DeepSeek', 'OpenRouter')]
     [string]$Provider = 'DeepSeek',
+    # AllowPath is the write allowlist. Every write path is also readable.
     [string[]]$AllowPath,
+    # ReadPath adds read-only reference paths that write tools must reject.
+    [string[]]$ReadPath,
     [string]$EnvFile = '',
     [switch]$DryRun,
     [string]$Prompt = '',
@@ -15,9 +18,14 @@ param(
     [ValidateRange(1, 64)]
     [int]$MaxReadToolCalls = 12,
     [ValidateRange(128, 32768)]
-    [int]$MaxTokens = 16384,
+    [int]$MaxTokens = 32768,
+    [ValidateSet('Auto', 'ReplaceText', 'ApplyPatch')]
+    [string]$WriteStrategy = 'Auto',
     [ValidateSet('low', 'high', 'max')]
     [string]$ReasoningEffort = 'high',
+    [ValidateSet('auto', 'enabled', 'disabled')]
+    [string]$ThinkingMode = 'auto',
+    [switch]$DirectResponse,
     [int]$RequestTimeoutSeconds = 0,
     [string]$Endpoint = '',
     [switch]$JsonOutput,
@@ -28,18 +36,20 @@ param(
     [string]$ResumeCheckpoint = '',
     [switch]$OfflineConfig,
     [switch]$TestMode,
-    [string]$MockResponsesPath = ''
+    [string]$MockResponsesPath = '',
+    [ValidateRange(0, 1048576)]
+    [int]$ExpectedWriteBytes = 0
 )
 
 $ErrorActionPreference = 'Stop'
 
 $script:RunnerName = 'deepseek-workspace-runner'
-$script:RunnerVersion = '2.0.0'
-$script:SchemaVersion = '2.0.0'
+$script:RunnerVersion = '2.5.0'
+$script:SchemaVersion = '2.1.0'
 $script:ProviderContextLimit = 1000000
-$script:ContextSoftLimit = 600000
-$script:ContextHardLimit = 800000
-$script:OutputReserveTokens = 128000
+$script:ContextSoftLimit = 850000
+$script:ContextHardLimit = 950000
+$script:OutputReserveTokens = [int64]$MaxTokens
 $script:HardTurnLimit = 96
 $script:ExtensionSize = 8
 $script:CheckpointTurn = 64
@@ -47,8 +57,10 @@ $script:SoftTurn = 80
 $script:Mode = $Mode
 $script:Provider = $Provider
 $script:TimeoutSeconds = 0
-$script:AllowRoots = @()
-$script:AllowPathDisplay = @()
+$script:WriteRoots = @()
+$script:ReadRoots = @()
+$script:WritePathDisplay = @()
+$script:ReadPathDisplay = @()
 $script:ExpectedFingerprint = ''
 $script:BaseHead = 'GIT_METADATA_UNAVAILABLE'
 $script:FinalHead = 'GIT_METADATA_UNAVAILABLE'
@@ -90,6 +102,22 @@ $script:CheckpointFailure = $false
 $script:Status = 'FAIL'
 $script:ExitCode = 1
 $script:ApiKey = $null
+$script:ThinkingModeResolved = 'provider-default'
+$script:RequestDurationsMs = @()
+$script:RunStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$script:FreshReadTokens = @{}
+$script:PriorFreshTokens = $null
+$script:FreshReadRecoveryTurn = $false
+$script:MinimumWriterOutputTokens = 8192
+$script:RequestedWriteStrategy = 'None'
+$script:EffectiveWriteStrategy = 'None'
+$script:EstimatedWriterOutputTokens = 0
+$script:ConvergenceMode = 'none'
+$script:LastExposedToolNames = @()
+$script:ToolExposureHistory = @()
+$script:ExpectedWriteBytes = $ExpectedWriteBytes
+$script:EffectiveExpectedWriteBytes = 0
+$script:WriterBudgetSource = ''
 
 function Redact-Text {
     param([AllowNull()][object]$Value)
@@ -100,13 +128,212 @@ function Redact-Text {
     if ([string]::IsNullOrEmpty($text)) {
         return $text
     }
+
+    # Safe markers (allowed in checkpoints/results): [REDACTED], [REDACTED_*], Bearer [REDACTED]
+    # Residual fail-closed is value-shaped only. Documentation that merely names keys
+    # (e.g. \"secret\": in a regex explanation) or uses secret:/password: prose must pass.
+    $safeMarker = '\[REDACTED(?:_[A-Z0-9_]+)?\]'
+    # Named keys include generic "token" for "token":"<long value>" while residual still
+    # requires an actual non-marker value (key-only docs and short prose remain allowed).
+    $secretKey = '(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|secret|password|\btoken\b)'
+    $namedKey = '(?:authorization|' + $secretKey + ')'
+
+    # --- mask known secret value shapes ---
+    $escapedJsonPattern = '(?is)(?<prefix>\\+"(?:' + $namedKey + ')\\+"\s*[:=]\s*)(?<open>\\+)"(?:(?!\\+").)*(?<close>\\+)"'
+    $escapedJsonReplacement = '${prefix}${open}"[REDACTED]${close}"'
+    $text = [regex]::Replace($text, $escapedJsonPattern, $escapedJsonReplacement)
+    $quotedOrLineValue = '(?:"[^"\r\n]*"|''[^''\r\n]*''|[^\r\n,;}\]]*)'
+    $authorizationPrefix = '(?i)(?<prefix>["'']?authorization["'']?\s*[:=]\s*)'
+    $secretPrefix = '(?i)(?<prefix>["'']?' + $secretKey + '["'']?\s*[:=]\s*)'
     $redacted = [regex]::Replace(
         $text,
-        '(?i)(api[_-]?key|authorization|access[_-]?token|secret|password)\s*[:=]\s*["'']?[^,\s"''}\]]+',
+        $authorizationPrefix + '(?:bearer\s+)?' + $quotedOrLineValue,
+        '${prefix}"[REDACTED]"'
+    )
+    $redacted = [regex]::Replace(
+        $redacted,
+        $secretPrefix + $quotedOrLineValue,
+        '${prefix}"[REDACTED]"'
+    )
+    $redacted = [regex]::Replace(
+        $redacted,
+        '(?i)\bbearer\s+(?!' + $safeMarker + ')[A-Za-z0-9._~+/=-]+',
+        'Bearer [REDACTED]'
+    )
+    # sk- tokens: require token body (alnum/_/-) length >= 8; do not treat regex docs like sk-[A-Za-z...] as tokens
+    $redacted = [regex]::Replace(
+        $redacted,
+        '(?i)\bsk-[A-Za-z0-9_-]{8,}\b',
         '[REDACTED]'
     )
-    $redacted = [regex]::Replace($redacted, '(?i)\bsk-[A-Za-z0-9_-]{8,}\b', '[REDACTED]')
+    # compact JWT-shaped values (header.payload[.sig]); documentation "eyJ/..." without dots is ignored
+    $redacted = [regex]::Replace(
+        $redacted,
+        '\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?\b',
+        '[REDACTED]'
+    )
+
+    # --- residual fail-closed: require an actual non-marker *value* after a secret key ---
+    # Quoted JSON/text values that are not safe markers.
+    $unredactedQuoted = '(?i)["'']?' + $namedKey + '["'']?\s*[:=]\s*"(?!' + $safeMarker + ')[^"\r\n]+"'
+    $unredactedSingleQuoted = "(?i)[`"']?" + $namedKey + "[`"']?\s*[:=]\s*'(?!" + $safeMarker + ")[^'\r\n]+'"
+    # Bare token-shaped assignments (sk-/JWT/long token body). Short prose words after key: do not match.
+    $unredactedTokenShaped = '(?i)["'']?' + $namedKey + '["'']?\s*[:=]\s*(?:sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]+|[A-Za-z0-9_-]{20,})\b'
+    # Escaped JSON must include a non-marker escaped string value. Key-only docs like \"secret\": must not fail.
+    $unredactedEscapedJsonValue = '(?is)\\+"(?:' + $namedKey + ')\\+"\s*[:=]\s*\\+"(?!' + $safeMarker + ')(?:(?!\\+").)+\\+"'
+    # Standalone bearer/sk/JWT residuals (not already safe markers)
+    $unredactedBearer = '(?i)\bbearer\s+(?!' + $safeMarker + ')[A-Za-z0-9._~+/=-]{8,}'
+    $unredactedSk = '(?i)\bsk-[A-Za-z0-9_-]{8,}\b'
+    $unredactedJwt = '\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?\b'
+    if (
+        [regex]::IsMatch($redacted, $unredactedEscapedJsonValue) -or
+        [regex]::IsMatch($redacted, $unredactedQuoted) -or
+        [regex]::IsMatch($redacted, $unredactedSingleQuoted) -or
+        [regex]::IsMatch($redacted, $unredactedTokenShaped) -or
+        [regex]::IsMatch($redacted, $unredactedBearer) -or
+        [regex]::IsMatch($redacted, $unredactedSk) -or
+        [regex]::IsMatch($redacted, $unredactedJwt)
+    ) {
+        throw 'REDACTION_FAILED'
+    }
     return $redacted
+}
+
+function Assert-CheckpointSuccessOrDemote {
+    param(
+        [bool]$Saved,
+        [string]$Context = 'checkpoint'
+    )
+    if ($Saved) {
+        return
+    }
+    # Required checkpoint path failed: never keep PASS/exit 0.
+    if ($script:Status -eq 'PASS' -or $script:ExitCode -eq 0) {
+        if ($script:EditCount -gt 0) {
+            $script:Status = 'PARTIAL_AFTER_EDIT'
+            $script:ExitCode = 2
+        }
+        else {
+            $script:Status = 'FAIL'
+            $script:ExitCode = 1
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($script:StopReason) -or $script:StopReason -eq 'MODEL_COMPLETED') {
+        $script:StopReason = 'CHECKPOINT_WRITE_FAILED'
+    }
+}
+
+function Resolve-WriteStrategy {
+    param(
+        [string]$Requested,
+        [string]$Mode
+    )
+    if ($Mode -ne 'Writer') {
+        return 'None'
+    }
+    if ($Requested -eq 'ReplaceText') {
+        return 'ReplaceText'
+    }
+    if ($Requested -eq 'ApplyPatch') {
+        return 'ApplyPatch'
+    }
+    # Auto: resolve from allowlisted target filesystem status (language-independent)
+    if ($script:WriteRoots.Count -eq 0) {
+        return 'ReplaceText'
+    }
+    $hasExistingLeaf = $false
+    $hasMissing = $false
+    $hasDirectory = $false
+    foreach ($root in $script:WriteRoots) {
+        $full = Get-FullPathFromRelative $root
+        if (Test-Path -LiteralPath $full -PathType Container) {
+            $hasDirectory = $true
+        }
+        elseif (Test-Path -LiteralPath $full -PathType Leaf) {
+            $hasExistingLeaf = $true
+        }
+        else {
+            $hasMissing = $true
+        }
+    }
+    # Any directory target or mixed existing/missing set => ambiguous
+    if ($hasDirectory -or ($hasExistingLeaf -and $hasMissing)) {
+        throw 'WRITER_WRITE_STRATEGY_REQUIRED'
+    }
+    # All missing exact targets => ApplyPatch
+    if ($hasMissing -and -not $hasExistingLeaf) {
+        return 'ApplyPatch'
+    }
+    # All existing leaf targets => ReplaceText
+    return 'ReplaceText'
+}
+
+function Get-EstimatedWriterOutputTokens {
+    param(
+        [string]$Mode
+    )
+    if ($Mode -ne 'Writer') {
+        return 0
+    }
+    # --- Determine effective expected-write byte budget ---
+    if ($script:ExpectedWriteBytes -gt 0) {
+        $script:EffectiveExpectedWriteBytes = $script:ExpectedWriteBytes
+        $script:WriterBudgetSource = 'explicit'
+    }
+    else {
+        # Derive from target files; all write roots must be existing leaf files
+        $largestSize = 0
+        foreach ($root in $script:WriteRoots) {
+            $full = Get-FullPathFromRelative $root
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+                throw 'WRITER_PACKET_BUDGET_REQUIRED'
+            }
+            $item = Get-Item -LiteralPath $full
+            if ($item.Length -gt $largestSize) {
+                $largestSize = $item.Length
+            }
+        }
+        $script:EffectiveExpectedWriteBytes = 2 * $largestSize + 2048
+        $script:WriterBudgetSource = 'target-files'
+    }
+    # --- Compute prompt-based token estimate ---
+    $promptEstimate = 8192
+    if (-not [string]::IsNullOrWhiteSpace($Prompt)) {
+        try {
+            $json = ConvertTo-Json -InputObject ([string]$Prompt) -Compress
+            $bytes = [System.Text.Encoding]::UTF8.GetByteCount($json)
+            $promptEstimate = [Math]::Ceiling($bytes / 2.0) + 2048
+        }
+        catch {
+            # Keep default
+        }
+    }
+    # --- Compute write-based token estimate ---
+    $writeEstimate = [Math]::Ceiling($script:EffectiveExpectedWriteBytes * 1.25) + 2048
+    # --- Final estimate: max of prompt, write, and floor ---
+    $estimate = [Math]::Max([Math]::Max($promptEstimate, $writeEstimate), 8192)
+    # --- Check limits based on source ---
+    if ($script:WriterBudgetSource -eq 'explicit' -and $estimate -gt 32768) {
+        throw 'WRITER_PACKET_SPLIT_REQUIRED'
+    }
+    if ($script:WriterBudgetSource -eq 'target-files' -and $estimate -gt 32768) {
+        throw 'WRITER_PACKET_BUDGET_REQUIRED'
+    }
+    return $estimate
+}
+
+function Get-ExposedWriteToolNames {
+    param([string]$EffectiveStrategy)
+    if ($EffectiveStrategy -eq 'None') {
+        return @()
+    }
+    if ($EffectiveStrategy -eq 'ReplaceText') {
+        return @('replace_text')
+    }
+    if ($EffectiveStrategy -eq 'ApplyPatch') {
+        return @('apply_patch')
+    }
+    return @()
 }
 
 function Add-RunnerError {
@@ -171,6 +398,9 @@ function Get-NormalizedRelativePath {
 function Test-SensitiveRelativePath {
     param([string]$RelativePath)
     $lower = (Get-NormalizedRelativePath $RelativePath).ToLowerInvariant()
+    if ($lower -eq '.env.example') {
+        return $false
+    }
     $parts = $lower.Split('\')
     foreach ($part in $parts) {
         if ($part -in @('.git', '.codex', '.grok', 'node_modules', '__pycache__')) {
@@ -200,6 +430,7 @@ function Get-FullPathFromRelative {
     if (($full -ne $script:RepositoryRoot) -and (-not $full.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
         throw "PATH_OUTSIDE_REPOSITORY"
     }
+    Assert-NoRepositoryReparsePoint -FullPath $full
     return $full
 }
 
@@ -211,16 +442,54 @@ function Get-RelativePathFromFull {
     return (Get-NormalizedRelativePath $relative)
 }
 
-function Test-AllowedRelativePath {
-    param([string]$RelativePath)
+function Assert-NoRepositoryReparsePoint {
+    param([string]$FullPath)
+
+    $root = [System.IO.Path]::GetFullPath($script:RepositoryRoot).TrimEnd('\')
+    $candidate = [System.IO.Path]::GetFullPath($FullPath)
+    $rootPrefix = $root + '\'
+    if (($candidate -ne $root) -and (-not $candidate.StartsWith(
+        $rootPrefix,
+        [System.StringComparison]::OrdinalIgnoreCase
+    ))) {
+        throw 'PATH_OUTSIDE_REPOSITORY'
+    }
+
+    $existing = $candidate
+    while (-not (Test-Path -LiteralPath $existing)) {
+        $parent = Split-Path -Parent $existing
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $existing) {
+            throw 'PATH_EXISTING_PARENT_NOT_FOUND'
+        }
+        $existing = $parent
+    }
+
+    while (-not $existing.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $item = Get-Item -LiteralPath $existing -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'PATH_REPARSE_POINT_FORBIDDEN'
+        }
+        $parent = Split-Path -Parent $existing
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $existing) {
+            throw 'PATH_OUTSIDE_REPOSITORY'
+        }
+        $existing = $parent
+    }
+}
+
+function Test-RelativePathInRoots {
+    param(
+        [string]$RelativePath,
+        [object[]]$Roots
+    )
     $relative = Get-NormalizedRelativePath $RelativePath
     if (Test-SensitiveRelativePath $relative) {
         return $false
     }
-    if ($script:AllowRoots.Count -eq 0) {
+    if ($Roots.Count -eq 0) {
         return $false
     }
-    foreach ($root in $script:AllowRoots) {
+    foreach ($root in $Roots) {
         if ($root -eq '.') {
             return $true
         }
@@ -231,20 +500,46 @@ function Test-AllowedRelativePath {
     return $false
 }
 
-function Get-AllowedFiles {
+function Test-ReadAllowedRelativePath {
+    param([string]$RelativePath)
+    return (Test-RelativePathInRoots -RelativePath $RelativePath -Roots $script:ReadRoots)
+}
+
+function Test-WriteAllowedRelativePath {
+    param([string]$RelativePath)
+    return (Test-RelativePathInRoots -RelativePath $RelativePath -Roots $script:WriteRoots)
+}
+
+function Get-ReadableFiles {
     $files = New-Object System.Collections.Generic.List[object]
-    foreach ($root in $script:AllowRoots) {
+    foreach ($root in $script:ReadRoots) {
         $full = Get-FullPathFromRelative $root
         if (-not (Test-Path -LiteralPath $full)) {
             continue
         }
         $item = Get-Item -LiteralPath $full
         if ($item.PSIsContainer) {
-            $children = Get-ChildItem -LiteralPath $full -File -Recurse -Force -ErrorAction Stop
-            foreach ($child in $children) {
-                $relative = Get-RelativePathFromFull $child.FullName
-                if (-not (Test-SensitiveRelativePath $relative)) {
-                    [void]$files.Add([pscustomobject]@{ relative = $relative; full = $child.FullName })
+            $pending = New-Object System.Collections.Generic.Stack[string]
+            $pending.Push($full)
+            while ($pending.Count -gt 0) {
+                $directory = $pending.Pop()
+                Assert-NoRepositoryReparsePoint -FullPath $directory
+                foreach ($child in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+                    if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        throw 'PATH_REPARSE_POINT_FORBIDDEN'
+                    }
+                    $relative = Get-RelativePathFromFull $child.FullName
+                    if (Test-SensitiveRelativePath $relative) {
+                        continue
+                    }
+                    if ($child.PSIsContainer) {
+                        $pending.Push($child.FullName)
+                        continue
+                    }
+                    [void]$files.Add([pscustomobject]@{
+                        relative = $relative
+                        full = $child.FullName
+                    })
                 }
             }
         }
@@ -265,7 +560,7 @@ function Get-AllowedFiles {
 function Get-WorkspaceSnapshot {
     $fileHashes = [ordered]@{}
     $canonical = New-Object System.Collections.Generic.List[string]
-    foreach ($file in (Get-AllowedFiles)) {
+    foreach ($file in (Get-ReadableFiles)) {
         try {
             $hash = Get-FileSha256 $file.full
             $fileHashes[$file.relative] = $hash
@@ -276,7 +571,7 @@ function Get-WorkspaceSnapshot {
             [void]$canonical.Add(($file.relative + '|UNREADABLE'))
         }
     }
-    foreach ($root in $script:AllowRoots) {
+    foreach ($root in $script:ReadRoots) {
         if (-not (Test-Path -LiteralPath (Get-FullPathFromRelative $root))) {
             $fileHashes[$root] = 'MISSING'
             [void]$canonical.Add(($root + '|MISSING'))
@@ -318,12 +613,39 @@ function Get-GitDiffHash {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $diffLines = @(& git -C $script:RepositoryRoot diff --binary --no-ext-diff -- . 2>$null | ForEach-Object { [string]$_ })
+        $diffLines = @(
+            & git -C $script:RepositoryRoot diff --binary --no-ext-diff -- . 2>$null |
+                ForEach-Object { [string]$_ }
+        )
         $exit = $LASTEXITCODE
         if ($exit -ne 0) {
             return $null
         }
-        return (Get-Sha256Text ([string]::Join([Environment]::NewLine, $diffLines)))
+        $untrackedPaths = @(
+            & git -C $script:RepositoryRoot ls-files --others --exclude-standard -- 2>$null |
+                ForEach-Object { Get-NormalizedRelativePath ([string]$_) } |
+                Where-Object { Test-ReadAllowedRelativePath $_ } |
+                Sort-Object
+        )
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+        $canonical = New-Object System.Collections.Generic.List[string]
+        [void]$canonical.Add('TRACKED_DIFF')
+        foreach ($line in $diffLines) {
+            [void]$canonical.Add($line)
+        }
+        [void]$canonical.Add('UNTRACKED_FILES')
+        foreach ($relative in $untrackedPaths) {
+            $full = Get-FullPathFromRelative $relative
+            if (Test-Path -LiteralPath $full -PathType Leaf) {
+                [void]$canonical.Add(($relative + '|' + (Get-FileSha256 $full)))
+            }
+            else {
+                [void]$canonical.Add(($relative + '|MISSING'))
+            }
+        }
+        return (Get-Sha256Text ([string]::Join([Environment]::NewLine, $canonical)))
     }
     catch {
         return $null
@@ -442,6 +764,22 @@ function New-ToolFailure {
     }
 }
 
+function New-PathAwareToolFailure {
+    param(
+        [string]$FallbackCode,
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+    $message = [string]$ErrorRecord.Exception.Message
+    if ($message -in @(
+        'PATH_OUTSIDE_REPOSITORY',
+        'PATH_EXISTING_PARENT_NOT_FOUND',
+        'PATH_REPARSE_POINT_FORBIDDEN'
+    )) {
+        return (New-ToolFailure $message)
+    }
+    return (New-ToolFailure $FallbackCode $message)
+}
+
 function Invoke-WorkspaceStatusTool {
     $snapshot = Get-WorkspaceSnapshot
     return (New-ToolSuccess ([ordered]@{
@@ -449,7 +787,8 @@ function Invoke-WorkspaceStatusTool {
         head = (Get-GitHead)
         git_metadata = if ((Get-GitHead) -eq 'GIT_METADATA_UNAVAILABLE') { 'GIT_METADATA_UNAVAILABLE' } else { 'AVAILABLE' }
         fingerprint = $snapshot.fingerprint
-        allowlist = @($script:AllowPathDisplay)
+        read_paths = @($script:ReadPathDisplay)
+        write_paths = @($script:WritePathDisplay)
     }))
 }
 
@@ -464,27 +803,35 @@ function Invoke-ReadFileTool {
         return (New-ToolFailure 'PATH_REQUIRED')
     }
     $relative = Get-NormalizedRelativePath $relative
-    if (-not (Test-AllowedRelativePath $relative)) {
-        return (New-ToolFailure 'PATH_NOT_ALLOWLISTED')
+    if (-not (Test-ReadAllowedRelativePath $relative)) {
+        return (New-ToolFailure 'PATH_NOT_READ_ALLOWLISTED')
     }
     try {
         $full = Get-FullPathFromRelative $relative
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
-            return (New-ToolFailure 'FILE_NOT_FOUND')
+            $script:FreshReadTokens[$relative] = 'MISSING'
+            return (New-ToolSuccess ([ordered]@{
+                path = $relative
+                exists = $false
+                bytes = 0
+                content = ''
+            }))
         }
         $item = Get-Item -LiteralPath $full
         if ($item.Length -gt 1048576) {
             return (New-ToolFailure 'FILE_TOO_LARGE')
         }
         $content = [System.IO.File]::ReadAllText($full)
+        $script:FreshReadTokens[$relative] = Get-FileSha256 $full
         return (New-ToolSuccess ([ordered]@{
             path = $relative
+            exists = $true
             bytes = $item.Length
             content = (Redact-Text $content)
         }))
     }
     catch {
-        return (New-ToolFailure 'READ_FAILED' $_.Exception.Message)
+        return (New-PathAwareToolFailure 'READ_FAILED' $_)
     }
 }
 
@@ -503,7 +850,7 @@ function Invoke-SearchTextTool {
     }
     $matches = New-Object System.Collections.Generic.List[object]
     try {
-        foreach ($file in (Get-AllowedFiles)) {
+        foreach ($file in (Get-ReadableFiles)) {
             if ($matches.Count -ge 100) {
                 break
             }
@@ -533,7 +880,7 @@ function Invoke-SearchTextTool {
         }))
     }
     catch {
-        return (New-ToolFailure 'SEARCH_FAILED' $_.Exception.Message)
+        return (New-PathAwareToolFailure 'SEARCH_FAILED' $_)
     }
 }
 
@@ -564,16 +911,33 @@ function Invoke-ReplaceTextTool {
         return (New-ToolFailure 'OLD_TEXT_REQUIRED')
     }
     $relative = Get-NormalizedRelativePath $relative
-    if (-not (Test-AllowedRelativePath $relative)) {
-        return (New-ToolFailure 'PATH_NOT_ALLOWLISTED')
+    if (-not (Test-WriteAllowedRelativePath $relative)) {
+        return (New-ToolFailure 'PATH_NOT_WRITE_ALLOWLISTED')
     }
     if (-not (Test-ExpectedFingerprint)) {
         return (New-ToolFailure 'WORKSPACE_FINGERPRINT_MISMATCH')
+    }
+    # Fresh-current-byte write gate
+    if ($null -ne $script:PriorFreshTokens) {
+        if (-not $script:PriorFreshTokens.ContainsKey($relative)) {
+            return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' must be read with read_file in a prior turn before writing.")
+        }
+        $expectedToken = $script:PriorFreshTokens[$relative]
+        if ($expectedToken -eq 'MISSING') {
+            return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' was confirmed missing; it must exist for replace_text. Use read_file to refresh.")
+        }
     }
     try {
         $full = Get-FullPathFromRelative $relative
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
             return (New-ToolFailure 'FILE_NOT_FOUND')
+        }
+        # Verify freshness token matches current content
+        if ($null -ne $script:PriorFreshTokens -and $script:PriorFreshTokens.ContainsKey($relative)) {
+            $currentHash = Get-FileSha256 $full
+            if ($currentHash -ne $script:PriorFreshTokens[$relative]) {
+                return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' has changed since last read. Use read_file to refresh before writing.")
+            }
         }
         $current = [System.IO.File]::ReadAllText($full)
         $first = $current.IndexOf($oldText, [System.StringComparison]::Ordinal)
@@ -597,6 +961,7 @@ function Invoke-ReplaceTextTool {
         Set-ChangedFileState $relative
         $hash = Get-FileSha256 $full
         $script:ChangedFileHashes[$relative] = $hash
+        $script:FreshReadTokens.Remove($relative)
         return [pscustomobject]@{
             ok = $true
             result = [ordered]@{
@@ -611,7 +976,7 @@ function Invoke-ReplaceTextTool {
         }
     }
     catch {
-        return (New-ToolFailure 'WRITE_FAILED' $_.Exception.Message)
+        return (New-PathAwareToolFailure 'WRITE_FAILED' $_)
     }
 }
 
@@ -638,12 +1003,12 @@ function Apply-UnifiedPatch {
         }
     }
     if (($updateIndexes.Count + $addIndexes.Count) -ne 1) {
-        return (New-ToolFailure 'PATCH_SINGLE_FILE_ONLY')
+        return (New-ToolFailure 'PATCH_SINGLE_FILE_ONLY' "update_markers=$($updateIndexes.Count) add_markers=$($addIndexes.Count)")
     }
     $marker = if ($updateIndexes.Count -eq 1) { $lines[$updateIndexes[0]] } else { $lines[$addIndexes[0]] }
     $relative = Get-NormalizedRelativePath ($marker.Substring($marker.IndexOf(':') + 1).Trim())
-    if (-not (Test-AllowedRelativePath $relative)) {
-        return (New-ToolFailure 'PATH_NOT_ALLOWLISTED')
+    if (-not (Test-WriteAllowedRelativePath $relative)) {
+        return (New-ToolFailure 'PATH_NOT_WRITE_ALLOWLISTED')
     }
     if (-not (Test-ExpectedFingerprint)) {
         return (New-ToolFailure 'WORKSPACE_FINGERPRINT_MISMATCH')
@@ -651,23 +1016,38 @@ function Apply-UnifiedPatch {
     try {
         $full = Get-FullPathFromRelative $relative
         if ($addIndexes.Count -eq 1) {
-            if (Test-Path -LiteralPath $full) {
-                return (New-ToolFailure 'PATCH_TARGET_EXISTS')
-            }
+            # Validate Add File content lines and markers before any freshness check
             $addStart = $addIndexes[0] + 1
             $addLines = New-Object System.Collections.Generic.List[string]
             for ($j = $addStart; $j -lt ($lines.Count - 1); $j++) {
-                if (-not $lines[$j].StartsWith('+')) {
-                    return (New-ToolFailure 'PATCH_ADD_LINE_INVALID')
+                $addLine = $lines[$j]
+                if ($addLine.StartsWith('***')) {
+                    return (New-ToolFailure 'PATCH_ADD_MARKER_INVALID')
                 }
-                [void]$addLines.Add($lines[$j].Substring(1))
+                if (-not $addLine.StartsWith('+')) {
+                    return (New-ToolFailure 'PATCH_ADD_LINE_PREFIX_REQUIRED')
+                }
+                # Strip exactly the patch prefix. A literal leading plus is encoded as "++".
+                $addLine = $addLine.Substring(1)
+                [void]$addLines.Add($addLine)
+            }
+            # Fresh-current-byte write gate for Add File (after content validation)
+            if ($null -ne $script:PriorFreshTokens) {
+                if (-not $script:PriorFreshTokens.ContainsKey($relative) -or $script:PriorFreshTokens[$relative] -ne 'MISSING') {
+                    return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' must be confirmed missing via read_file in a prior turn before Add File.")
+                }
+            }
+            if (Test-Path -LiteralPath $full) {
+                return (New-ToolFailure 'PATCH_TARGET_EXISTS')
             }
             $newText = [string]::Join([Environment]::NewLine, @($addLines))
             if (-not $DryRunOnly) {
                 Write-AtomicText -Path $full -Text $newText
                 $script:EditCount++
+                $script:PatchCount++
                 Set-ChangedFileState $relative
                 $script:ChangedFileHashes[$relative] = Get-FileSha256 $full
+                $script:FreshReadTokens.Remove($relative)
             }
             return [pscustomobject]@{
                 ok = $true
@@ -677,6 +1057,7 @@ function Apply-UnifiedPatch {
                 changed = (-not $DryRunOnly)
             }
         }
+        # Update File path
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
             return (New-ToolFailure 'FILE_NOT_FOUND')
         }
@@ -704,7 +1085,7 @@ function Apply-UnifiedPatch {
                 continue
             }
             if ($line.StartsWith('***')) {
-                continue
+                return (New-ToolFailure 'PATCH_UPDATE_MARKER_INVALID')
             }
             if ($line.StartsWith(' ')) {
                 [void]$oldLines.Add($line.Substring(1))
@@ -717,12 +1098,26 @@ function Apply-UnifiedPatch {
                 [void]$newLines.Add($line.Substring(1))
             }
             else {
-                return (New-ToolFailure 'PATCH_HUNK_LINE_INVALID')
+                $category = if ([string]::IsNullOrEmpty($line)) { 'empty' } else { 'prefix=' + $line[0] }
+                return (New-ToolFailure 'PATCH_HUNK_LINE_INVALID' "line=$($j+1) $category")
             }
         }
         & $flush
         if ($hunks.Count -eq 0) {
             return (New-ToolFailure 'PATCH_HUNK_MISSING')
+        }
+        # Fresh-current-byte write gate for Update File (after hunk validation, before hunk application)
+        if ($null -ne $script:PriorFreshTokens) {
+            if (-not $script:PriorFreshTokens.ContainsKey($relative)) {
+                return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' must be read with read_file in a prior turn before writing.")
+            }
+            if ($script:PriorFreshTokens[$relative] -eq 'MISSING') {
+                return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' was confirmed missing; it must exist for Update File. Use read_file to refresh.")
+            }
+            $currentHash = Get-FileSha256 $full
+            if ($currentHash -ne $script:PriorFreshTokens[$relative]) {
+                return (New-ToolFailure 'WRITE_REQUIRES_FRESH_READ' "File '$relative' has changed since last read. Use read_file to refresh before writing.")
+            }
         }
         foreach ($hunk in $hunks) {
             $first = $normalized.IndexOf($hunk.old, [System.StringComparison]::Ordinal)
@@ -750,6 +1145,7 @@ function Apply-UnifiedPatch {
         $script:PatchCount++
         Set-ChangedFileState $relative
         $script:ChangedFileHashes[$relative] = Get-FileSha256 $full
+        $script:FreshReadTokens.Remove($relative)
         return [pscustomobject]@{
             ok = $true
             result = [ordered]@{ path = $relative; changed = $true; dry_run = $false; sha256 = $script:ChangedFileHashes[$relative] }
@@ -759,7 +1155,7 @@ function Apply-UnifiedPatch {
         }
     }
     catch {
-        return (New-ToolFailure 'PATCH_FAILED' $_.Exception.Message)
+        return (New-PathAwareToolFailure 'PATCH_FAILED' $_)
     }
 }
 
@@ -788,11 +1184,17 @@ function Invoke-WorkspaceTool {
             if ($Mode -ne 'Writer') {
                 return (New-ToolFailure 'WRITER_TOOL_NOT_ALLOWED')
             }
+            if ($script:EffectiveWriteStrategy -ne 'ReplaceText') {
+                return (New-ToolFailure 'WRITER_TOOL_NOT_ALLOWED' 'replace_text is not the selected write tool for this run.')
+            }
             return (Invoke-ReplaceTextTool $Arguments)
         }
         'apply_patch' {
             if ($Mode -ne 'Writer') {
                 return (New-ToolFailure 'WRITER_TOOL_NOT_ALLOWED')
+            }
+            if ($script:EffectiveWriteStrategy -ne 'ApplyPatch') {
+                return (New-ToolFailure 'WRITER_TOOL_NOT_ALLOWED' 'apply_patch is not the selected write tool for this run.')
             }
             return (Invoke-ApplyPatchTool $Arguments)
         }
@@ -803,20 +1205,61 @@ function Invoke-WorkspaceTool {
 }
 
 function Get-ToolDefinitions {
+    if ($DirectResponse) {
+        $script:LastExposedToolNames = @()
+        return @()
+    }
     $definitions = New-Object System.Collections.Generic.List[object]
-    [void]$definitions.Add([ordered]@{
-        type = 'function'
-        function = [ordered]@{
-            name = 'workspace_status'
-            description = 'Return safe workspace fingerprint and Git metadata status.'
-            parameters = [ordered]@{ type = 'object'; properties = [ordered]@{}; additionalProperties = $false }
+    $exposedNames = New-Object System.Collections.Generic.List[string]
+    # In write-only mode, expose only the selected write tool
+    if ($script:ConvergenceMode -eq 'write-only') {
+        if ($Mode -eq 'Writer') {
+            if ($script:EffectiveWriteStrategy -eq 'ReplaceText') {
+                [void]$definitions.Add([ordered]@{
+                    type = 'function'
+                    function = [ordered]@{
+                        name = 'replace_text'
+                        description = 'Replace exactly one occurrence in one file from the write allowlist.'
+                        parameters = [ordered]@{
+                            type = 'object'
+                            properties = [ordered]@{
+                                path = [ordered]@{ type = 'string' }
+                                old_text = [ordered]@{ type = 'string' }
+                                new_text = [ordered]@{ type = 'string' }
+                            }
+                            required = @('path', 'old_text', 'new_text')
+                            additionalProperties = $false
+                        }
+                    }
+                })
+                [void]$exposedNames.Add('replace_text')
+            }
+            elseif ($script:EffectiveWriteStrategy -eq 'ApplyPatch') {
+                [void]$definitions.Add([ordered]@{
+                    type = 'function'
+                    function = [ordered]@{
+                        name = 'apply_patch'
+                        description = 'Apply exactly one file from the write allowlist using Codex patch format: *** Begin Patch, then *** Update File: path or *** Add File: path, patch lines, and *** End Patch. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
+                        parameters = [ordered]@{
+                            type = 'object'
+                            properties = [ordered]@{ patch = [ordered]@{ type = 'string' } }
+                            required = @('patch')
+                            additionalProperties = $false
+                        }
+                    }
+                })
+                [void]$exposedNames.Add('apply_patch')
+            }
         }
-    })
+        $script:LastExposedToolNames = @($exposedNames.ToArray())
+        return @($definitions.ToArray())
+    }
+    # Normal mode: expose read_file
     [void]$definitions.Add([ordered]@{
         type = 'function'
         function = [ordered]@{
             name = 'read_file'
-            description = 'Read one allowlisted relative text file.'
+            description = 'Read one relative text file from the read allowlist.'
             parameters = [ordered]@{
                 type = 'object'
                 properties = [ordered]@{ path = [ordered]@{ type = 'string' } }
@@ -825,61 +1268,97 @@ function Get-ToolDefinitions {
             }
         }
     })
-    [void]$definitions.Add([ordered]@{
-        type = 'function'
-        function = [ordered]@{
-            name = 'search_text'
-            description = 'Search literal text in allowlisted files.'
-            parameters = [ordered]@{
-                type = 'object'
-                properties = [ordered]@{ pattern = [ordered]@{ type = 'string' } }
-                required = @('pattern')
-                additionalProperties = $false
-            }
-        }
-    })
-    if ($Mode -eq 'Writer') {
+    [void]$exposedNames.Add('read_file')
+    # In forced-write mode, omit search_text
+    if ($script:ConvergenceMode -ne 'forced-write') {
         [void]$definitions.Add([ordered]@{
             type = 'function'
             function = [ordered]@{
-                name = 'replace_text'
-                description = 'Replace exactly one occurrence in one allowlisted file.'
+                name = 'search_text'
+                description = 'Search literal text in files from the read allowlist.'
                 parameters = [ordered]@{
                     type = 'object'
-                    properties = [ordered]@{
-                        path = [ordered]@{ type = 'string' }
-                        old_text = [ordered]@{ type = 'string' }
-                        new_text = [ordered]@{ type = 'string' }
-                    }
-                    required = @('path', 'old_text', 'new_text')
+                    properties = [ordered]@{ pattern = [ordered]@{ type = 'string' } }
+                    required = @('pattern')
                     additionalProperties = $false
                 }
             }
         })
-        [void]$definitions.Add([ordered]@{
-            type = 'function'
-            function = [ordered]@{
-                name = 'apply_patch'
-                description = 'Apply one bounded single-file patch in the allowlist.'
-                parameters = [ordered]@{
-                    type = 'object'
-                    properties = [ordered]@{ patch = [ordered]@{ type = 'string' } }
-                    required = @('patch')
-                    additionalProperties = $false
-                }
-            }
-        })
+        [void]$exposedNames.Add('search_text')
     }
-    return @($definitions)
+    if ($Mode -eq 'Writer') {
+        if ($script:EffectiveWriteStrategy -eq 'ReplaceText') {
+            [void]$definitions.Add([ordered]@{
+                type = 'function'
+                function = [ordered]@{
+                    name = 'replace_text'
+                    description = 'Replace exactly one occurrence in one file from the write allowlist.'
+                    parameters = [ordered]@{
+                        type = 'object'
+                        properties = [ordered]@{
+                            path = [ordered]@{ type = 'string' }
+                            old_text = [ordered]@{ type = 'string' }
+                            new_text = [ordered]@{ type = 'string' }
+                        }
+                        required = @('path', 'old_text', 'new_text')
+                        additionalProperties = $false
+                    }
+                }
+            })
+            [void]$exposedNames.Add('replace_text')
+        }
+        elseif ($script:EffectiveWriteStrategy -eq 'ApplyPatch') {
+            [void]$definitions.Add([ordered]@{
+                type = 'function'
+                function = [ordered]@{
+                    name = 'apply_patch'
+                    description = 'Apply exactly one file from the write allowlist using Codex patch format: *** Begin Patch, then *** Update File: path or *** Add File: path, patch lines, and *** End Patch. Every Add File content line requires one + patch prefix; encode a literal leading plus as ++. Never send diff --git format.'
+                    parameters = [ordered]@{
+                        type = 'object'
+                        properties = [ordered]@{ patch = [ordered]@{ type = 'string' } }
+                        required = @('patch')
+                        additionalProperties = $false
+                    }
+                }
+            })
+            [void]$exposedNames.Add('apply_patch')
+        }
+    }
+    $script:LastExposedToolNames = @($exposedNames.ToArray())
+    return @($definitions.ToArray())
 }
 
 function New-InitialMessages {
-    $system = 'You are the single sequential workspace Writer. One model response is one turn. Use only the provided tools; there is no shell, command runner, commit, stage, push, dependency installation, or recursive runner. Respect the allowlist. Read before editing, make minimal changes, and stop with a concise completion report only after the requested work is actually complete. A tool failure stops the turn and all later writes.'
+    $system = New-InitialSystemMessage
     $user = [string]$Prompt
     return @(
         [ordered]@{ role = 'system'; content = $system },
         [ordered]@{ role = 'user'; content = $user }
     )
+}
+
+function New-InitialSystemMessage {
+    $strategy = $script:EffectiveWriteStrategy
+    if ($DirectResponse) {
+        return 'Answer the user directly and concisely. No workspace tools are available. Do not claim to inspect or modify files.'
+    }
+    $readPathText = [string]::Join(', ', @(
+        $script:ReadPathDisplay | ForEach-Object { [string]$_ }
+    ))
+    $writePathText = [string]::Join(', ', @(
+        $script:WritePathDisplay | ForEach-Object { [string]$_ }
+    ))
+    $base = 'You are the single sequential workspace Writer. One model response is one turn. Use only the provided tools; there is no shell, command runner, commit, stage, push, dependency installation, or recursive runner. Readable paths are: ' + $readPathText + '. Writable paths are: ' + $writePathText + '. Read-only reference paths must never be edited. Batch independent reads and searches in the same turn and do not reread unchanged files. Read before editing, make minimal changes, begin editing once the required evidence is sufficient, and stop with a concise completion report only after the requested work is actually complete.'
+    if ($strategy -eq 'ReplaceText') {
+        $base += ' Write strategy: ReplaceText. Only replace_text is available for writes. Replace exactly one occurrence in one file; use shortest unique context; do not copy whole large files. One write per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
+    }
+    elseif ($strategy -eq 'ApplyPatch') {
+        $base += ' Write strategy: ApplyPatch. Only apply_patch is available for writes. apply_patch accepts one file only and requires Codex markers *** Begin Patch, then *** Update File: path or *** Add File: path, then *** End Patch; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One write per turn; reread a changed file before another edit. A tool failure stops the turn and all later writes.'
+    }
+    else {
+        $base += ' apply_patch accepts one file only and requires Codex markers *** Begin Patch, then *** Update File: path or *** Add File: path, then *** End Patch; every Add File content line begins with + and a literal leading plus is encoded as ++; never send diff --git. One write per turn; reread a changed file before another edit; use shortest unique context; do not copy whole large files; preserve valid JSON escaping for backslashes and prefer forward slashes for path arguments. A tool failure stops the turn and all later writes.'
+    }
+    return $base
 }
 
 function Load-MockResponses {
@@ -957,8 +1436,25 @@ function Add-AssistantMessage {
     if ($Message.PSObject.Properties.Name -contains 'reasoning_details') {
         $assistant.reasoning_details = $Message.reasoning_details
     }
-    if ($null -ne $Message.tool_calls) {
-        $assistant.tool_calls = @($Message.tool_calls)
+    $toolCallsProperty = $Message.PSObject.Properties['tool_calls']
+    if ($null -ne $toolCallsProperty -and $null -ne $toolCallsProperty.Value) {
+        $assistant.tool_calls = @(
+            foreach ($toolCall in @($toolCallsProperty.Value)) {
+                [ordered]@{
+                    id = [string]$toolCall.id
+                    type = if ([string]::IsNullOrWhiteSpace([string]$toolCall.type)) {
+                        'function'
+                    }
+                    else {
+                        [string]$toolCall.type
+                    }
+                    function = [ordered]@{
+                        name = [string]$toolCall.function.name
+                        arguments = [string]$toolCall.function.arguments
+                    }
+                }
+            }
+        )
     }
     $script:Messages += $assistant
 }
@@ -1010,18 +1506,78 @@ function Get-ToolBatchFingerprint {
 }
 
 function Convert-ToSafeObject {
-    param([AllowNull()][object]$Value)
+    param(
+        [AllowNull()][object]$Value,
+        [ValidateRange(0, 40)]
+        [int]$Depth = 0
+    )
+    if ($Depth -ge 40) {
+        throw 'SAFE_OBJECT_MAX_DEPTH'
+    }
     if ($null -eq $Value) {
         return $null
     }
-    try {
-        $json = ConvertTo-Json $Value -Depth 30 -Compress
-        $json = Redact-Text $json
-        return ($json | ConvertFrom-Json)
+    if ($Value -is [string]) {
+        $text = [string]$Value
+        $trimmed = $text.Trim()
+        $isObjectJson = $trimmed.StartsWith('{') -and $trimmed.EndsWith('}')
+        $isArrayJson = $trimmed.StartsWith('[') -and $trimmed.EndsWith(']')
+        if ($isObjectJson -or $isArrayJson) {
+            $parsed = $null
+            $parsedOk = $false
+            try {
+                if ($isArrayJson) {
+                    $parsed = @($text | ConvertFrom-Json -ErrorAction Stop)
+                }
+                else {
+                    $parsed = $text | ConvertFrom-Json -ErrorAction Stop
+                }
+                $parsedOk = $true
+            }
+            catch {
+                $parsedOk = $false
+            }
+            if ($parsedOk) {
+                $safeParsed = Convert-ToSafeObject -Value $parsed -Depth ($Depth + 1)
+                return (ConvertTo-Json -InputObject $safeParsed -Depth 30 -Compress)
+            }
+        }
+        return (Redact-Text $text)
     }
-    catch {
-        return (Redact-Text ([string]$Value))
+    if ($Value -is [System.Collections.IDictionary]) {
+        $safeDictionary = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $name = [string]$key
+            if ($name -match '^(?i:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|secret|password|token)$') {
+                $safeDictionary[$name] = '[REDACTED]'
+            }
+            else {
+                $safeDictionary[$name] = Convert-ToSafeObject -Value $Value[$key] -Depth ($Depth + 1)
+            }
+        }
+        return $safeDictionary
     }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $safeObject = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $name = [string]$property.Name
+            if ($name -match '^(?i:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|secret|password|token)$') {
+                $safeObject[$name] = '[REDACTED]'
+            }
+            else {
+                $safeObject[$name] = Convert-ToSafeObject -Value $property.Value -Depth ($Depth + 1)
+            }
+        }
+        return [pscustomobject]$safeObject
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $safeItems = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) {
+            [void]$safeItems.Add((Convert-ToSafeObject -Value $item -Depth ($Depth + 1)))
+        }
+        return ,@($safeItems.ToArray())
+    }
+    return $Value
 }
 
 function Get-CheckpointPath {
@@ -1059,7 +1615,8 @@ function Save-Checkpoint {
             provider = $script:Provider
             model = $script:Model
             mode = $script:Mode
-            allowlist = @($script:AllowPathDisplay)
+            read_paths = @($script:ReadPathDisplay)
+            write_paths = @($script:WritePathDisplay)
             workspace_fingerprint = $script:ExpectedFingerprint
             base_head = $script:BaseHead
             final_head = (Get-GitHead)
@@ -1076,6 +1633,12 @@ function Save-Checkpoint {
             latest_context_tokens = $script:LatestContextTokens
             checkpoint_round = ($script:CheckpointRound + 1)
             checkpoint_reason = $Reason
+            requested_write_strategy = $script:RequestedWriteStrategy
+            effective_write_strategy = $script:EffectiveWriteStrategy
+            convergence_mode = $script:ConvergenceMode
+            expected_write_bytes = $script:ExpectedWriteBytes
+            effective_expected_write_bytes = $script:EffectiveExpectedWriteBytes
+            writer_budget_source = $script:WriterBudgetSource
             completion_criteria = 'The model must report completion after requested edits and tests are complete; this runner never commits.'
             remaining_work = if ([string]::IsNullOrWhiteSpace($script:StopReason)) { 'Continue from next_turn.' } else { $script:StopReason }
             message_boundary = [ordered]@{
@@ -1158,9 +1721,15 @@ function Load-Checkpoint {
         if ($data.runner -ne $script:RunnerName -or $data.model -ne $script:Model -or $data.mode -ne $script:Mode -or $data.provider -ne $script:Provider) {
             throw 'CHECKPOINT_RUNNER_CONFIG_MISMATCH'
         }
-        $savedAllow = @($data.allowlist | ForEach-Object { [string]$_ })
-        if ((ConvertTo-Json $savedAllow -Compress) -ne (ConvertTo-Json @($script:AllowPathDisplay) -Compress)) {
-            throw 'CHECKPOINT_ALLOWLIST_MISMATCH'
+        $savedReadPaths = @($data.read_paths | ForEach-Object { [string]$_ })
+        $savedWritePaths = @($data.write_paths | ForEach-Object { [string]$_ })
+        if (
+            (ConvertTo-Json $savedReadPaths -Compress) -ne
+                (ConvertTo-Json @($script:ReadPathDisplay) -Compress) -or
+            (ConvertTo-Json $savedWritePaths -Compress) -ne
+                (ConvertTo-Json @($script:WritePathDisplay) -Compress)
+        ) {
+            throw 'CHECKPOINT_PATH_POLICY_MISMATCH'
         }
         $current = Get-WorkspaceSnapshot
         if ([string]$data.workspace_fingerprint -ne [string]$current.fingerprint) {
@@ -1185,6 +1754,16 @@ function Load-Checkpoint {
         $script:LatestPromptTokens = [int64]$data.latest_prompt_tokens
         $script:LatestContextTokens = [int64]$data.latest_context_tokens
         $script:CheckpointRound = [int]$data.checkpoint_round
+        # Restore write strategy and convergence state if present; retain preflight values for backward compatibility
+        if ($null -ne $data.requested_write_strategy -and -not [string]::IsNullOrWhiteSpace([string]$data.requested_write_strategy)) {
+            $script:RequestedWriteStrategy = [string]$data.requested_write_strategy
+        }
+        if ($null -ne $data.effective_write_strategy -and -not [string]::IsNullOrWhiteSpace([string]$data.effective_write_strategy)) {
+            $script:EffectiveWriteStrategy = [string]$data.effective_write_strategy
+        }
+        if ($null -ne $data.convergence_mode -and -not [string]::IsNullOrWhiteSpace([string]$data.convergence_mode)) {
+            $script:ConvergenceMode = [string]$data.convergence_mode
+        }
         return $true
     }
     catch {
@@ -1194,7 +1773,101 @@ function Load-Checkpoint {
     }
 }
 
+function Get-ModelRequestErrorDetail {
+    param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+    $parts = New-Object System.Collections.Generic.List[string]
+    $bodyTexts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add((Redact-Text $ErrorRecord.Exception.Message))
+    if (
+        $null -ne $ErrorRecord.ErrorDetails -and
+        -not [string]::IsNullOrWhiteSpace([string]$ErrorRecord.ErrorDetails.Message)
+    ) {
+        [void]$bodyTexts.Add([string]$ErrorRecord.ErrorDetails.Message)
+    }
+    try {
+        $response = $ErrorRecord.Exception.Response
+        if ($null -ne $response) {
+            if ($response.PSObject.Properties.Name -contains 'StatusCode') {
+                [void]$parts.Add(('HTTP_STATUS=' + [int]$response.StatusCode))
+            }
+            $stream = $response.GetResponseStream()
+            if ($null -ne $stream) {
+                $reader = New-Object System.IO.StreamReader($stream)
+                try {
+                    $streamBody = $reader.ReadToEnd()
+                    if (-not [string]::IsNullOrWhiteSpace($streamBody)) {
+                        [void]$bodyTexts.Add($streamBody)
+                    }
+                }
+                finally {
+                    $reader.Dispose()
+                }
+            }
+        }
+    }
+    catch {
+        # Preserve the original exception if provider diagnostics cannot be parsed.
+    }
+    foreach ($bodyText in @($bodyTexts | Select-Object -Unique)) {
+        try {
+            $apiError = $bodyText | ConvertFrom-Json
+            $errorProperty = $apiError.PSObject.Properties['error']
+            if ($null -eq $errorProperty -or $null -eq $errorProperty.Value) {
+                continue
+            }
+            $codeProperty = $errorProperty.Value.PSObject.Properties['code']
+            if ($null -ne $codeProperty -and -not [string]::IsNullOrWhiteSpace([string]$codeProperty.Value)) {
+                [void]$parts.Add(('API_CODE=' + (Redact-Text ([string]$codeProperty.Value))))
+            }
+            $messageProperty = $errorProperty.Value.PSObject.Properties['message']
+            if ($null -ne $messageProperty -and -not [string]::IsNullOrWhiteSpace([string]$messageProperty.Value)) {
+                [void]$parts.Add(('API_MESSAGE=' + (Redact-Text ([string]$messageProperty.Value))))
+            }
+        }
+        catch {
+            # Do not expose an unstructured provider response body.
+        }
+    }
+    return ([string]::Join(' | ', $parts.ToArray()))
+}
+
+function Get-ProviderHttpErrorDetail {
+    param(
+        [int]$StatusCode,
+        [AllowEmptyString()][string]$BodyText
+    )
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add(('HTTP_STATUS=' + $StatusCode))
+    if ([string]::IsNullOrWhiteSpace($BodyText)) {
+        return ([string]::Join(' | ', $parts.ToArray()))
+    }
+    try {
+        $apiError = $BodyText | ConvertFrom-Json
+        $errorProperty = $apiError.PSObject.Properties['error']
+        if ($null -ne $errorProperty -and $null -ne $errorProperty.Value) {
+            $codeProperty = $errorProperty.Value.PSObject.Properties['code']
+            if ($null -ne $codeProperty -and -not [string]::IsNullOrWhiteSpace([string]$codeProperty.Value)) {
+                [void]$parts.Add(('API_CODE=' + (Redact-Text ([string]$codeProperty.Value))))
+            }
+            $messageProperty = $errorProperty.Value.PSObject.Properties['message']
+            if ($null -ne $messageProperty -and -not [string]::IsNullOrWhiteSpace([string]$messageProperty.Value)) {
+                [void]$parts.Add(('API_MESSAGE=' + (Redact-Text ([string]$messageProperty.Value))))
+            }
+        }
+    }
+    catch {
+        # Never expose an unstructured provider response body.
+    }
+    return ([string]::Join(' | ', $parts.ToArray()))
+}
+
 function Invoke-ModelRequest {
+    # Obtain tool definitions before TestMode early return so TestMode records the exact exposed list too
+    $toolDefinitions = @(Get-ToolDefinitions)
+    $script:ToolExposureHistory += [ordered]@{
+        turn = ($script:TurnsUsed + 1)
+        names = @($script:LastExposedToolNames)
+    }
     if ($TestMode) {
         if ($script:MockIndex -ge $script:MockResponses.Count) {
             return [pscustomobject]@{
@@ -1205,29 +1878,74 @@ function Invoke-ModelRequest {
         $script:MockIndex++
         return $response
     }
+    $requestTimer = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $body = [ordered]@{
             model = $script:Model
             messages = @($script:Messages)
-            tools = @(Get-ToolDefinitions)
-            tool_choice = 'auto'
             max_tokens = $MaxTokens
-            temperature = 0
             stream = $false
-            reasoning_effort = $ReasoningEffort
+        }
+        if ($toolDefinitions.Count -gt 0) {
+            $body.tools = $toolDefinitions
         }
         if ($script:Provider -eq 'DeepSeek') {
-            $body.thinking = [ordered]@{ type = 'enabled' }
+            $body.thinking = [ordered]@{ type = $script:ThinkingModeResolved }
+            if ($script:ThinkingModeResolved -eq 'enabled') {
+                $body.reasoning_effort = $ReasoningEffort
+            }
+            else {
+                $body.temperature = 0
+            }
+        }
+        else {
+            $body.temperature = 0
+            $body.reasoning_effort = $ReasoningEffort
+            if ($toolDefinitions.Count -gt 0) {
+                $body.tool_choice = 'auto'
+            }
         }
         $json = ConvertTo-Json $body -Depth 40
-        $headers = @{ Authorization = ('Bearer ' + $script:ApiKey) }
-        return Invoke-RestMethod -Method Post -Uri $script:Endpoint -Headers $headers -ContentType 'application/json' -Body $json -TimeoutSec $script:TimeoutSeconds
+        Add-Type -AssemblyName System.Net.Http
+        $httpClient = New-Object System.Net.Http.HttpClient
+        $httpResponse = $null
+        $httpContent = $null
+        try {
+            $httpClient.Timeout = [TimeSpan]::FromSeconds($script:TimeoutSeconds)
+            $httpClient.DefaultRequestHeaders.Authorization = New-Object `
+                System.Net.Http.Headers.AuthenticationHeaderValue('Bearer', $script:ApiKey)
+            $httpContent = New-Object System.Net.Http.StringContent(
+                $json,
+                [System.Text.Encoding]::UTF8,
+                'application/json'
+            )
+            $httpResponse = $httpClient.PostAsync($script:Endpoint, $httpContent).GetAwaiter().GetResult()
+            $responseText = $httpResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            if (-not $httpResponse.IsSuccessStatusCode) {
+                return [pscustomobject]@{
+                    __runner_error = 'MODEL_REQUEST_FAILED'
+                    __runner_detail = Get-ProviderHttpErrorDetail `
+                        -StatusCode ([int]$httpResponse.StatusCode) `
+                        -BodyText $responseText
+                }
+            }
+            return ($responseText | ConvertFrom-Json)
+        }
+        finally {
+            if ($null -ne $httpContent) { $httpContent.Dispose() }
+            if ($null -ne $httpResponse) { $httpResponse.Dispose() }
+            $httpClient.Dispose()
+        }
     }
     catch {
         return [pscustomobject]@{
             __runner_error = 'MODEL_REQUEST_FAILED'
-            __runner_detail = (Redact-Text $_.Exception.Message)
+            __runner_detail = (Get-ModelRequestErrorDetail $_)
         }
+    }
+    finally {
+        $requestTimer.Stop()
+        $script:RequestDurationsMs += [int64]$requestTimer.ElapsedMilliseconds
     }
 }
 
@@ -1251,6 +1969,12 @@ function Get-ResultObject {
         repository_root = $script:RepositoryRoot
         task_id = $script:TaskId
         dry_run = [bool]$DryRun
+        direct_response = [bool]$DirectResponse
+        thinking_mode = $script:ThinkingModeResolved
+        tools_enabled = (-not [bool]$DirectResponse)
+        elapsed_ms = [int64]$script:RunStopwatch.ElapsedMilliseconds
+        api_elapsed_ms = [int64](($script:RequestDurationsMs | Measure-Object -Sum).Sum)
+        request_durations_ms = @($script:RequestDurationsMs)
         turns_used = $script:TurnsUsed
         max_turns = $MaxTurns
         effective_max_turns = $script:EffectiveMaxTurns
@@ -1268,6 +1992,8 @@ function Get-ResultObject {
         context_soft_limit = $script:ContextSoftLimit
         context_hard_limit = $script:ContextHardLimit
         output_reserve_tokens = $script:OutputReserveTokens
+        minimum_writer_output_tokens = $script:MinimumWriterOutputTokens
+        usable_context_tokens = ($script:ContextHardLimit - $script:OutputReserveTokens)
         request_count = $script:RequestCount
         finish_reasons = @($script:FinishReasons)
         tool_calls = $script:ToolCallCount
@@ -1280,6 +2006,8 @@ function Get-ResultObject {
         leading_tool_failure = $script:LeadingToolFailure
         changed_paths = @($script:ChangedPaths.Keys | Sort-Object)
         changed_file_hashes = $script:ChangedFileHashes
+        read_paths = @($script:ReadPathDisplay)
+        write_paths = @($script:WritePathDisplay)
         base_head = $script:BaseHead
         final_head = $script:FinalHead
         workspace_fingerprint = $script:ExpectedFingerprint
@@ -1298,6 +2026,15 @@ function Get-ResultObject {
         cost_usd = if ($script:RequestCount -eq 0) { 0 } else { 'uninstrumented' }
         response = (Redact-Text $script:FinalResponse)
         exit_code = $script:ExitCode
+        requested_write_strategy = $script:RequestedWriteStrategy
+        effective_write_strategy = $script:EffectiveWriteStrategy
+        estimated_writer_output_tokens = $script:EstimatedWriterOutputTokens
+        convergence_mode = $script:ConvergenceMode
+        expected_write_bytes = $script:ExpectedWriteBytes
+        effective_expected_write_bytes = $script:EffectiveExpectedWriteBytes
+        writer_budget_source = $script:WriterBudgetSource
+        exposed_tool_names = @($script:LastExposedToolNames)
+        tool_exposure_history = @($script:ToolExposureHistory)
     }
 }
 
@@ -1327,6 +2064,9 @@ try {
     if ($RequestTimeoutSeconds -ne 0 -and ($RequestTimeoutSeconds -lt 30 -or $RequestTimeoutSeconds -gt 600)) {
         throw 'REQUEST_TIMEOUT_OUT_OF_RANGE'
     }
+    if ($DirectResponse -and $Mode -ne 'ReadOnly') {
+        throw 'DIRECT_RESPONSE_READONLY_ONLY'
+    }
     if ([string]::IsNullOrWhiteSpace($Model)) {
         $Model = if ($Provider -eq 'DeepSeek') { 'deepseek-v4-pro' } else { 'anthropic/claude-opus-5' }
     }
@@ -1334,6 +2074,15 @@ try {
         throw 'MODEL_NOT_ALLOWED'
     }
     $script:Model = $Model
+    $script:ThinkingModeResolved = if ($Provider -ne 'DeepSeek') {
+        'provider-default'
+    }
+    elseif ($ThinkingMode -eq 'auto') {
+        if ($DirectResponse) { 'disabled' } else { 'enabled' }
+    }
+    else {
+        $ThinkingMode
+    }
     $script:Endpoint = if ([string]::IsNullOrWhiteSpace($Endpoint)) {
         if ($Provider -eq 'DeepSeek') { 'https://api.deepseek.com/chat/completions' } else { 'https://openrouter.ai/api/v1/chat/completions' }
     }
@@ -1349,9 +2098,11 @@ try {
     }
     $script:TaskId = $TaskId
     $script:BaseHead = Get-GitHead
-    $script:AllowRoots = @()
+    $script:WriteRoots = @()
     if ($null -ne $AllowPath) {
-        foreach ($requestedPath in @($AllowPath)) {
+        # Expand comma-joined external CLI values so -AllowPath a,b,c works via powershell.exe -File.
+        $allowItems = @($AllowPath | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        foreach ($requestedPath in $allowItems) {
             $relative = Get-NormalizedRelativePath $requestedPath
             if ([string]::IsNullOrWhiteSpace($relative) -or [System.IO.Path]::IsPathRooted($relative) -or $relative -match '(^|\\)\.\.(\\|$)') {
                 throw 'ALLOWLIST_PATH_INVALID'
@@ -1359,14 +2110,57 @@ try {
             if (Test-SensitiveRelativePath $relative) {
                 throw 'ALLOWLIST_SENSITIVE_PATH'
             }
-            if ($script:AllowRoots -notcontains $relative) {
-                $script:AllowRoots += $relative
+            Get-FullPathFromRelative $relative | Out-Null
+            if ($script:WriteRoots -notcontains $relative) {
+                $script:WriteRoots += $relative
             }
         }
     }
-    $script:AllowPathDisplay = @($script:AllowRoots)
-    if ($Mode -eq 'Writer' -and $script:AllowRoots.Count -eq 0) {
+    $script:ReadRoots = @($script:WriteRoots)
+    if ($null -ne $ReadPath) {
+        $readItems = @($ReadPath | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        foreach ($requestedPath in $readItems) {
+            $relative = Get-NormalizedRelativePath $requestedPath
+            if (
+                [string]::IsNullOrWhiteSpace($relative) -or
+                [System.IO.Path]::IsPathRooted($relative) -or
+                $relative -match '(^|\\)\.\.(\\|$)'
+            ) {
+                throw 'READ_PATH_INVALID'
+            }
+            if (Test-SensitiveRelativePath $relative) {
+                throw 'READ_PATH_SENSITIVE'
+            }
+            Get-FullPathFromRelative $relative | Out-Null
+            if ($script:ReadRoots -notcontains $relative) {
+                $script:ReadRoots += $relative
+            }
+        }
+    }
+    $script:WritePathDisplay = @($script:WriteRoots)
+    $script:ReadPathDisplay = @($script:ReadRoots)
+    if ($Mode -eq 'Writer' -and $script:WriteRoots.Count -eq 0) {
         throw 'WRITER_ALLOWLIST_REQUIRED'
+    }
+    if ($DirectResponse -and ($script:WriteRoots.Count -gt 0 -or $script:ReadRoots.Count -gt 0)) {
+        throw 'DIRECT_RESPONSE_ALLOWLIST_NOT_ALLOWED'
+    }
+    if ([string]::IsNullOrWhiteSpace($Prompt) -and [string]::IsNullOrWhiteSpace($ResumeCheckpoint)) {
+        throw 'PROMPT_REQUIRED'
+    }
+    # --- Write strategy preflight (before checkpoint, snapshot, mock, offline, or API) ---
+    $script:RequestedWriteStrategy = $WriteStrategy
+    $script:EffectiveWriteStrategy = Resolve-WriteStrategy -Requested $WriteStrategy -Mode $Mode
+    $script:EstimatedWriterOutputTokens = Get-EstimatedWriterOutputTokens -Mode $Mode
+    if ($Mode -eq 'Writer') {
+        if ($MaxTokens -lt $script:EstimatedWriterOutputTokens) {
+            throw 'WRITER_OUTPUT_BUDGET_TOO_LOW'
+        }
+        $script:MinimumWriterOutputTokens = [Math]::Max($script:MinimumWriterOutputTokens, $script:EstimatedWriterOutputTokens)
+        $script:ConvergenceMode = 'normal'
+    }
+    else {
+        $script:ConvergenceMode = 'none'
     }
     $script:CheckpointPathResolved = Get-CheckpointPath $CheckpointPath
     $script:ExpectedFingerprint = (Get-WorkspaceSnapshot).fingerprint
@@ -1374,15 +2168,14 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($MockResponsesPath) -and -not $TestMode) {
         throw 'MOCK_REQUIRES_TEST_MODE'
     }
+    # Compute exposed tool names for OfflineConfig and result object
+    $script:LastExposedToolNames = @(Get-ToolDefinitions | ForEach-Object { $_.function.name })
     if ($OfflineConfig) {
         $script:Status = 'OFFLINE_CONFIG'
         $script:ExitCode = 0
         $script:StopReason = 'OFFLINE_CONFIG'
     }
     else {
-        if ([string]::IsNullOrWhiteSpace($Prompt) -and [string]::IsNullOrWhiteSpace($ResumeCheckpoint)) {
-            throw 'PROMPT_REQUIRED'
-        }
         if (-not $TestMode) {
             $keyName = if ($Provider -eq 'DeepSeek') { 'DEEPSEEK_API_KEY' } else { 'OPENROUTER_API_KEY' }
             try {
@@ -1402,7 +2195,7 @@ try {
             if ([string]::IsNullOrWhiteSpace($Prompt)) {
                 throw 'PROMPT_REQUIRED'
             }
-            $script:Messages = New-InitialMessages
+            $script:Messages = @(New-InitialMessages)
         }
         else {
             $resumeFull = [System.IO.Path]::GetFullPath($ResumeCheckpoint)
@@ -1443,9 +2236,17 @@ try {
             $response = $null
             $script:RequestCount++
             $response = Invoke-ModelRequest
-            if ($null -ne $response.__runner_error) {
-                Add-RunnerError ([string]$response.__runner_error) ([string]$response.__runner_detail)
-                $script:StopReason = [string]$response.__runner_error
+            $runnerErrorProperty = $response.PSObject.Properties['__runner_error']
+            if ($null -ne $runnerErrorProperty -and $null -ne $runnerErrorProperty.Value) {
+                $runnerDetailProperty = $response.PSObject.Properties['__runner_detail']
+                $runnerDetail = if ($null -ne $runnerDetailProperty) {
+                    [string]$runnerDetailProperty.Value
+                }
+                else {
+                    ''
+                }
+                Add-RunnerError ([string]$runnerErrorProperty.Value) $runnerDetail
+                $script:StopReason = [string]$runnerErrorProperty.Value
                 break
             }
             $script:TurnsUsed++
@@ -1475,18 +2276,51 @@ try {
                 $script:StopReason = 'MODEL_MESSAGE_MISSING'
                 break
             }
-            $script:FinishReasons += if ($null -ne $response.choices -and $null -ne $response.choices[0].finish_reason) { [string]$response.choices[0].finish_reason } else { 'unknown' }
-            Add-AssistantMessage $message
+            $finishReason = if ($null -ne $response.choices -and $null -ne $response.choices[0].finish_reason) { [string]$response.choices[0].finish_reason } else { 'unknown' }
+            $script:FinishReasons += $finishReason
             $toolCalls = @()
-            if ($null -ne $message.tool_calls) {
-                $toolCalls = @($message.tool_calls)
+            $messageToolCallsProperty = $message.PSObject.Properties['tool_calls']
+            if (
+                $null -ne $messageToolCallsProperty -and
+                $null -ne $messageToolCallsProperty.Value
+            ) {
+                $toolCalls = @($messageToolCallsProperty.Value)
             }
+            if ($finishReason -eq 'length' -and $toolCalls.Count -gt 0) {
+                Add-RunnerError 'OUTPUT_LIMIT_DURING_TOOL_CALL'
+                $script:StopReason = 'OUTPUT_LIMIT_DURING_TOOL_CALL'
+                break
+            }
+            Add-AssistantMessage $message
             $turnEditStart = $script:EditCount
             if ($toolCalls.Count -eq 0) {
+                if ($finishReason -eq 'length') {
+                    if ($script:EditCount -eq 0) {
+                        Add-RunnerError 'OUTPUT_LIMIT_BEFORE_EDIT'
+                        $script:StopReason = 'OUTPUT_LIMIT_BEFORE_EDIT'
+                    }
+                    else {
+                        Add-RunnerError 'OUTPUT_LIMIT_AFTER_EDIT'
+                        $script:StopReason = 'OUTPUT_LIMIT_AFTER_EDIT'
+                    }
+                    break
+                }
                 if ($null -ne $message.content -and -not [string]::IsNullOrWhiteSpace([string]$message.content)) {
                     $script:FinalResponse = [string]$message.content
-                    if ($script:LeadingToolFailure -or $script:Errors.Count -gt 0) {
+                    if ($Mode -eq 'Writer' -and $script:EditCount -eq 0) {
+                        Add-RunnerError 'WRITER_COMPLETED_WITHOUT_EDIT'
                         $script:Status = 'PARTIAL'
+                        $script:ExitCode = 2
+                        $script:StopReason = 'WRITER_COMPLETED_WITHOUT_EDIT'
+                        break
+                    }
+                    if ($script:LeadingToolFailure -or $script:Errors.Count -gt 0) {
+                        if ($script:EditCount -gt 0) {
+                            $script:Status = 'PARTIAL_AFTER_EDIT'
+                        }
+                        else {
+                            $script:Status = 'PARTIAL'
+                        }
                         $script:ExitCode = 2
                     }
                     else {
@@ -1494,7 +2328,14 @@ try {
                         $script:ExitCode = 0
                     }
                     $script:StopReason = 'MODEL_COMPLETED'
-                    [void](Save-Checkpoint 'completed')
+                    if (-not $DirectResponse) {
+                        # Checkpoint is required for non-direct runs that reached model completion.
+                        # A write/integrity/redaction failure must not leave PASS/exit 0.
+                        $completedSaved = Save-Checkpoint 'completed'
+                        if (-not $completedSaved) {
+                            Assert-CheckpointSuccessOrDemote -Saved $false -Context 'completed'
+                        }
+                    }
                     break
                 }
                 Add-RunnerError 'EMPTY_MODEL_RESPONSE'
@@ -1515,87 +2356,329 @@ try {
                 $duplicateBatchSeen = $false
             }
             $previousBatchFingerprint = $batchFingerprint
-            foreach ($toolCall in $toolCalls) {
-                if ($script:LeadingToolFailure) {
-                    break
+
+            # --- Atomic local batch preflight ---
+            $toolContracts = @{
+                'read_file'    = @('path')
+                'search_text'  = @('pattern')
+                'replace_text' = @('path', 'old_text', 'new_text')
+                'apply_patch'  = @('patch')
+            }
+            $writeToolNames = @('replace_text', 'apply_patch')
+            $allowedToolNames = @($toolContracts.Keys)
+            $preflightEntries = New-Object System.Collections.Generic.List[object]
+            $preflightFailed = $false
+            $writeCount = 0
+            for ($i = 0; $i -lt $toolCalls.Count; $i++) {
+                $tc = $toolCalls[$i]
+                $tcName = Get-ToolCallName $tc
+                $tcId = if ($null -ne $tc.id) { [string]$tc.id } else { 'tool-' + ($script:ToolCallCount + $i + 1) }
+                $tcArgs = $null
+                $parseErr = $null
+                try {
+                    $tcArgs = Convert-ArgumentsObject $tc
                 }
-                $toolResult = $null
-                $name = Get-ToolCallName $toolCall
-                $id = if ($null -ne $toolCall.id) { [string]$toolCall.id } else { 'tool-' + ($script:ToolCallCount + 1) }
+                catch {
+                    $parseErr = if ($finishReason -eq 'length') { 'OUTPUT_LIMIT_DURING_TOOL_CALL' } else { 'TOOL_ARGUMENTS_INVALID_JSON' }
+                }
+                $entry = [pscustomobject]@{
+                    tc       = $tc
+                    name     = $tcName
+                    id       = $tcId
+                    args     = $tcArgs
+                    parseErr = $parseErr
+                    reqErr    = $null
+                    budgetErr = $null
+                    unknown   = $false
+                    isWrite   = $false
+                }
+                if ($null -ne $parseErr) {
+                    $preflightFailed = $true
+                }
+                elseif ($tcName -notin $allowedToolNames) {
+                    $entry.unknown = $true
+                    $preflightFailed = $true
+                }
+                else {
+                    if ($tcName -in $writeToolNames) {
+                        $entry.isWrite = $true
+                        $writeCount++
+                    }
+                    if ($null -eq $tcArgs) {
+                        $tcArgs = [pscustomobject]@{}
+                    }
+                    $requiredProps = $toolContracts[$tcName]
+                    foreach ($prop in $requiredProps) {
+                        $propFound = $tcArgs.PSObject.Properties | Where-Object { $_.Name -eq $prop } | Select-Object -First 1
+                        if ($null -eq $propFound) {
+                            $entry.reqErr = "$tcName.$prop"
+                            $preflightFailed = $true
+                            break
+                        }
+                    }
+                }
+                [void]$preflightEntries.Add($entry)
+            }
+            if ($writeCount -gt 1) {
+                $preflightFailed = $true
+            }
+            # Write budget preflight: check serialized write-tool argument size against budget
+            if ($Mode -eq 'Writer' -and $script:EffectiveExpectedWriteBytes -gt 0 -and -not $preflightFailed) {
+                foreach ($entry in $preflightEntries) {
+                    if ($entry.isWrite) {
+                        $writeBytes = [System.Text.Encoding]::UTF8.GetByteCount((ConvertTo-Json $entry.args -Depth 20 -Compress))
+                        if ($writeBytes -gt $script:EffectiveExpectedWriteBytes) {
+                            $entry.budgetErr = 'WRITER_WRITE_BUDGET_EXCEEDED'
+                            $preflightFailed = $true
+                        }
+                    }
+                }
+            }
+            # Snapshot prior-turn fresh read tokens so same-turn reads cannot satisfy freshness
+            $script:PriorFreshTokens = $script:FreshReadTokens.Clone()
+            # --- End preflight ---
+
+            $batchFailed = $false
+            $freshReadRecoveryNeeded = $false
+            $freshReadRecoveryPath = ''
+            foreach ($entry in $preflightEntries) {
+                $tc = $entry.tc
+                $name = $entry.name
+                $id = $entry.id
+                $args = $entry.args
                 $script:ToolCallCount++
                 if (-not $script:ToolCallsByName.Contains($name)) {
                     $script:ToolCallsByName[$name] = 0
                 }
-                $args = $null
-                try {
-                    $args = Convert-ArgumentsObject $toolCall
+                $toolResult = $null
+                if ($preflightFailed) {
+                    # A: never break early; assign specific code to defective calls,
+                    # TOOL_PREFLIGHT_ABORTED to unaffected calls.
+                    # For multiple-write batches, write calls get MULTIPLE_WRITE_TOOLS_PER_TURN
+                    # and non-write calls get TOOL_PREFLIGHT_ABORTED.
+                    if ($null -ne $entry.parseErr) {
+                        $toolResult = New-ToolFailure $entry.parseErr
+                    }
+                    elseif ($entry.unknown) {
+                        $toolResult = New-ToolFailure 'TOOL_NOT_ALLOWED' $name
+                    }
+                    elseif ($null -ne $entry.reqErr) {
+                        $toolResult = New-ToolFailure 'TOOL_ARGUMENT_REQUIRED' $entry.reqErr
+                    }
+                    elseif ($null -ne $entry.budgetErr) {
+                        $toolResult = New-ToolFailure $entry.budgetErr
+                    }
+                    elseif ($writeCount -gt 1) {
+                        if ($entry.isWrite) {
+                            $toolResult = New-ToolFailure 'MULTIPLE_WRITE_TOOLS_PER_TURN'
+                        }
+                        else {
+                            $toolResult = New-ToolFailure 'TOOL_PREFLIGHT_ABORTED'
+                        }
+                    }
+                    else {
+                        $toolResult = New-ToolFailure 'TOOL_PREFLIGHT_ABORTED'
+                    }
                 }
-                catch {
-                    $toolResult = New-ToolFailure 'TOOL_ARGUMENTS_INVALID_JSON'
-                    $script:LeadingToolFailure = $true
-                    Add-RunnerError 'TOOL_ARGUMENTS_INVALID_JSON'
-                }
-                if ($null -eq $toolResult) {
+                else {
                     $toolResult = Invoke-WorkspaceTool -Name $name -Arguments $args
                 }
                 $script:ToolCallSequence += [ordered]@{
-                    turn = $script:TurnsUsed
+                    turn        = $script:TurnsUsed
                     tool_call_id = $id
-                    name = $name
-                    ok = [bool]$toolResult.ok
-                    changed = [bool]$toolResult.changed
+                    name        = $name
+                    ok          = [bool]$toolResult.ok
+                    changed     = [bool]$toolResult.changed
                 }
                 if ($toolResult.ok) {
                     $script:ToolCallsByName[$name] = [int]$script:ToolCallsByName[$name] + 1
                 }
-                $toolContent = ConvertTo-Json (Convert-ToSafeObject $toolResult.result) -Depth 30 -Compress
+                # B: serialize failed tool messages as a safe object instead of null result
+                if ($toolResult.ok) {
+                    $toolContent = ConvertTo-Json (Convert-ToSafeObject $toolResult.result) -Depth 30 -Compress
+                }
+                else {
+                    $safeFailure = [ordered]@{
+                        ok           = $false
+                        error_code   = [string]$toolResult.error_code
+                        error_detail = [string]$toolResult.error_detail
+                        changed      = $false
+                    }
+                    $toolContent = ConvertTo-Json (Convert-ToSafeObject $safeFailure) -Depth 30 -Compress
+                }
                 $script:Messages += [ordered]@{
-                    role = 'tool'
+                    role         = 'tool'
                     tool_call_id = $id
-                    content = (Redact-Text $toolContent)
+                    content      = $toolContent
                 }
                 if (-not $toolResult.ok) {
-                    $script:LeadingToolFailure = $true
-                    Add-RunnerError ([string]$toolResult.error_code) ([string]$toolResult.error_detail)
-                    $script:StopReason = 'LEADING_TOOL_FAILURE'
-                    break
+                    $errorCode = [string]$toolResult.error_code
+                    # C: WRITE_REQUIRES_FRESH_READ is recoverable; do not set LeadingToolFailure
+                    if ($errorCode -eq 'WRITE_REQUIRES_FRESH_READ') {
+                        Add-RunnerWarning $errorCode ([string]$toolResult.error_detail)
+                        $freshReadRecoveryNeeded = $true
+                        $script:NoProgressRounds = 0
+                        # In write-only mode, fall back to forced-write so read_file is available
+                        if ($script:ConvergenceMode -eq 'write-only') {
+                            $script:ConvergenceMode = 'forced-write'
+                        }
+                        # Extract the path from the error detail for the system message
+                        if ([string]$toolResult.error_detail -match "'([^']+)'") {
+                            $freshReadRecoveryPath = $Matches[1]
+                        }
+                    }
+                    elseif ($preflightFailed) {
+                        # A: preflight failures are collected but do not break the foreach;
+                        # LeadingToolFailure and the primary error are recorded after the loop.
+                        $batchFailed = $true
+                    }
+                    else {
+                        $script:LeadingToolFailure = $true
+                        Add-RunnerError $errorCode ([string]$toolResult.error_detail)
+                        $script:StopReason = 'LEADING_TOOL_FAILURE'
+                        $batchFailed = $true
+                        break
+                    }
                 }
                 if ($toolResult.changed -and $script:EditCount -gt $script:LastCheckpointEditCount) {
                     if (-not (Save-Checkpoint 'successful_write')) {
-                        $script:StopReason = 'CHECKPOINT_WRITE_FAILED'
+                        Assert-CheckpointSuccessOrDemote -Saved $false -Context 'successful_write'
+                        $batchFailed = $true
                         break
                     }
                 }
             }
-            if ($script:LeadingToolFailure -or $script:CheckpointFailure) {
+            # A: after all preflight-failed entries are emitted, record one primary error and stop
+            if ($preflightFailed -and $batchFailed) {
+                $script:LeadingToolFailure = $true
+                if ($writeCount -gt 1) {
+                    Add-RunnerError 'MULTIPLE_WRITE_TOOLS_PER_TURN' 'Multiple write tools requested in one turn; no workspace tool executed.'
+                }
+                else {
+                    # Compute the primary preflight code/detail from the first actual defective entry
+                    $primaryCode = 'TOOL_PREFLIGHT_FAILED'
+                    $primaryDetail = 'One or more tool calls failed atomic preflight validation; no workspace tool executed.'
+                    foreach ($entry in $preflightEntries) {
+                        if ($null -ne $entry.parseErr) {
+                            $primaryCode = $entry.parseErr
+                            $primaryDetail = ''
+                            break
+                        }
+                        if ($entry.unknown) {
+                            $primaryCode = 'TOOL_NOT_ALLOWED'
+                            $primaryDetail = $entry.name
+                            break
+                        }
+                        if ($null -ne $entry.budgetErr) {
+                            $primaryCode = $entry.budgetErr
+                            $primaryDetail = ''
+                            break
+                        }
+                        if ($null -ne $entry.reqErr) {
+                            $primaryCode = 'TOOL_ARGUMENT_REQUIRED'
+                            $primaryDetail = $entry.reqErr
+                            break
+                        }
+                    }
+                    Add-RunnerError $primaryCode $primaryDetail
+                }
+                $script:StopReason = 'LEADING_TOOL_FAILURE'
+            }
+            $script:PriorFreshTokens = $null
+            # C: append a concise system message for fresh-read recovery
+            if ($freshReadRecoveryNeeded -and -not [string]::IsNullOrWhiteSpace($freshReadRecoveryPath)) {
+                $script:Messages += [ordered]@{
+                    role    = 'system'
+                    content = "WRITE_REQUIRES_FRESH_READ: call read_file for '$freshReadRecoveryPath' next turn and continue only unfinished work."
+                }
+                $script:FreshReadRecoveryTurn = $true
+            }
+            if ($batchFailed) {
                 break
             }
             if ($script:EditCount -eq $turnEditStart) {
-                $script:NoProgressRounds++
-                if ($script:NoProgressRounds -ge 2) {
-                    Add-RunnerWarning 'NO_PROGRESS_WARNING' 'Two complete turns produced no objective edit progress.'
+                # C: do not increment no-progress counter for a fresh-read recovery turn
+                if (-not $script:FreshReadRecoveryTurn) {
+                    $script:NoProgressRounds++
                 }
-                if ($script:NoProgressRounds -ge 4) {
-                    Add-RunnerError 'NO_PROGRESS_LIMIT_REACHED' 'Four complete turns produced no objective edit progress.'
-                    $script:StopReason = 'NO_PROGRESS_LIMIT_REACHED'
-                    break
+                $script:FreshReadRecoveryTurn = $false
+                if ($script:EditCount -eq 0) {
+                    # Edit-start convergence and deadlines apply only to Writer.
+                    # ReadOnly may perform many read_file/search_text turns with zero edits.
+                    if ($Mode -eq 'Writer') {
+                        if ($script:NoProgressRounds -ge 2 -and $script:ConvergenceMode -ne 'forced-write' -and $script:ConvergenceMode -ne 'write-only') {
+                            $script:ConvergenceMode = 'forced-write'
+                            Add-RunnerWarning 'EDIT_CONVERGENCE_MODE' 'No edits after 2 rounds; entering forced-write mode. Further search is disabled; read only if freshness is missing, then use the selected write tool for the smallest pending edit.'
+                            $script:Messages += [ordered]@{
+                                role    = 'system'
+                                content = 'Further search is disabled; read only if freshness is missing, then use the selected write tool for the smallest pending edit.'
+                            }
+                        }
+                        if ($script:NoProgressRounds -ge 3 -and $script:ConvergenceMode -eq 'forced-write') {
+                            $script:ConvergenceMode = 'write-only'
+                            Add-RunnerWarning 'EDIT_CONVERGENCE_MODE' 'No edits after forced-write round; entering write-only mode. Only the selected write tool is exposed.'
+                            $script:Messages += [ordered]@{
+                                role    = 'system'
+                                content = 'Only the selected write tool is available. Make the smallest pending edit now.'
+                            }
+                        }
+                        if ($script:NoProgressRounds -ge 4) {
+                            Add-RunnerWarning 'EDIT_START_DEADLINE_WARNING' 'No edits have been made; the run will stop soon without progress.'
+                        }
+                        if ($script:NoProgressRounds -ge 6) {
+                            Add-RunnerError 'EDIT_START_DEADLINE_REACHED' 'No edits were made within the start deadline.'
+                            $script:StopReason = 'EDIT_START_DEADLINE_REACHED'
+                            break
+                        }
+                    }
+                }
+                else {
+                    # Post-edit no-progress is Writer-only (ReadOnly never edits).
+                    if ($Mode -eq 'Writer') {
+                        if ($script:NoProgressRounds -ge 2) {
+                            if ($script:NoProgressRounds -eq 2) {
+                                Add-RunnerWarning 'POST_EDIT_NO_PROGRESS_WARNING' 'Edits exist but recent turns produced no progress. Perform only necessary verification and return a completion report.'
+                                $script:Messages += [ordered]@{
+                                    role    = 'system'
+                                    content = 'Edits have been made. If requested edits are complete, minimally verify and report; otherwise continue only the missing edit after required fresh reads.'
+                                }
+                            }
+                        }
+                        if ($script:NoProgressRounds -ge 4) {
+                            Add-RunnerError 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED' 'No progress in consecutive turns after edits were made.'
+                            $script:StopReason = 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED'
+                            break
+                        }
+                    }
                 }
             }
             else {
                 $script:NoProgressRounds = 0
+                if ($Mode -eq 'Writer' -and ($script:ConvergenceMode -eq 'forced-write' -or $script:ConvergenceMode -eq 'write-only')) {
+                    $script:ConvergenceMode = 'normal'
+                }
             }
             if ($script:TurnsUsed -ge $script:CheckpointTurn -and ($script:TurnsUsed % $script:ExtensionSize) -eq 0) {
                 if (-not (Save-Checkpoint 'periodic')) {
-                    $script:StopReason = 'CHECKPOINT_WRITE_FAILED'
+                    Assert-CheckpointSuccessOrDemote -Saved $false -Context 'periodic'
                     break
                 }
             }
         }
-        if (-not $script:CheckpointFailure -and $script:TurnsUsed -gt 0 -and -not $script:CheckpointSaved) {
-            [void](Save-Checkpoint 'stopped')
+        if (-not $DirectResponse -and -not $script:CheckpointFailure -and $script:TurnsUsed -gt 0 -and -not $script:CheckpointSaved) {
+            if (-not (Save-Checkpoint 'stopped')) {
+                Assert-CheckpointSuccessOrDemote -Saved $false -Context 'stopped'
+            }
+        }
+        if ($script:CheckpointFailure) {
+            Assert-CheckpointSuccessOrDemote -Saved $false -Context 'final'
         }
         if ($script:Status -eq 'FAIL') {
-            if ($script:LeadingToolFailure -or $script:EditCount -gt 0) {
+            if ($script:EditCount -gt 0) {
+                $script:Status = 'PARTIAL_AFTER_EDIT'
+                $script:ExitCode = 2
+            }
+            elseif ($script:LeadingToolFailure) {
                 $script:Status = 'PARTIAL'
                 $script:ExitCode = 2
             }
@@ -1614,6 +2697,9 @@ catch {
     }
 }
 finally {
+    if ($script:CheckpointFailure -and ($script:Status -eq 'PASS' -or $script:ExitCode -eq 0)) {
+        Assert-CheckpointSuccessOrDemote -Saved $false -Context 'emit'
+    }
     $result = Get-ResultObject $script:Status
     $result.exit_code = $script:ExitCode
     Emit-Result $result

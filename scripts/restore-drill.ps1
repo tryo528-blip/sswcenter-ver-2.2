@@ -61,7 +61,9 @@ $SupportedRevisions = @(
     "20260730_0009_w1b_recipient",
     "20260730_0010_w1c_certification_ledgers",
     "20260730_0011_w1d_recipient_contract",
-    "20260801_0012_w1e_care_assignment"
+    "20260801_0012_w1e_care_assignment",
+    "20260802_0013_staff_continuing_education",
+    "20260803_0014_recipient_plan_notification"
 )
 if ($SupportedRevisions -notcontains $ManifestRevision) {
     throw "Unsupported backup Alembic revision: $ManifestRevision"
@@ -192,7 +194,9 @@ try {
         "20260730_0009_w1b_recipient",
         "20260730_0010_w1c_certification_ledgers",
         "20260730_0011_w1d_recipient_contract",
-        "20260801_0012_w1e_care_assignment"
+        "20260801_0012_w1e_care_assignment",
+        "20260802_0013_staff_continuing_education",
+        "20260803_0014_recipient_plan_notification"
     )) {
         $PostcheckOutput = @(
             & (Join-Path $PSScriptRoot "verify-w1a-vs1-db.ps1") -DatabaseUrl $ReviewUrl
@@ -255,6 +259,18 @@ try {
             $PostcheckOutput -notcontains "W1E_DB_POSTCHECK_OK"
         ) {
             throw "Restored W1E database postcheck marker is missing"
+        }
+        if (
+            $ManifestRevision -eq "20260802_0013_staff_continuing_education" -and
+            $PostcheckOutput -notcontains "STAFF_CONTINUING_EDUCATION_DB_POSTCHECK_OK"
+        ) {
+            throw "Restored continuing-education database postcheck marker is missing"
+        }
+        if (
+            $ManifestRevision -eq "20260803_0014_recipient_plan_notification" -and
+            $PostcheckOutput -notcontains "RECIPIENT_PLAN_NOTIFICATION_DB_POSTCHECK_OK"
+        ) {
+            throw "Restored recipient-plan-notification database postcheck marker is missing"
         }
     }
 

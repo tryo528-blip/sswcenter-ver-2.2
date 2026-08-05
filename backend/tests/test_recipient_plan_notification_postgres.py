@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.security import PinProtector
 from app.core.settings import get_settings
 from app.db.models import Staff, UserAccount
+from app.db.postcheck_w1a_vs1 import _verify_recipient_plan_notification_contract
 from app.main import app
 
 pytestmark = pytest.mark.skipif(
@@ -205,18 +206,30 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
         )
         assert "1" in str(by_column["row_version"]["column_default"])
 
+        constraint_rows = connection.execute(
+            text(
+                """
+                SELECT conname, contype, pg_get_constraintdef(oid, true) AS definition,
+                       confdeltype, confupdtype, confmatchtype,
+                       condeferrable, condeferred, convalidated
+                  FROM pg_constraint
+                 WHERE conrelid = 'erp.recipient_plan_notification'::regclass
+                 ORDER BY conname
+                """
+            )
+        ).mappings().all()
         constraints = {
-            row["conname"]: (row["contype"], row["definition"])
-            for row in connection.execute(
-                text(
-                    """
-                    SELECT conname, contype, pg_get_constraintdef(oid, true) AS definition
-                      FROM pg_constraint
-                     WHERE conrelid = 'erp.recipient_plan_notification'::regclass
-                     ORDER BY conname
-                    """
-                )
-            ).mappings()
+            row["conname"]: {
+                "contype": row["contype"],
+                "definition": row["definition"],
+                "confdeltype": row["confdeltype"],
+                "confupdtype": row["confupdtype"],
+                "confmatchtype": row["confmatchtype"],
+                "condeferrable": row["condeferrable"],
+                "condeferred": row["condeferred"],
+                "convalidated": row["convalidated"],
+            }
+            for row in constraint_rows
         }
         assert set(constraints) == {
             "ck_recipient_plan_notification_row_version_positive",
@@ -225,18 +238,25 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
             "fk_recipient_plan_notification_updated_by_account",
             "pk_recipient_plan_notification",
         }
-        assert constraints["ck_recipient_plan_notification_row_version_positive"][0] == "c"
+        assert constraints["ck_recipient_plan_notification_row_version_positive"]["contype"] == "c"
         assert "row_version > 0" in constraints[
             "ck_recipient_plan_notification_row_version_positive"
-        ][1]
-        assert constraints["pk_recipient_plan_notification"][0] == "p"
+        ]["definition"]
+        assert constraints["pk_recipient_plan_notification"]["contype"] == "p"
         for name in (
             "fk_recipient_plan_notification_created_by_account",
             "fk_recipient_plan_notification_recipient",
             "fk_recipient_plan_notification_updated_by_account",
         ):
-            assert constraints[name][0] == "f"
-            assert "ON DELETE RESTRICT" in constraints[name][1]
+            fk = constraints[name]
+            assert fk["contype"] == "f"
+            assert "ON DELETE RESTRICT" in fk["definition"]
+            assert fk["confdeltype"] == "r", f"{name} confdeltype expected 'r'"
+            assert fk["confupdtype"] == "a", f"{name} confupdtype expected 'a'"
+            assert fk["confmatchtype"] == "s", f"{name} confmatchtype expected 's'"
+            assert fk["condeferrable"] is False, f"{name} must not be deferrable"
+            assert fk["condeferred"] is False, f"{name} must not be initially deferred"
+            assert fk["convalidated"] is True, f"{name} must be validated"
 
         indexes = {
             row["indexname"]
@@ -322,6 +342,11 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
             "backup_sequence_usage": False,
             "backup_sequence_select": True,
         }
+
+        # Prove the repaired postcheck verifier does not false-reject the
+        # pristine migrated schema when search_path is set to erp, pg_catalog.
+        connection.execute(text("SET LOCAL search_path TO erp, pg_catalog"))
+        _verify_recipient_plan_notification_contract(connection)
 
     app_engine = create_engine(_required_url("SSWCENTER_0014_APP_DATABASE_URL"))
     try:
@@ -577,3 +602,57 @@ def test_0014_authorization_csrf_validation_and_error_envelopes(
     _assert_error_envelope(missing_recipient, status=404, code="RECIPIENT_NOT_FOUND")
 
     print("SSWCENTER_0014_AUTH_ERROR_GREEN")
+
+
+_FK_RECIPIENT = "fk_recipient_plan_notification_recipient"
+_FK_RECIPIENT_DDL = (
+    "ALTER TABLE erp.recipient_plan_notification "
+    "ADD CONSTRAINT fk_recipient_plan_notification_recipient "
+    "FOREIGN KEY (recipient_id) REFERENCES erp.recipient(id) "
+    "ON DELETE RESTRICT"
+)
+
+
+@pytest.mark.parametrize(
+    "drift_label, alter_suffix, expected_message",
+    [
+        (
+            "update_action",
+            " ON UPDATE CASCADE",
+            "update action",
+        ),
+        (
+            "deferrable",
+            " DEFERRABLE INITIALLY IMMEDIATE",
+            "deferrable",
+        ),
+        (
+            "validated",
+            " NOT VALID",
+            "validated",
+        ),
+    ],
+)
+def test_0014_recipient_fk_drift_detection(
+    owner_engine: Engine,
+    drift_label: str,
+    alter_suffix: str,
+    expected_message: str,
+) -> None:
+    with owner_engine.connect() as connection:
+        tx = connection.begin()
+        try:
+            connection.execute(text("SET LOCAL search_path TO erp, pg_catalog"))
+            connection.execute(
+                text(
+                    "ALTER TABLE erp.recipient_plan_notification "
+                    "DROP CONSTRAINT fk_recipient_plan_notification_recipient"
+                )
+            )
+            connection.execute(
+                text(_FK_RECIPIENT_DDL + alter_suffix)
+            )
+            with pytest.raises(SystemExit, match=expected_message):
+                _verify_recipient_plan_notification_contract(connection)
+        finally:
+            tx.rollback()

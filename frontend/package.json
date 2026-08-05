@@ -7,8 +7,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "vitest run src/test --environment jsdom --maxWorkers=1",
-    "test:e2e": "playwright test",
+    "test": "npm run test:supported",
+    "test:supported": "vitest run src/test --environment jsdom --maxWorkers=1 --exclude src/test/W1BRecipientsRed.test.tsx",
+    "test:red:w1b": "vitest run src/test/W1BRecipientsRed.test.tsx --environment jsdom --maxWorkers=1",
+    "test:historical": "npm run test:red:w1b",
+    "test:e2e": "npm run test:e2e:full",
+    "test:e2e:smoke": "playwright test --config=playwright.smoke.config.ts",
+    "test:e2e:full": "playwright test --config=playwright.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {

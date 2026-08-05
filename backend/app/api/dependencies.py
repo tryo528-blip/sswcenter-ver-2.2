@@ -65,7 +65,7 @@ def get_current_account(
             and settings.dev_login_bypass
             and is_loopback_request(request, settings)
         ):
-            account = database_session.scalar(
+            bypass_account = database_session.scalar(
                 select(UserAccount)
                 .where(
                     UserAccount.active.is_(True),
@@ -73,15 +73,19 @@ def get_current_account(
                 )
                 .order_by(UserAccount.id.asc())
             )
-            if account is None:
+            if bypass_account is None:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail={"code": "development_bypass_account_missing"},
                 )
-            return CurrentAccount(account.id, account.display_name, account.role_code)
-        account = authenticate_session(database_session, request, settings)
+            return CurrentAccount(
+                bypass_account.id,
+                bypass_account.display_name,
+                bypass_account.role_code,
+            )
+        current_account = authenticate_session(database_session, request, settings)
         database_session.commit()
-        return account
+        return current_account
     except Exception:
         database_session.rollback()
         raise

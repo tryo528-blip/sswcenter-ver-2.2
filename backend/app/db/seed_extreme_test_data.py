@@ -4,9 +4,10 @@ from datetime import date
 
 from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 
 from app.core.auth import BootstrapInput, bootstrap_installation
-from app.core.settings import Environment, get_settings
+from app.core.settings import Environment, Settings, get_settings
 from app.db.models import (
     InstallationState,
     Recipient,
@@ -124,7 +125,7 @@ def _local_database_guard(database_url: str) -> None:
         raise RuntimeError("extreme synthetic seed requires a development/test database name")
 
 
-def _ensure_admin(database_session, settings) -> UserAccount:
+def _ensure_admin(database_session: Session, settings: Settings) -> UserAccount:
     state = database_session.scalar(
         select(InstallationState).where(InstallationState.singleton_key.is_(True))
     )
@@ -169,7 +170,7 @@ def _ensure_admin(database_session, settings) -> UserAccount:
 
 
 def _add_staff(
-    database_session,
+    database_session: Session,
     *,
     account_id: int,
     name_index: int,
@@ -233,7 +234,7 @@ def _add_staff(
 
 
 def _add_recipient(
-    database_session,
+    database_session: Session,
     *,
     account_id: int,
     service_type_id: int,

@@ -1024,41 +1024,41 @@ class RecipientService:
         ).all()
 
         items: list[RecipientDeadlineItem] = []
-        for row in certification_rows:
+        for certification_row in certification_rows:
             items.append(
                 RecipientDeadlineItem(
-                    recipient_id=row.recipient_id,
-                    recipient_name=row.name,
+                    recipient_id=certification_row.recipient_id,
+                    recipient_name=certification_row.name,
                     kind=RecipientDeadlineKind.CERTIFICATION_EXPIRY,
-                    source_id=row.id,
-                    source_date=row.end_date,
-                    due_date=row.end_date,
+                    source_id=certification_row.id,
+                    source_date=certification_row.end_date,
+                    due_date=certification_row.end_date,
                 )
             )
-        for row in contract_rows:
+        for contract_row in contract_rows:
             items.append(
                 RecipientDeadlineItem(
-                    recipient_id=row.recipient_id,
-                    recipient_name=row.name,
+                    recipient_id=contract_row.recipient_id,
+                    recipient_name=contract_row.name,
                     kind=RecipientDeadlineKind.CONTRACT_EXPIRY,
-                    source_id=row.id,
-                    source_date=row.end_date,
-                    due_date=row.end_date,
+                    source_id=contract_row.id,
+                    source_date=contract_row.end_date,
+                    due_date=contract_row.end_date,
                 )
             )
         seen_recipient_ids: set[int] = set()
-        for row in plan_rows:
-            if row.recipient_id in seen_recipient_ids:
+        for plan_row in plan_rows:
+            if plan_row.recipient_id in seen_recipient_ids:
                 continue
-            seen_recipient_ids.add(row.recipient_id)
+            seen_recipient_ids.add(plan_row.recipient_id)
             items.append(
                 RecipientDeadlineItem(
-                    recipient_id=row.recipient_id,
-                    recipient_name=row.name,
+                    recipient_id=plan_row.recipient_id,
+                    recipient_name=plan_row.name,
                     kind=RecipientDeadlineKind.PLAN_RENEWAL,
-                    source_id=row.id,
-                    source_date=row.notified_date,
-                    due_date=_plan_renewal_due_date(row.notified_date),
+                    source_id=plan_row.id,
+                    source_date=plan_row.notified_date,
+                    due_date=_plan_renewal_due_date(plan_row.notified_date),
                 )
             )
         items.sort(
