@@ -247,10 +247,10 @@
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(270px, 320px);
-  grid-template-rows: clamp(360px, 46vh, 496px) auto;
+  grid-template-rows: auto minmax(560px, auto);
   grid-template-areas:
     "summary rail"
-    "work work";
+    "work rail";
   gap: 16px;
   align-items: start;
 }
@@ -372,8 +372,8 @@
   grid-area: rail;
   align-self: start;
   width: 100%;
-  height: clamp(560px, calc(100vh - 140px), 920px);
-  min-height: 0;
+  height: auto;
+  min-height: 560px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -382,7 +382,7 @@
 .dashboard-work-block {
   grid-area: work;
   min-width: 0;
-  margin-top: 20px;
+  margin-top: 0;
 }
 
 .dashboard-todo-card {
@@ -946,10 +946,10 @@
 
   .dashboard-content-grid {
     grid-template-columns: minmax(0, 1fr) 270px;
-    grid-template-rows: clamp(360px, 46vh, 496px) auto;
+    grid-template-rows: auto minmax(560px, auto);
     grid-template-areas:
       "summary rail"
-      "work work";
+      "work rail";
   }
 
   .dashboard-top-rail {

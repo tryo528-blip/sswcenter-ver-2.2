@@ -33,6 +33,7 @@
   --color-primary-soft: color-mix(in srgb, var(--color-primary) 11%, #ffffff);
   --color-primary-border: color-mix(in srgb, var(--color-primary) 28%, #ffffff);
   --color-seasonal-accent: var(--color-primary);
+  --color-seasonal-accent-soft: color-mix(in srgb, var(--color-seasonal-accent) 11%, #ffffff);
 
   /* Semantic Status Tokens */
   --color-success: #10b981;

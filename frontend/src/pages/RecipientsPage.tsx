@@ -47,6 +47,7 @@ type RecipientFormState = {
   sex_code: RecipientSexCode;
   postal_code: string;
   address: string;
+  address_detail: string;
   home_phone: string;
   mobile_phone: string;
   memo: string;
@@ -60,9 +61,15 @@ type RecipientStaleConflict = {
 type GuardianFormState = {
   name: string;
   phone: string;
+  postal_code: string;
   address: string;
+  address_detail: string;
   relationship_text: string;
+  email: string;
 };
+
+type GuardianSlot = 0 | 1;
+type GuardianFormSlots = [GuardianFormState, GuardianFormState];
 
 type PrimaryPeriodFormState = {
   guardian_id: string;
@@ -91,6 +98,7 @@ const emptyRecipientForm = (): RecipientFormState => ({
   sex_code: 'MALE',
   postal_code: '',
   address: '',
+  address_detail: '',
   home_phone: '',
   mobile_phone: '',
   memo: '',
@@ -99,9 +107,17 @@ const emptyRecipientForm = (): RecipientFormState => ({
 const emptyGuardianForm = (): GuardianFormState => ({
   name: '',
   phone: '',
+  postal_code: '',
   address: '',
+  address_detail: '',
   relationship_text: '',
+  email: '',
 });
+
+const guardianFormsFromGuardians = (guardians: Guardian[]): GuardianFormSlots => [
+  guardians[0] ? guardianFormFromGuardian(guardians[0]) : emptyGuardianForm(),
+  guardians[1] ? guardianFormFromGuardian(guardians[1]) : emptyGuardianForm(),
+];
 
 const emptyPrimaryPeriodForm = (): PrimaryPeriodFormState => ({
   guardian_id: '',
@@ -123,13 +139,25 @@ function optionalText(value: string): string | null {
   return normalized || null;
 }
 
+function formatMobilePhoneInput(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  const localDigits = (digits.startsWith('010') ? digits.slice(3) : digits).slice(0, 8);
+  if (!localDigits) return '010-';
+  if (localDigits.length <= 4) return `010-${localDigits}`;
+  return `010-${localDigits.slice(0, 4)}-${localDigits.slice(4)}`;
+}
+
+function combinedRecipientAddress(form: RecipientFormState): string | null {
+  return optionalText([form.address, form.address_detail].filter((value) => value.trim()).join(' '));
+}
+
 function recipientCreatePayload(form: RecipientFormState): RecipientCreateRequest {
   return {
     name: form.name.trim(),
     birth_date: form.birth_date,
     sex_code: form.sex_code,
     postal_code: optionalText(form.postal_code),
-    address: optionalText(form.address),
+    address: combinedRecipientAddress(form),
     home_phone: optionalText(form.home_phone),
     mobile_phone: optionalText(form.mobile_phone),
     memo: optionalText(form.memo),
@@ -146,7 +174,7 @@ function recipientUpdatePayload(
     birth_date: form.birth_date,
     sex_code: form.sex_code,
     postal_code: optionalText(form.postal_code),
-    address: optionalText(form.address),
+    address: combinedRecipientAddress(form),
     home_phone: optionalText(form.home_phone),
     mobile_phone: optionalText(form.mobile_phone),
     memo: optionalText(form.memo),
@@ -160,6 +188,7 @@ function recipientFormFromRecipient(recipient: Recipient): RecipientFormState {
     sex_code: recipient.sex_code,
     postal_code: recipient.postal_code ?? '',
     address: recipient.address ?? '',
+    address_detail: '',
     home_phone: recipient.home_phone ?? '',
     mobile_phone: recipient.mobile_phone ?? '',
     memo: recipient.memo ?? '',
@@ -178,8 +207,9 @@ function recipientReapplyPayload(
   if (optionalText(draft.postal_code) !== original.postal_code) {
     payload.postal_code = optionalText(draft.postal_code);
   }
-  if (optionalText(draft.address) !== original.address) {
-    payload.address = optionalText(draft.address);
+  const draftAddress = combinedRecipientAddress(draft);
+  if (draftAddress !== original.address) {
+    payload.address = draftAddress;
   }
   if (optionalText(draft.home_phone) !== original.home_phone) {
     payload.home_phone = optionalText(draft.home_phone);
@@ -197,16 +227,23 @@ function guardianFormFromGuardian(guardian: Guardian): GuardianFormState {
   return {
     name: guardian.name,
     phone: guardian.phone ?? '',
+    postal_code: '',
     address: guardian.address ?? '',
+    address_detail: '',
     relationship_text: guardian.relationship_text ?? '',
+    email: '',
   };
+}
+
+function combinedGuardianAddress(form: GuardianFormState): string | null {
+  return optionalText([form.address, form.address_detail].filter((value) => value.trim()).join(' '));
 }
 
 function guardianPayload(form: GuardianFormState): GuardianCreateRequest {
   return {
     name: form.name.trim(),
     phone: optionalText(form.phone),
-    address: optionalText(form.address),
+    address: combinedGuardianAddress(form),
     relationship_text: optionalText(form.relationship_text),
   };
 }
@@ -287,17 +324,27 @@ function formatNullable(value: string | null | undefined): string {
   return value?.trim() ? value : '없음';
 }
 
-function formatFullAge(birthDate: string): string {
-  const parts = birthDate.slice(0, 10).split('-').map(Number);
-  if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part))) return '미확인';
-  const [birthYear, birthMonth, birthDay] = parts;
-  const today = new Date();
-  let age = today.getFullYear() - birthYear;
-  const birthdayPassed =
-    today.getMonth() + 1 > birthMonth ||
-    (today.getMonth() + 1 === birthMonth && today.getDate() >= birthDay);
-  if (!birthdayPassed) age -= 1;
+function formatAge(birthDate: string): string {
+  const birthYear = Number(birthDate.slice(0, 4));
+  const currentYear = new Date().getFullYear();
+  if (!Number.isInteger(birthYear) || birthYear <= 0 || birthYear > currentYear) return '미확인';
+
+  const age = currentYear - birthYear + 1;
   return age >= 0 ? `${age}세` : '미확인';
+}
+
+function formatInternationalAge(birthDate: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) return '미지정';
+  const birth = new Date(`${birthDate}T00:00:00`);
+  const now = new Date();
+  if (Number.isNaN(birth.getTime()) || birth > now) return '미지정';
+
+  let age = now.getFullYear() - birth.getFullYear();
+  const birthdayPassed =
+    now.getMonth() > birth.getMonth() ||
+    (now.getMonth() === birth.getMonth() && now.getDate() >= birth.getDate());
+  if (!birthdayPassed) age -= 1;
+  return age >= 0 ? `${age}세` : '미지정';
 }
 
 function todayIso(): string {
@@ -337,6 +384,9 @@ export const RecipientsPage = () => {
   const listScrollTopRef = useRef(0);
   const [recipientForm, setRecipientForm] = useState<RecipientFormState>(emptyRecipientForm);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createGrade, setCreateGrade] = useState('');
+  const [createCopay, setCreateCopay] = useState('BASIC');
+  const [detailExtrasOpen, setDetailExtrasOpen] = useState(false);
   const [createSaving, setCreateSaving] = useState(false);
   const [createMessage, setCreateMessage] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -358,8 +408,10 @@ export const RecipientsPage = () => {
   const [detailMessage, setDetailMessage] = useState<string | null>(null);
   const [detailStaleConflict, setDetailStaleConflict] = useState<RecipientStaleConflict | null>(null);
   const [guardians, setGuardians] = useState<Guardian[]>([]);
-  const [guardianForm, setGuardianForm] = useState<GuardianFormState>(emptyGuardianForm);
-  const [editingGuardianId, setEditingGuardianId] = useState<string | null>(null);
+  const [guardianForms, setGuardianForms] = useState<GuardianFormSlots>(guardianFormsFromGuardians([]));
+  const [guardianEditSnapshots, setGuardianEditSnapshots] = useState<GuardianFormSlots>(guardianFormsFromGuardians([]));
+  const [editingGuardianIds, setEditingGuardianIds] = useState<[string | null, string | null]>([null, null]);
+  const [guardianEditOpen, setGuardianEditOpen] = useState<[boolean, boolean]>([false, false]);
   const [guardianSaving, setGuardianSaving] = useState(false);
   const [guardianMessage, setGuardianMessage] = useState<string | null>(null);
   const [guardianError, setGuardianError] = useState<string | null>(null);
@@ -395,6 +447,32 @@ export const RecipientsPage = () => {
   const selectedId = query.get('selected');
   const detailId = query.get('detail');
   const activeId = detailId ?? selectedId;
+
+  const cancelCreate = useCallback(() => {
+    if (createSaving) return;
+    setCreateOpen(false);
+    setCreateError(null);
+    setCreateMessage(null);
+    setRecipientForm(emptyRecipientForm());
+    setCreateGrade('');
+    setCreateCopay('BASIC');
+  }, [createSaving]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const handleCreateEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelCreate();
+      }
+    };
+    window.addEventListener('keydown', handleCreateEscape);
+    return () => window.removeEventListener('keydown', handleCreateEscape);
+  }, [cancelCreate, createOpen]);
+
+  useEffect(() => {
+    setDetailExtrasOpen(false);
+  }, [activeId]);
 
   const updateQuery = useCallback(
     (updates: Record<string, string | null>, replace = true) => {
@@ -490,8 +568,10 @@ export const RecipientsPage = () => {
       setDetailRecipient(null);
       setDetailForm(emptyRecipientForm());
       setGuardians([]);
-      setGuardianForm(emptyGuardianForm());
-      setEditingGuardianId(null);
+      setGuardianForms(guardianFormsFromGuardians([]));
+      setGuardianEditSnapshots(guardianFormsFromGuardians([]));
+      setEditingGuardianIds([null, null]);
+      setGuardianEditOpen([false, false]);
       setPrimaryPeriods([]);
       setPrimaryForm(emptyPrimaryPeriodForm());
       setEditingPrimaryPeriodId(null);
@@ -535,14 +615,19 @@ export const RecipientsPage = () => {
         sex_code: inlineFallback.sex_code,
         postal_code: inlineFallback.postal_code ?? '',
         address: inlineFallback.address ?? '',
+        address_detail: '',
         home_phone: inlineFallback.home_phone ?? '',
         mobile_phone: inlineFallback.mobile_phone ?? '',
         memo: inlineFallback.memo ?? '',
       });
       setGuardians(inlineGuardians);
-      const firstInlineGuardian = inlineGuardians[0];
-      setGuardianForm(firstInlineGuardian ? guardianFormFromGuardian(firstInlineGuardian) : emptyGuardianForm());
-      setEditingGuardianId(firstInlineGuardian ? normalizeId(firstInlineGuardian.id) : null);
+      setGuardianForms(guardianFormsFromGuardians(inlineGuardians));
+      setGuardianEditSnapshots(guardianFormsFromGuardians(inlineGuardians));
+      setGuardianEditOpen([false, false]);
+      setEditingGuardianIds([
+        inlineGuardians[0] ? normalizeId(inlineGuardians[0].id) : null,
+        inlineGuardians[1] ? normalizeId(inlineGuardians[1].id) : null,
+      ]);
     }
 
     Promise.allSettled([
@@ -573,9 +658,13 @@ export const RecipientsPage = () => {
       }
 
       setGuardians(resolvedGuardians);
-      const firstGuardian = resolvedGuardians[0];
-      setGuardianForm(firstGuardian ? guardianFormFromGuardian(firstGuardian) : emptyGuardianForm());
-      setEditingGuardianId(firstGuardian ? normalizeId(firstGuardian.id) : null);
+      setGuardianForms(guardianFormsFromGuardians(resolvedGuardians));
+      setGuardianEditSnapshots(guardianFormsFromGuardians(resolvedGuardians));
+      setGuardianEditOpen([false, false]);
+      setEditingGuardianIds([
+        resolvedGuardians[0] ? normalizeId(resolvedGuardians[0].id) : null,
+        resolvedGuardians[1] ? normalizeId(resolvedGuardians[1].id) : null,
+      ]);
       setPrimaryPeriods(periodResponse?.items ?? []);
       setPayerSnapshots(payerResponse?.items ?? []);
 
@@ -684,8 +773,8 @@ export const RecipientsPage = () => {
     event.preventDefault();
     setCreateMessage(null);
     setCreateError(null);
-    if (!recipientForm.name.trim() || !recipientForm.birth_date || !recipientForm.sex_code) {
-      setCreateError('이름, 생년월일, 성별을 입력해주세요.');
+    if (!recipientForm.mobile_phone.trim()) {
+      setCreateError('휴대전화를 입력해주세요.');
       return;
     }
 
@@ -695,6 +784,8 @@ export const RecipientsPage = () => {
       const createdEmbedded = created as EmbeddedRecipient;
       setCreateMessage('수급자를 저장했습니다.');
       setRecipientForm(emptyRecipientForm());
+      setCreateGrade('');
+      setCreateCopay('BASIC');
       setDetailRecipient(created);
       setDetailForm({
         name: created.name,
@@ -702,15 +793,20 @@ export const RecipientsPage = () => {
         sex_code: created.sex_code,
         postal_code: created.postal_code ?? '',
         address: created.address ?? '',
+        address_detail: '',
         home_phone: created.home_phone ?? '',
         mobile_phone: created.mobile_phone ?? '',
         memo: created.memo ?? '',
       });
       const createdGuardians = createdEmbedded.guardians ?? [];
       setGuardians(createdGuardians);
-      const firstGuardian = createdGuardians[0];
-      setGuardianForm(firstGuardian ? guardianFormFromGuardian(firstGuardian) : emptyGuardianForm());
-      setEditingGuardianId(firstGuardian ? normalizeId(firstGuardian.id) : null);
+      setGuardianForms(guardianFormsFromGuardians(createdGuardians));
+      setGuardianEditSnapshots(guardianFormsFromGuardians(createdGuardians));
+      setGuardianEditOpen([false, false]);
+      setEditingGuardianIds([
+        createdGuardians[0] ? normalizeId(createdGuardians[0].id) : null,
+        createdGuardians[1] ? normalizeId(createdGuardians[1].id) : null,
+      ]);
       updateQuery(
         {
           selected: normalizeId(created.id),
@@ -719,6 +815,7 @@ export const RecipientsPage = () => {
         false,
       );
       setListReload((current) => current + 1);
+      setCreateOpen(false);
     } catch (error: unknown) {
       if (!isAbortError(error)) {
         setCreateError(safeErrorMessage(error, '수급자를 저장하지 못했습니다.'));
@@ -825,9 +922,11 @@ export const RecipientsPage = () => {
     }
   };
 
-  const handleGuardianSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleGuardianSubmit = async (event: FormEvent<HTMLFormElement>, guardianIndex: GuardianSlot) => {
     event.preventDefault();
-    if (!activeId || !guardianForm.name.trim()) {
+    const form = guardianForms[guardianIndex];
+    const editingGuardianId = editingGuardianIds[guardianIndex];
+    if (!activeId || !form.name.trim()) {
       setGuardianError('보호자 이름을 입력해주세요.');
       return;
     }
@@ -836,7 +935,7 @@ export const RecipientsPage = () => {
     setGuardianSaving(true);
     try {
       const existing = guardians.find((guardian) => normalizeId(guardian.id) === editingGuardianId);
-      const payload = guardianPayload(guardianForm);
+      const payload = guardianPayload(form);
       const saved = existing
         ? await updateGuardian(activeId, existing.id, {
             ...payload,
@@ -848,8 +947,26 @@ export const RecipientsPage = () => {
           ? current.map((guardian) => (normalizeId(guardian.id) === editingGuardianId ? saved : guardian))
           : [...current, saved],
       );
-      setEditingGuardianId(normalizeId(saved.id));
-      setGuardianForm(guardianFormFromGuardian(saved));
+      setEditingGuardianIds((current) => {
+        const next: [string | null, string | null] = [current[0], current[1]];
+        next[guardianIndex] = normalizeId(saved.id);
+        return next;
+      });
+      setGuardianForms((current) => {
+        const next: GuardianFormSlots = [current[0], current[1]];
+        next[guardianIndex] = guardianFormFromGuardian(saved);
+        return next;
+      });
+      setGuardianEditSnapshots((current) => {
+        const next: GuardianFormSlots = [current[0], current[1]];
+        next[guardianIndex] = guardianFormFromGuardian(saved);
+        return next;
+      });
+      setGuardianEditOpen((current) => {
+        const next: [boolean, boolean] = [current[0], current[1]];
+        next[guardianIndex] = false;
+        return next;
+      });
       setGuardianMessage('보호자 정보를 저장했습니다.');
     } catch (error: unknown) {
       if (!isAbortError(error)) {
@@ -1072,8 +1189,6 @@ export const RecipientsPage = () => {
     );
   };
 
-  const closeDetail = () => updateQuery({ detail: null, selected: null }, false);
-
   const handleListScroll = (scrollTop: number) => {
     listScrollTopRef.current = scrollTop;
   };
@@ -1121,15 +1236,6 @@ export const RecipientsPage = () => {
                 placeholder="이름 검색"
               />
             </label>
-            <button
-              className="recipient-secondary-button"
-              type="button"
-              data-testid="recipient-create-toggle"
-              aria-expanded={createOpen}
-              onClick={() => setCreateOpen((current) => !current)}
-            >
-              {createOpen ? '등록 닫기' : '수급자 등록'}
-            </button>
             <label className="recipient-field recipient-filter-field">
               <span className="visually-hidden">상태</span>
               <select
@@ -1149,9 +1255,10 @@ export const RecipientsPage = () => {
           </div>
 
           <div className="recipient-list-header" data-testid="recipient-list-header">
-            <span>이름</span>
-            <span>만 나이</span>
             <span>등급</span>
+            <span>이름</span>
+            <span>나이</span>
+            <span>본·부%</span>
             <span>제공중 서비스</span>
           </div>
 
@@ -1186,6 +1293,7 @@ export const RecipientsPage = () => {
                   type="button"
                   onClick={() => openDetail(recipient.id)}
                 >
+                  <span className="recipient-list-cell recipient-list-grade">미지정</span>
                   <span className="recipient-list-row-main">
                     <span className="recipient-list-index" aria-hidden="true">{listIndex}</span>
                     <strong>{recipient.name}</strong>
@@ -1196,8 +1304,8 @@ export const RecipientsPage = () => {
                     <span className="visually-hidden">자택: <span data-testid="recipient-list-home-phone">{formatNullable(recipient.home_phone)}</span></span>
                     <span className="visually-hidden">휴대전화: <span data-testid="recipient-list-mobile-phone">{formatNullable(recipient.mobile_phone)}</span></span>
                   </span>
-                  <span className="recipient-list-cell recipient-list-age">{formatFullAge(recipient.birth_date)}</span>
-                  <span className="recipient-list-cell recipient-list-grade">미지정</span>
+                  <span className="recipient-list-cell recipient-list-age">{formatAge(recipient.birth_date)}</span>
+                  <span className="recipient-list-cell recipient-list-copay">미지정</span>
                   <span className="recipient-list-cell recipient-list-services">미지정</span>
                   <span className="visually-hidden recipient-list-row-meta">
                     <span data-testid="recipient-list-recipient-no">
@@ -1333,7 +1441,7 @@ export const RecipientsPage = () => {
         >
           <div className="recipient-detail-heading">
             <div className="recipient-detail-title">
-              <h2>{detailViewRecipient?.name ?? '수급자 상세'}</h2>
+              <h2>{detailViewRecipient?.name ?? '수급자 정보'}</h2>
               <span className="recipient-detail-recipient-no">
                 <span>수급자번호</span>
                 <strong data-testid="recipient-detail-recipient-no">
@@ -1341,9 +1449,48 @@ export const RecipientsPage = () => {
                 </strong>
               </span>
             </div>
-            <button className="recipient-secondary-button" type="button" onClick={closeDetail}>
-              목록 유지
+            <div className="recipient-create-actions">
+            {!createOpen ? (
+              <button
+                className="recipient-secondary-button recipient-detail-toggle"
+                data-testid="recipient-detail-toggle"
+                type="button"
+                aria-expanded={detailExtrasOpen}
+                onClick={() => setDetailExtrasOpen((current) => !current)}
+              >
+                세부정보
+              </button>
+            ) : null}
+            <button
+              className="recipient-secondary-button recipient-create-trigger"
+              data-testid="recipient-create-toggle"
+              form={createOpen ? 'recipient-create-form' : undefined}
+              type={createOpen ? 'submit' : 'button'}
+              aria-expanded={createOpen}
+              onClick={createOpen ? undefined : () => {
+                setCreateError(null);
+                setCreateMessage(null);
+                setRecipientForm(emptyRecipientForm());
+                setCreateGrade('');
+                setCreateCopay('BASIC');
+                setDetailExtrasOpen(false);
+                setCreateOpen(true);
+              }}
+            >
+              {createOpen ? '수급자 저장' : '수급자 등록'}
             </button>
+            {createOpen ? (
+              <button
+                className="recipient-secondary-button recipient-create-cancel"
+                data-testid="recipient-create-cancel"
+                type="button"
+                onClick={cancelCreate}
+                disabled={createSaving}
+              >
+                취소
+              </button>
+            ) : null}
+            </div>
           </div>
 
           {!activeId ? (
@@ -1353,40 +1500,188 @@ export const RecipientsPage = () => {
           {detailLoading ? <div className="recipient-inline-note">상세 정보를 불러오는 중입니다.</div> : null}
           {detailError ? <div className="recipient-inline-error">{detailError}</div> : null}
 
-          <div className="recipient-detail-summary">
-            <div className="recipient-summary-item">
-              <span>생년월일</span>
-              <strong>{detailViewRecipient?.birth_date ?? '없음'}</strong>
-            </div>
-            <div className="recipient-summary-item">
-              <span>등급</span>
-              <strong data-testid="recipient-detail-grade">미지정</strong>
-            </div>
-            <div className="recipient-summary-item">
-              <span>인정번호</span>
-              <strong>L1234567890</strong>
-            </div>
-            <div className="recipient-summary-item">
-              <span>성별</span>
-              <strong>{detailViewRecipient?.sex_code ?? '없음'}</strong>
-            </div>
-            <div className="recipient-summary-item">
-              <span>휴대전화</span>
-              <strong data-testid="recipient-detail-mobile-phone">
-                {formatNullable(detailViewRecipient?.mobile_phone)}
-              </strong>
-            </div>
-            <div className="recipient-summary-item">
-              <span>본인부담금</span>
-              <strong data-testid="recipient-detail-copay">미지정</strong>
-            </div>
-            <div className="recipient-summary-item recipient-summary-item-address">
-              <span>주소</span>
-              <strong data-testid="recipient-detail-address">
-                {formatNullable(detailViewRecipient?.address)}
-              </strong>
-            </div>
-          </div>
+          {!detailExtrasOpen ? (
+            <>
+          <section className={`recipient-basic-section${createOpen ? ' is-editing' : ''}`}>
+            {createOpen ? (
+              <form
+                id="recipient-create-form"
+                className="recipient-detail-summary recipient-create-summary"
+                noValidate
+                onSubmit={handleCreateSubmit}
+              >
+                <label className="recipient-summary-item recipient-create-summary-field">
+                  <span>이름</span>
+                  <input
+                    data-testid="recipient-name-input"
+                    value={recipientForm.name}
+                    onChange={(event) => setRecipientForm((current) => ({ ...current, name: event.target.value }))}
+                  />
+                </label>
+                <label className="recipient-summary-item recipient-create-summary-field">
+                  <span>생년월일</span>
+                  <input
+                    data-testid="recipient-birth-date-input"
+                    type="date"
+                    inputMode="numeric"
+                    value={recipientForm.birth_date}
+                    onChange={(event) => setRecipientForm((current) => ({ ...current, birth_date: event.target.value }))}
+                  />
+                </label>
+                <div className="recipient-summary-item">
+                  <span>만 나이</span>
+                  <strong>{formatInternationalAge(recipientForm.birth_date)}</strong>
+                </div>
+                <label className="recipient-summary-item recipient-create-summary-field">
+                  <span>성별</span>
+                  <select
+                    data-testid="recipient-sex-code-select"
+                    value={recipientForm.sex_code}
+                    onChange={(event) =>
+                      setRecipientForm((current) => ({ ...current, sex_code: event.target.value as RecipientSexCode }))
+                    }
+                  >
+                    <option value="MALE">남성</option>
+                    <option value="FEMALE">여성</option>
+                  </select>
+                </label>
+                <label className="recipient-summary-item recipient-create-summary-field">
+                  <span>등급</span>
+                  <select
+                    data-testid="recipient-grade-select"
+                    value={createGrade}
+                    onChange={(event) => setCreateGrade(event.target.value)}
+                  >
+                    <option value="">미지정</option>
+                    <option value="1">1등급</option>
+                    <option value="2">2등급</option>
+                    <option value="3">3등급</option>
+                    <option value="4">4등급</option>
+                    <option value="5">5등급</option>
+                  </select>
+                </label>
+                <div className="recipient-summary-item">
+                  <span>인정번호</span>
+                  <strong>L1234567890</strong>
+                </div>
+                <label className="recipient-summary-item recipient-create-summary-field">
+                  <span>휴대전화</span>
+                  <input
+                    data-testid="recipient-mobile-phone-input"
+                    inputMode="tel"
+                    placeholder="010-0000-0000"
+                    maxLength={13}
+                    value={recipientForm.mobile_phone}
+                    onFocus={() =>
+                      setRecipientForm((current) => ({
+                        ...current,
+                        mobile_phone: current.mobile_phone || '010-',
+                      }))
+                    }
+                    onChange={(event) =>
+                      setRecipientForm((current) => ({
+                        ...current,
+                        mobile_phone: formatMobilePhoneInput(event.target.value),
+                      }))
+                    }
+                    aria-required="true"
+                  />
+                </label>
+                <label className="recipient-summary-item recipient-create-summary-field">
+                  <span>본인부담금</span>
+                  <select
+                    data-testid="recipient-copay-select"
+                    value={createCopay}
+                    onChange={(event) => setCreateCopay(event.target.value)}
+                  >
+                    <option value="BASIC">기초</option>
+                    <option value="6">6%</option>
+                    <option value="9">9%</option>
+                    <option value="15">15%</option>
+                  </select>
+                </label>
+                <div className="recipient-summary-item recipient-summary-item-address recipient-create-summary-field recipient-address-summary-field">
+                  <span>주소</span>
+                  <div className="recipient-address-input-row">
+                    <input
+                      data-testid="recipient-postal-code-input"
+                      aria-label="우편번호"
+                      inputMode="numeric"
+                      value={recipientForm.postal_code}
+                      onChange={(event) => setRecipientForm((current) => ({ ...current, postal_code: event.target.value }))}
+                    />
+                    <input
+                      data-testid="recipient-address-input"
+                      aria-label="앞주소"
+                      value={recipientForm.address}
+                      onChange={(event) => setRecipientForm((current) => ({ ...current, address: event.target.value }))}
+                    />
+                    <input
+                      data-testid="recipient-address-detail-input"
+                      aria-label="뒷주소"
+                      value={recipientForm.address_detail}
+                      onChange={(event) => setRecipientForm((current) => ({ ...current, address_detail: event.target.value }))}
+                    />
+                  </div>
+                </div>
+                {createError ? <div className="recipient-inline-error">{createError}</div> : null}
+                {createMessage ? <div className="recipient-inline-note">{createMessage}</div> : null}
+              </form>
+            ) : (
+              <div className="recipient-detail-summary">
+                <div className="recipient-summary-item">
+                  <span>이름</span>
+                  <strong>{detailViewRecipient?.name ?? '없음'}</strong>
+                </div>
+                <div className="recipient-summary-item">
+                  <span>생년월일</span>
+                  <strong>{detailViewRecipient?.birth_date ?? '없음'}</strong>
+                </div>
+                <div className="recipient-summary-item">
+                  <span>만 나이</span>
+                  <strong data-testid="recipient-detail-international-age">
+                    {formatInternationalAge(detailViewRecipient?.birth_date ?? '')}
+                  </strong>
+                </div>
+                <div className="recipient-summary-item">
+                  <span>성별</span>
+                  <strong>{detailViewRecipient?.sex_code ?? '없음'}</strong>
+                </div>
+                <div className="recipient-summary-item">
+                  <span>등급</span>
+                  <strong data-testid="recipient-detail-grade">미지정</strong>
+                </div>
+                <div className="recipient-summary-item">
+                  <span>인정번호</span>
+                  <strong>L1234567890</strong>
+                </div>
+                <div className="recipient-summary-item">
+                  <span>휴대전화</span>
+                  <strong data-testid="recipient-detail-mobile-phone">
+                    {formatNullable(detailViewRecipient?.mobile_phone)}
+                  </strong>
+                </div>
+                <div className="recipient-summary-item">
+                  <span>본인부담금</span>
+                  <strong data-testid="recipient-detail-copay">미지정</strong>
+                </div>
+                <div className="recipient-summary-item recipient-summary-item-address">
+                  <span>주소</span>
+                  <div className="recipient-address-inline" data-testid="recipient-detail-address">
+                    <span data-testid="recipient-detail-postal-code">
+                      {formatNullable(detailViewRecipient?.postal_code)}
+                    </span>
+                    <span data-testid="recipient-detail-address-main">
+                      {formatNullable(detailViewRecipient?.address)}
+                    </span>
+                    <span data-testid="recipient-detail-address-detail">
+                      없음
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
           <span className="visually-hidden" data-testid="recipient-detail-home-phone">
             {formatNullable(detailViewRecipient?.home_phone)}
           </span>
@@ -1497,100 +1792,191 @@ export const RecipientsPage = () => {
                 </button>
               </div>
             </form>
-          ) : (
-            <div className="recipient-empty-state">목록에서 수급자를 선택하면 상세정보가 표시됩니다.</div>
-          )}
+          ) : null}
 
-          <div className="recipient-detail-columns">
-            <section className="recipient-subsection recipient-guardian-section" data-testid="recipient-guardian-section">
-              <div className="recipient-subsection-heading">
-                <h3>보호자</h3>
-                <span>0명 이상 · 이름만 필수</span>
-              </div>
-              <div className="recipient-history-list">
-                {guardians.length ? (
-                  guardians.map((guardian) => (
-                    <button
-                      className="recipient-history-card"
-                      key={normalizeId(guardian.id)}
-                      type="button"
-                      onClick={() => {
-                        setEditingGuardianId(normalizeId(guardian.id));
-                        setGuardianForm(guardianFormFromGuardian(guardian));
-                      }}
+          <div className="recipient-detail-columns recipient-guardian-cards">
+            {([0, 1] as GuardianSlot[]).map((guardianIndex) => {
+              const form = guardianForms[guardianIndex];
+              return (
+                <div className="recipient-guardian-card" key={guardianIndex}>
+                  <div className="recipient-guardian-card-heading">
+                    <h3 className="recipient-guardian-card-title">보호자{guardianIndex + 1} 정보</h3>
+                    <div className="recipient-guardian-card-actions">
+                      <button
+                        className="recipient-secondary-button recipient-guardian-save-button"
+                        data-testid={`guardian-${guardianIndex + 1}-save-button`}
+                        form={`guardian-${guardianIndex + 1}-form`}
+                        type={guardianEditOpen[guardianIndex] ? 'submit' : 'button'}
+                        aria-expanded={guardianEditOpen[guardianIndex]}
+                        onClick={
+                          guardianEditOpen[guardianIndex]
+                            ? undefined
+                            : () => {
+                                setGuardianEditSnapshots((current) => {
+                                  const next: GuardianFormSlots = [current[0], current[1]];
+                                  next[guardianIndex] = guardianForms[guardianIndex];
+                                  return next;
+                                });
+                                setGuardianEditOpen((current) => {
+                                  const next: [boolean, boolean] = [current[0], current[1]];
+                                  next[guardianIndex] = true;
+                                  return next;
+                                });
+                              }
+                        }
+                        disabled={!activeId || guardianSaving}
+                      >
+                        {guardianEditOpen[guardianIndex] ? '저장' : '보호자 등록'}
+                      </button>
+                      {guardianEditOpen[guardianIndex] ? (
+                        <button
+                          className="recipient-secondary-button recipient-guardian-cancel-button"
+                          data-testid={`guardian-${guardianIndex + 1}-cancel-button`}
+                          type="button"
+                          onClick={() => {
+                            setGuardianForms((current) => {
+                              const next: GuardianFormSlots = [current[0], current[1]];
+                              next[guardianIndex] = guardianEditSnapshots[guardianIndex];
+                              return next;
+                            });
+                            setGuardianEditOpen((current) => {
+                              const next: [boolean, boolean] = [current[0], current[1]];
+                              next[guardianIndex] = false;
+                              return next;
+                            });
+                            setGuardianError(null);
+                            setGuardianMessage(null);
+                          }}
+                          disabled={guardianSaving}
+                        >
+                          취소
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <section
+                    className={`recipient-subsection recipient-guardian-section${guardianEditOpen[guardianIndex] ? ' is-editing' : ''}`}
+                    data-testid={`recipient-guardian-${guardianIndex + 1}-section`}
+                  >
+                    <form
+                      id={`guardian-${guardianIndex + 1}-form`}
+                      className="recipient-subform recipient-guardian-form"
+                      noValidate
+                      onSubmit={(event) => void handleGuardianSubmit(event, guardianIndex)}
                     >
-                      <strong>{guardian.name}</strong>
-                      <span>전화: {formatNullable(guardian.phone)}</span>
-                      <span>관계: {formatNullable(guardian.relationship_text)}</span>
-                      <span>주소: {formatNullable(guardian.address)}</span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="recipient-muted">등록된 보호자가 없습니다.</div>
-                )}
-              </div>
-              <form className="recipient-subform" onSubmit={handleGuardianSubmit}>
-                <div className="recipient-subsection-heading">
-                  <h3>{editingGuardianId ? '보호자 수정' : '보호자 추가'}</h3>
-                  {editingGuardianId ? (
-                    <button
-                      className="recipient-secondary-button"
-                      type="button"
-                      onClick={() => {
-                        setEditingGuardianId(null);
-                        setGuardianForm(emptyGuardianForm());
-                      }}
-                    >
-                      새 보호자
-                    </button>
-                  ) : null}
+                      <label className="recipient-field">
+                        이름
+                        <input
+                          data-testid={`guardian-${guardianIndex + 1}-name-input`}
+                          value={form.name}
+                          onChange={(event) =>
+                            setGuardianForms((current) => {
+                              const next: GuardianFormSlots = [current[0], current[1]];
+                              next[guardianIndex] = { ...next[guardianIndex], name: event.target.value };
+                              return next;
+                            })
+                          }
+                          disabled={!activeId || !guardianEditOpen[guardianIndex]}
+                        />
+                      </label>
+                      <label className="recipient-field">
+                        관계
+                        <input
+                          data-testid={`guardian-${guardianIndex + 1}-relationship-input`}
+                          value={form.relationship_text}
+                          onChange={(event) =>
+                            setGuardianForms((current) => {
+                              const next: GuardianFormSlots = [current[0], current[1]];
+                              next[guardianIndex] = { ...next[guardianIndex], relationship_text: event.target.value };
+                              return next;
+                            })
+                          }
+                          disabled={!activeId || !guardianEditOpen[guardianIndex]}
+                        />
+                      </label>
+                      <label className="recipient-field">
+                        전화번호
+                        <input
+                          data-testid={`guardian-${guardianIndex + 1}-phone-input`}
+                          value={form.phone}
+                          onChange={(event) =>
+                            setGuardianForms((current) => {
+                              const next: GuardianFormSlots = [current[0], current[1]];
+                              next[guardianIndex] = { ...next[guardianIndex], phone: event.target.value };
+                              return next;
+                            })
+                          }
+                          disabled={!activeId || !guardianEditOpen[guardianIndex]}
+                        />
+                      </label>
+                      <label className="recipient-field">
+                        이메일
+                        <input
+                          data-testid={`guardian-${guardianIndex + 1}-email-input`}
+                          type="email"
+                          value={form.email}
+                          onChange={(event) =>
+                            setGuardianForms((current) => {
+                              const next: GuardianFormSlots = [current[0], current[1]];
+                              next[guardianIndex] = { ...next[guardianIndex], email: event.target.value };
+                              return next;
+                            })
+                          }
+                          disabled={!activeId || !guardianEditOpen[guardianIndex]}
+                        />
+                      </label>
+                      <label className="recipient-field recipient-field-wide recipient-address-summary-field">
+                        주소
+                        <div className="recipient-address-input-row">
+                          <input
+                            data-testid={`guardian-${guardianIndex + 1}-postal-code-input`}
+                            aria-label="우편번호"
+                            inputMode="numeric"
+                            value={form.postal_code}
+                            onChange={(event) =>
+                              setGuardianForms((current) => {
+                                const next: GuardianFormSlots = [current[0], current[1]];
+                                next[guardianIndex] = { ...next[guardianIndex], postal_code: event.target.value };
+                                return next;
+                              })
+                            }
+                            disabled={!activeId || !guardianEditOpen[guardianIndex]}
+                          />
+                          <input
+                            data-testid={`guardian-${guardianIndex + 1}-address-input`}
+                            aria-label="앞주소"
+                            value={form.address}
+                            onChange={(event) =>
+                              setGuardianForms((current) => {
+                                const next: GuardianFormSlots = [current[0], current[1]];
+                                next[guardianIndex] = { ...next[guardianIndex], address: event.target.value };
+                                return next;
+                              })
+                            }
+                            disabled={!activeId || !guardianEditOpen[guardianIndex]}
+                          />
+                          <input
+                            data-testid={`guardian-${guardianIndex + 1}-address-detail-input`}
+                            aria-label="뒷주소"
+                            value={form.address_detail}
+                            onChange={(event) =>
+                              setGuardianForms((current) => {
+                                const next: GuardianFormSlots = [current[0], current[1]];
+                                next[guardianIndex] = { ...next[guardianIndex], address_detail: event.target.value };
+                                return next;
+                              })
+                            }
+                            disabled={!activeId || !guardianEditOpen[guardianIndex]}
+                          />
+                        </div>
+                      </label>
+                      {guardianError ? <div className="recipient-inline-error">{guardianError}</div> : null}
+                      {guardianMessage ? <div className="recipient-inline-note">{guardianMessage}</div> : null}
+                    </form>
+                  </section>
                 </div>
-                <label className="recipient-field">
-                  이름 <em>필수</em>
-                  <input
-                    data-testid="guardian-name-input"
-                    value={guardianForm.name}
-                    onChange={(event) => setGuardianForm((current) => ({ ...current, name: event.target.value }))}
-                    required
-                    disabled={!activeId}
-                  />
-                </label>
-                <label className="recipient-field">
-                  전화
-                  <input
-                    data-testid="guardian-phone-input"
-                    value={guardianForm.phone}
-                    onChange={(event) => setGuardianForm((current) => ({ ...current, phone: event.target.value }))}
-                    disabled={!activeId}
-                  />
-                </label>
-                <label className="recipient-field">
-                  주소
-                  <input
-                    data-testid="guardian-address-input"
-                    value={guardianForm.address}
-                    onChange={(event) => setGuardianForm((current) => ({ ...current, address: event.target.value }))}
-                    disabled={!activeId}
-                  />
-                </label>
-                <label className="recipient-field">
-                  관계
-                  <input
-                    data-testid="guardian-relationship-input"
-                    value={guardianForm.relationship_text}
-                    onChange={(event) =>
-                      setGuardianForm((current) => ({ ...current, relationship_text: event.target.value }))
-                    }
-                    disabled={!activeId}
-                  />
-                </label>
-                {guardianError ? <div className="recipient-inline-error">{guardianError}</div> : null}
-                {guardianMessage ? <div className="recipient-inline-note">{guardianMessage}</div> : null}
-                <button className="recipient-secondary-button" type="submit" disabled={!activeId || guardianSaving}>
-                  {guardianSaving ? '저장 중…' : '보호자 저장'}
-                </button>
-              </form>
-            </section>
+              );
+            })}
 
             {false && (
             <section className="recipient-subsection" data-testid="recipient-primary-guardian-history">
@@ -1715,6 +2101,9 @@ export const RecipientsPage = () => {
             </section>
             )}
           </div>
+
+            </>
+          ) : null}
 
           {false && (
           <section className="recipient-subsection recipient-payer-section" data-testid="recipient-payer-snapshot-section">
@@ -1857,11 +2246,13 @@ export const RecipientsPage = () => {
             </form>
           </section>
           )}
-          {activeId ? <RecipientW1cPanel recipientId={activeId} /> : null}
-          <section
-            className="recipient-subsection"
-            data-testid="recipient-plan-notification-section"
-          >
+          {detailExtrasOpen ? (
+            <div className="recipient-detail-extra-sections" data-testid="recipient-detail-extra-sections">
+              {activeId ? <RecipientW1cPanel recipientId={activeId} /> : null}
+              <section
+                className="recipient-subsection"
+                data-testid="recipient-plan-notification-section"
+              >
             <div className="recipient-subsection-heading">
               <h3>계획서 통보일 이력</h3>
             </div>
@@ -1918,16 +2309,18 @@ export const RecipientsPage = () => {
                 {planNotificationSaving ? '저장 중…' : '통보일 저장'}
               </button>
             </form>
-          </section>
-          {activeId ? (
-            <RecipientContractPanel
-              recipientId={activeId}
-              recipientNo={detailViewRecipient?.recipient_no ?? null}
-              onRecipientMutated={() => {
-                setListReload((current) => current + 1);
-                setWorkspaceReload((current) => current + 1);
-              }}
-            />
+              </section>
+              {activeId ? (
+                <RecipientContractPanel
+                  recipientId={activeId}
+                  recipientNo={detailViewRecipient?.recipient_no ?? null}
+                  onRecipientMutated={() => {
+                    setListReload((current) => current + 1);
+                    setWorkspaceReload((current) => current + 1);
+                  }}
+                />
+              ) : null}
+            </div>
           ) : null}
         </section>
       </div>
