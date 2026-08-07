@@ -8,6 +8,7 @@ const syntheticRecipient = {
   name: 'TEST_W1D_RECIPIENT',
   birth_date: '1950-01-01',
   sex_code: 'FEMALE',
+  recipient_status: 'ACTIVE',
   postal_code: null,
   address: null,
   home_phone: null,
@@ -183,9 +184,67 @@ describe('W1D RED: contract and certification transition UI', () => {
     fireEvent.click(row);
     await waitFor(() => {
       expect(
-        screen.queryByTestId('recipient-detail-workspace') ||
-          screen.queryByTestId('recipient-contract-panel'),
+        screen.queryByTestId('recipient-detail-workspace'),
         'W1D_UI_RECIPIENT_DETAIL_MISSING',
+      ).toBeTruthy();
+    });
+    // Confirmed UX: initial basic detail shows recipient + guardian 1/2 only.
+    // Contract / certification-transition panels stay collapsed until the toggle.
+    // Require the real basic-information form control (not recipient-no display).
+    const nameInput = await screen.findByTestId('recipient-detail-name-input');
+    expect(nameInput, 'W1D_UI_RECIPIENT_BASIC_INFO_MISSING').toBeInTheDocument();
+    expect(
+      (nameInput as HTMLInputElement).value,
+      'W1D_UI_RECIPIENT_BASIC_INFO_VALUE_MISMATCH',
+    ).toBe(syntheticRecipient.name);
+    expect(
+      screen.getByTestId('recipient-guardian-1-section'),
+      'W1D_UI_GUARDIAN_1_SECTION_MISSING',
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('recipient-guardian-2-section'),
+      'W1D_UI_GUARDIAN_2_SECTION_MISSING',
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('recipient-contract-panel'),
+      'W1D_UI_CONTRACT_PANEL_VISIBLE_BEFORE_TOGGLE',
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('certification-transition-panel'),
+      'W1D_UI_TRANSITION_PANEL_VISIBLE_BEFORE_TOGGLE',
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('recipient-detail-extra-sections'),
+      'W1D_UI_EXTRA_SECTIONS_VISIBLE_BEFORE_TOGGLE',
+    ).not.toBeInTheDocument();
+  }
+
+  /**
+   * Expand collapsed extra panels via the accessible detail toggle control
+   * (product label: 세부정보; data-testid: recipient-detail-toggle).
+   * Role/name/state are primary; testid is secondary identity only.
+   * Contract and certification-transition panels mount only after this click.
+   */
+  async function expandDetailExtras() {
+    const toggle = screen.getByRole('button', { name: /세부정보|추가정보/ });
+    expect(toggle, 'W1D_UI_DETAIL_EXTRAS_TOGGLE_MISSING').toBeInTheDocument();
+    // Secondary identity only — not a substitute for role/name selection.
+    expect(toggle).toHaveAttribute('data-testid', 'recipient-detail-toggle');
+    expect(
+      toggle.getAttribute('aria-expanded'),
+      'W1D_UI_DETAIL_EXTRAS_ALREADY_EXPANDED',
+    ).toBe('false');
+    fireEvent.click(toggle);
+    expect(
+      toggle.getAttribute('aria-expanded'),
+      'W1D_UI_DETAIL_EXTRAS_NOT_EXPANDED_AFTER_CLICK',
+    ).toBe('true');
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId('recipient-detail-extra-sections') ||
+          screen.queryByTestId('recipient-contract-panel') ||
+          screen.queryByTestId('certification-transition-panel'),
+        'W1D_UI_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE',
       ).toBeTruthy();
     });
   }
@@ -210,6 +269,7 @@ describe('W1D RED: contract and certification transition UI', () => {
 
   test('exposes contract panel without contract_no or forced signer FK', async () => {
     await openRecipientDetail();
+    await expandDetailExtras();
 
     const panel = screen.queryByTestId('recipient-contract-panel');
     expect(panel, 'W1D_UI_CONTRACT_PANEL_MISSING').toBeInTheDocument();
@@ -274,6 +334,7 @@ describe('W1D RED: contract and certification transition UI', () => {
 
   test('submits minimal contract without contract_no and optional blanks', async () => {
     await openRecipientDetail();
+    await expandDetailExtras();
     const form = screen.queryByTestId('contract-create-form');
     expect(form, 'W1D_UI_CONTRACT_CREATE_FORM_MISSING').toBeInTheDocument();
     if (!form) return;
@@ -299,6 +360,7 @@ describe('W1D RED: contract and certification transition UI', () => {
 
   test('transition preview gates apply until explicit confirmation', async () => {
     await openRecipientDetail();
+    await expandDetailExtras();
 
     const transition = screen.queryByTestId('certification-transition-panel');
     expect(transition, 'W1D_UI_TRANSITION_PANEL_MISSING').toBeInTheDocument();
@@ -456,6 +518,7 @@ describe('W1D RED: contract and certification transition UI', () => {
     });
 
     await openRecipientDetail();
+    await expandDetailExtras();
     const transition = screen.queryByTestId('certification-transition-panel');
     expect(transition, 'W1D_UI_TRANSITION_PANEL_MISSING').toBeInTheDocument();
     if (!transition) return;
@@ -507,6 +570,7 @@ describe('W1D RED: contract and certification transition UI', () => {
     });
 
     await openRecipientDetail();
+    await expandDetailExtras();
     const transition = screen.getByTestId('certification-transition-panel');
     fillRequiredTransitionFields(transition);
     fireEvent.click(within(transition).getByTestId('transition-preview-button'));

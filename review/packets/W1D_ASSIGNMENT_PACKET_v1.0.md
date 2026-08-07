@@ -2,47 +2,62 @@
 
 > 작업: 서비스계약·최초 계약 수급자번호 발급·계약서명자 snapshot·인정 전환
 >
-> 상태: `REGINA_SCOPE_SEALED / GROK_DESIGN_RED_AUTHORIZED`
+> 상태: `PHASE1_REPAIR_WRITER_ACTIVE` — **not** Phase-1 approval, **not** product GREEN
 >
 > 위험도: `HIGH`
 >
-> 기준 branch: `codex/w1d-contract-transition`
+> ## Current checkout identity (fail-closed)
 >
-> 기준 SHA: `266beeaa2d150371ccd1a0f26f69249eca86ba16`
+> | 항목 | 현재 값 |
+> |---|---|
+> | Workspace | `C:\sswcenter\2.2` |
+> | Branch | `main` |
+> | HEAD | `2a8e5af8798b77bf73257cd2afb9b8cefae63144` |
+> | Working tree | **dirty WIP** (product/UI/tests outside this repair remain dirty; ownership below) |
 >
-> 직전 gate: `W1C_PASS`
+> ## Historical labels only (do not re-use as current identity)
 >
-> W1C 승인 후보: `a86567fe5c3b88bc9148c04b97f3626e0972ed75`
-> (`MARCO_W1C_REVIEW_RESULT=APPROVE` → 레지나 `W1C_PASS`)
+> - stale workspace `C:\sswcenter\2.1`
+> - stale branch `codex/w1d-contract-transition`
+> - stale SHA `266beeaa2d150371ccd1a0f26f69249eca86ba16`
+> - historical R25 claims: product absent, collect-only=28, clean tree
 >
-> 운영 정본: `docs/AI_업무분담_운영규정_v3.5.md`
+> 직전 gate: `W1C_PASS` (historical W1C 후보 `a86567fe5c3b88bc9148c04b97f3626e0972ed75`)
 >
-> 작성·범위 봉인: 레지나
+> 운영 정본 **index**: `docs/00_정본_문서_목록.md` (유일한 정본 진입점·소유권 라우팅)
 >
-> 작성일: 2026-07-30 KST
+> `docs/AI_*.md`: **historical only** — 활성 운영 정본 아님 (00 §4)
+>
+> 작성·범위 봉인: 레지나 / 본 수리 턴 Writer: Grok
+>
+> 작성일: 2026-07-30 KST · 수리 identity 갱신: 2026-08-06
 
 ## 1. 현재 단계와 역할
 
-이 패킷은 W1D 전체 구현 승인이 아니다. 현재 승인 범위는 **설계·계약 초안과
-실행 가능한 RED**까지다.
+이 패킷은 W1D 전체 구현 승인이 아니다. **현재 턴은 review/contract/test-harness
+Phase-1 repair**이며, 제품 구현·migration 수정·GREEN 주장을 포함하지 않는다.
+
+현재 checkout에는 W1D migration/API/UI가 **존재**한다(dirty WIP 포함). 과거
+“product absent / collect-only=28” 서술은 **historical only**이다. 존재 ≠ 계약
+GREEN; RED/REQUIRED_CHANGES와 unresolved blocker를 유지한다.
 
 | 역할 | 담당 | 현재 권한 |
 |---|---|---|
 | 목표·범위·위험·수용기준 | 레지나 | 본 패킷 봉인, 설계감사 뒤 구현경계 재봉인 |
-| 설계·계약·RED | 그록 | 단일 writer, §8의 Phase 1 파일만 수정 |
+| Phase-1 repair Writer | 그록 | §8 **seven-file allowlist only** |
 | 사전 설계감사 | 오푸스 | read-only, 신규 DB·동시성·이력·transaction 감사 |
 | 감사 대체 | 요셉 | 오푸스 호출 불가 시 동일 범위 read-only 감사 |
-| 구현 | 그록 | **아직 미승인** |
-| 전체 회귀 | Spark | 최종 후보 SHA 이후 |
-| 최종 반대검토 | 마르코 | Spark와 동일한 최종 후보 SHA |
+| 제품 구현 | 그록 | **아직 미승인** (본 턴 금지) |
+| 전체 회귀 | Spark | 본 턴 종료 후 독립 실행 |
+| 최종 반대검토 | 마르코 | Spark와 동일한 후보 SHA |
 | 최종 판정 | 레지나 | 코드를 수정하지 않고 `PASS` 또는 `BLOCK` |
 
-- 제품·테스트 write 책임자는 현재 그록 1명이다.
+- 본 턴 제품·migration write 금지. harness/contract/review만.
 - 레지나는 제품·테스트를 수정하지 않는다.
 - 오푸스·요셉·마르코는 제품·테스트를 수정하지 않는다.
 - 단일 writer 단계이므로 아리아를 호출하지 않는다.
-- Grok 내부 agent/subagent 사용 여부는 Grok CLI가 스스로 결정한다. 다만 제품·테스트
-  단일 write 책임과 본 패킷의 allowlist·완료기준 책임은 Grok 세션 하나에 유지한다.
+- Grok 내부 agent/subagent 사용 여부는 Grok CLI가 스스로 결정한다. 다만 단일
+  write 책임과 본 패킷의 allowlist·완료기준 책임은 Grok 세션 하나에 유지한다.
 - Opus와 요셉이 모두 불가하면 구현으로 넘어가지 않고 `BLOCKER`다.
 
 ## 2. 목표
@@ -60,18 +75,20 @@ W1C PASS 위에 다음 계약을 하나의 W1D 경계로 설계하고 RED로 고
 
 ## 3. 정본 anchor와 matrix ID
 
-### 필수 정본
+### 필수 정본 (via `docs/00`)
 
 | 영역 | 범위 |
 |---|---|
+| 진입점 | `docs/00_정본_문서_목록.md` |
 | 업무 | `02#fr-certification-transition` §6, `02#fr-contract` §7 |
 | W1B 승계 | `02` §4.1 수급자번호, §4.4 계약서명자 snapshot |
 | UI·API | `03#ui-contract` §5 |
 | 수급자 표시 | `03` §4.1~4.2의 최초 계약 전 번호 nullable 규칙 |
 | DB | `04#db-contract` §8, `04` §10 인정 전환 transaction |
 | W1B DB 승계 | `04` §4.1 수급자번호, §5 계약서명자 snapshot |
+| 기술·명명 | `05` §4.3 `ct_` constraint trigger / `trg_` ordinary trigger; §4.4 data-bearing downgrade loss/restore |
 | 로드맵 | `06` §1·§2 W1D 행 |
-| 운영 | AI 운영정본 v3.5 HIGH·exact SHA·독립검수 규칙 |
+| AI 운영문서 | `docs/AI_*.md` **historical only** (00 §4) |
 
 ### 필수 matrix
 
@@ -155,12 +172,14 @@ W1E 배정·Wave 2 일정/업무카드 선구현
 W1C migration·제품 계약 약화
 생성 OpenAPI TypeScript 수동 편집
 실 개인정보·운영 DB·운영 자격증명
+본 턴 product/migration 편집
+GREEN/approval 주장 without independent runtime evidence
 ```
 
 ## 6. 설계 단계에서 확정할 항목
 
-그록은 임의 구현하지 않고 계획에서 아래를 제안한다. 오푸스/요셉 감사와 레지나
-재봉인 전에는 제품 코드에 반영하지 않는다.
+그록은 임의 제품 구현하지 않고 계획에서 아래를 제안한다. 오푸스/요셉 감사와
+레지나 재봉인 전에는 제품 코드에 반영하지 않는다.
 
 1. W1D API resource path와 operation 이름
 2. 계약 조회·생성·종료·대체 request/response schema
@@ -173,9 +192,14 @@ W1C migration·제품 계약 약화
 9. 단일 감사 event의 action/resource/before/after/target/correlation 구조
 10. 다음 단일 Alembic revision의 exact 파일명·revision ID
 
-다음 migration은 현 single head
-`20260730_0010_w1c_certification_ledgers`의 direct child 1개여야 한다. Phase 1에서는
-migration을 생성하지 않는다.
+Migration identity (product may already exist; this repair **does not edit** it):
+
+- revision: `20260730_0011_w1d_recipient_contract`
+- parent: `20260730_0010_w1c_certification_ledgers`
+
+Canonical naming (`docs/05` §4.3): constraint trigger = `ct_*`, ordinary = `trg_*`.
+Current product migration name mismatch (if any) is an explicit **product RED
+blocker**, not a test weaken.
 
 ## 7. RED 필수 계약
 
@@ -185,6 +209,9 @@ RED는 단순 문자열 존재검사가 아니라 구현 후 실제 DB/API/OpenA
 ### DB·migration·동시성
 
 - direct-child migration·upgrade/downgrade·offline SQL·catalog
+- offline SQL: table/DDL/function/constraint-trigger tokens (not bare `recipient_contract` only)
+- catalog ABS-08/09: forbidden columns/defaults/enums/constraints mutation-sensitive
+- constraint trigger exact name `ct_recipient_contract_group_period_overlap`
 - 최소 계약 nullable round trip
 - same-service·cross-group conflict와 same-group 다른 서비스 허용
 - same-day·next-day adjacency·open-ended·역순 기간
@@ -197,6 +224,8 @@ RED는 단순 문자열 존재검사가 아니라 구현 후 실제 DB/API/OpenA
 - 동시 apply 하나만 성공
 - apply 각 단계 fault injection과 전체 rollback
 - 감사 event의 confirmer/time/target/correlation
+- data-bearing downgrade: loss/restore evidence required per `docs/05` §4.4
+  (record requirement; **do not claim runtime evidence** until independent run)
 
 ### API·OpenAPI
 
@@ -218,71 +247,79 @@ RED는 단순 문자열 존재검사가 아니라 구현 후 실제 DB/API/OpenA
 - 종료사유 초기값 없음
 - 서명자 FK 선택 강제 없음
 - 종료 계약은 “새 계약” 흐름
+- **detail extras collapsed by default** (`detailExtrasOpen=false`); E2E/unit must
+  expand via accessible control (`세부정보` / `recipient-detail-toggle`) before
+  panel assertions
 - preview 영향목록·서비스 multiset·제안 종료일 표시
 - 명시 확인 전 apply disabled
 - stale 시 preview·확인 폐기와 재실행 안내
 - 실패 시 부분 성공처럼 보이는 상태 없음
 - 실제 PostgreSQL/FastAPI와 3개 viewport 최종 E2E
 
-### 보안·회귀
+### 보안·회귀·harness
 
 - 합성자료만 사용
 - 오류·로그·artifact에 SQL/trace/PII canary 비노출
 - W1A~W1C migration·API·frontend 핵심 회귀
 - listener·process·temp cluster·Playwright artifact 잔여 0
+- **product markers** (`W1D_*` domain/contract) vs **harness markers**
+  (`W1D_HARNESS_*` session/barrier/monitor/timeout/cleanup/setup) remain distinct
+- wrapper Stage C must not reclassify harness/setup/cleanup failures as product RED
 
-## 8. Phase 1 파일 소유권
+## 8. Phase-1 repair 파일 소유권 (current writer turn)
 
-그록이 수정할 수 있는 파일은 아래 신규 경로뿐이다.
+### Writable allowlist — ONLY these seven
 
 ```text
+review/packets/W1D_ASSIGNMENT_PACKET_v1.0.md
 review/plans/W1D_CONTRACT_TRANSITION_PLAN.md
 review/evidence/w1d/RED.md
 backend/tests/test_w1d_contract.py
 backend/tests/test_w1d_postgres.py
-frontend/src/test/W1DContractTransition.test.tsx
 frontend/e2e/w1d-contract-transition.spec.ts
 scripts/test-w1d-postgres.ps1
 ```
 
-레지나는 제품·테스트 write 없이 다음 governance 기록만 작성·갱신할 수 있다.
+### Protected — every other path (byte integrity / do not touch)
 
 ```text
-review/packets/W1D_ASSIGNMENT_PACKET_v1.0.md
-review/environment/office/2026-07-30_W1D.md
-review/reports/W1D_*_DESIGN_AUDIT_*.md
-```
-
-감사보고서는 감사자의 stdout을 사실대로 보존하며, Grok에게는 read-only다.
-
-다음은 Phase 1에서 read-only다.
-
-```text
-docs/**
-backend/alembic/**
+frontend/src/test/W1DContractTransition.test.tsx   # dirty WIP — byte-for-byte protect
 backend/app/**
-frontend/src/generated/**
-frontend/src/pages/**
-frontend/src/components/**
-frontend/src/services/**
-frontend/src/styles/**
-기존 W1A/W1B/W1C tests 및 wrappers
+backend/alembic/**
+frontend/src/**                                    # pages/services/styles/generated
+docs/**                                            # except not writable anyway
+scripts/**                                         # except test-w1d-postgres.ps1
+node_modules/
+all untracked files
+existing W1A/W1B/W1C tests and wrappers
+review/environment/**
+review/reports/**
 ```
 
-소유권 변경은 write 전에 이 패킷을 레지나가 개정해야 한다. stage·commit·push·rebase·
-stash·환경/의존성 변경은 승인하지 않는다.
+### Dirty-WIP ownership boundary
 
-## 9. Phase 1 완료 기준
+Current tree is dirty outside this allowlist (recipient product, CSS, generated
+OpenAPI TS, Vitest, untracked scripts/docs, etc.). **This writer turn neither
+owns nor cleans those paths.** Preserve all dirty/untracked state. No
+stage/commit/push/reset/checkout/branch/worktree/dependency install/runtime
+test execution in this turn.
+
+소유권 변경은 write 전에 이 패킷을 레지나가 개정해야 한다.
+
+## 9. Phase 1 / repair 완료 기준 (fail-closed)
 
 1. 계획이 모든 필수 matrix ID를 DB/API/OA/UI/PG/E2E 검증에 매핑한다.
-2. RED가 정확히 수집되고 구현 부재 때문에 의도한 stable marker로 실패한다.
+2. RED가 현재 identity를 기록하고, product mismatch·미실행 runtime은
+   `REQUIRED_CHANGES` / blockers로 남긴다. **GREEN 금지.**
 3. 금지 구조 부재 검사는 별도 ABS PASS로 구분하며 제품 GREEN으로 주장하지 않는다.
 4. wrapper는 product failure와 harness/environment failure를 구분한다.
-5. 실행 명령·exit code·수집/실패/skip/error 수·첫 marker를 `RED.md`에 기록한다.
+5. 실행 명령·exit code·수집/실패/skip/error 수·첫 marker를 독립 Spark 실행 후
+   `RED.md`에 기록한다 (본 턴은 static repair only).
 6. 테스트 종료 후 listener·process·temp/artifact 잔여를 기록한다.
-7. `git diff --check`가 통과하고 변경은 §8 allowlist에만 존재한다.
-8. 그록은 `RED_VALID_PENDING_DESIGN_AUDIT` 또는 `BLOCK`으로 반환한다.
-9. 오푸스/요셉 감사와 레지나 재봉인 전 제품 구현을 시작하지 않는다.
+7. `git diff --check`가 통과하고 본 턴 변경은 §8 seven-file allowlist에만 존재한다.
+8. 그록은 `REQUIRED_CHANGES` 또는 `RED_VALID_PENDING_DESIGN_AUDIT` 또는 `BLOCK`으로
+   반환한다 — never GREEN/approval.
+9. 오푸스/요셉 감사와 레지나 재봉인 전 제품 구현 경계를 넘지 않는다.
 
 ## 10. 반환 형식
 
@@ -299,4 +336,25 @@ cleanup:
 git status --short:
 미실행·잔여위험:
 다음 한 단계:
+```
+
+## 11. Independent Spark gates (run after this repair; Writer must not run)
+
+```text
+# From C:\sswcenter\2.2
+git rev-parse HEAD
+git branch --show-current
+git status --short
+
+# Contract / offline (no real PG required for pure contract file)
+backend\.venv\Scripts\python.exe -B -m pytest -q backend/tests/test_w1d_contract.py --tb=line -p no:cacheprovider
+
+# Isolated PostgreSQL wrapper (harness vs product classification)
+powershell -NoProfile -File scripts\test-w1d-postgres.ps1
+
+# Optional pure collect (do not treat historical=28 as current)
+backend\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider --collect-only backend/tests/test_w1d_contract.py backend/tests/test_w1d_postgres.py
+
+# Protect dirty Vitest byte seal
+# (no edit; optional hash check only)
 ```

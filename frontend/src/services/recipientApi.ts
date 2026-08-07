@@ -6,8 +6,24 @@ type Schemas = components['schemas'];
 export type Recipient = Schemas['RecipientResponse'];
 export type RecipientCreateRequest = Schemas['RecipientCreateRequest'];
 export type RecipientUpdateRequest = Schemas['RecipientUpdateRequest'];
+export type RecipientListItem = Schemas['RecipientListItem'];
 export type RecipientListResponse = Schemas['RecipientListResponse'];
+export type RecipientStatus = Schemas['RecipientStatus'];
+export type RecipientListStatusFilter = Schemas['RecipientListStatusFilter'];
+export type RecipientListServiceGroupItem = Schemas['RecipientListServiceGroupItem'];
+export type RecipientListServiceTypeItem = Schemas['RecipientListServiceTypeItem'];
 export type RecipientSexCode = Schemas['RecipientSexCode'];
+
+/** Sealed manual-tag values for detail validation (ACTIVE|ENDED|WAITING). */
+export const RECIPIENT_STATUS_VALUES = ['ACTIVE', 'ENDED', 'WAITING'] as const;
+
+export function isRecipientStatus(value: unknown): value is RecipientStatus {
+  return (
+    value === 'ACTIVE' ||
+    value === 'ENDED' ||
+    value === 'WAITING'
+  );
+}
 export type Guardian = Schemas['GuardianResponse'];
 export type GuardianCreateRequest = Schemas['GuardianCreateRequest'];
 export type GuardianUpdateRequest = Schemas['GuardianUpdateRequest'];
@@ -57,6 +73,7 @@ export type RecipientId = number | string;
 
 export interface RecipientListOptions {
   search?: string;
+  status?: RecipientListStatusFilter;
   page?: number;
   pageSize?: number;
   signal?: AbortSignal;
@@ -90,6 +107,7 @@ export async function listRecipients(
     page_size: String(options.pageSize ?? 100),
   });
   if (options.search?.trim()) params.set('search', options.search.trim());
+  if (options.status) params.set('status', options.status);
   return apiRequest<RecipientListResponse>(`/api/v1/recipients?${params.toString()}`, {
     method: 'GET',
     signal: options.signal,

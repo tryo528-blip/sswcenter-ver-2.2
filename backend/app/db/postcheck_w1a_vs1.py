@@ -16,10 +16,12 @@ W1D_REVISION = "20260730_0011_w1d_recipient_contract"
 W1E_REVISION = "20260801_0012_w1e_care_assignment"
 CONTINUING_EDUCATION_REVISION = "20260802_0013_staff_continuing_education"
 RECIPIENT_PLAN_NOTIFICATION_REVISION = "20260803_0014_recipient_plan_notification"
+RECIPIENT_STATUS_TAG_REVISION = "20260806_0015_recipient_status_tag"
 W1E_LINEAGE_REVISIONS = {
     W1E_REVISION,
     CONTINUING_EDUCATION_REVISION,
     RECIPIENT_PLAN_NOTIFICATION_REVISION,
+    RECIPIENT_STATUS_TAG_REVISION,
 }
 W1A_PERMISSION_CODES = {
     "COPAY_USE",
@@ -846,6 +848,7 @@ def main() -> None:
                 W1E_REVISION,
                 CONTINUING_EDUCATION_REVISION,
                 RECIPIENT_PLAN_NOTIFICATION_REVISION,
+                RECIPIENT_STATUS_TAG_REVISION,
             }:
                 raise SystemExit("Unexpected W1A migration revision")
             verify_wave0_invariants(
@@ -1101,7 +1104,11 @@ def main() -> None:
                     connection,
                     include_continuing_education=(
                         current_revision
-                        in {CONTINUING_EDUCATION_REVISION, RECIPIENT_PLAN_NOTIFICATION_REVISION}
+                        in {
+                            CONTINUING_EDUCATION_REVISION,
+                            RECIPIENT_PLAN_NOTIFICATION_REVISION,
+                            RECIPIENT_STATUS_TAG_REVISION,
+                        }
                     ),
                 )
                 _verify_vs4_contract(connection)
@@ -1111,8 +1118,13 @@ def main() -> None:
                 _verify_w1c_contract(connection)
                 _verify_w1d_contract(connection)
                 _verify_w1e_contract(connection)
-                if current_revision == RECIPIENT_PLAN_NOTIFICATION_REVISION:
+                if current_revision in {
+                    RECIPIENT_PLAN_NOTIFICATION_REVISION,
+                    RECIPIENT_STATUS_TAG_REVISION,
+                }:
                     _verify_recipient_plan_notification_contract(connection)
+                if current_revision == RECIPIENT_STATUS_TAG_REVISION:
+                    _verify_recipient_status_tag_contract(connection)
 
             sensitive_indexes = set(
                 connection.execute(
@@ -1199,7 +1211,9 @@ def main() -> None:
     finally:
         engine.dispose()
 
-    if current_revision == RECIPIENT_PLAN_NOTIFICATION_REVISION:
+    if current_revision == RECIPIENT_STATUS_TAG_REVISION:
+        print("RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK")
+    elif current_revision == RECIPIENT_PLAN_NOTIFICATION_REVISION:
         print("RECIPIENT_PLAN_NOTIFICATION_DB_POSTCHECK_OK")
     elif current_revision == CONTINUING_EDUCATION_REVISION:
         print("STAFF_CONTINUING_EDUCATION_DB_POSTCHECK_OK")
@@ -2991,6 +3005,93 @@ def _verify_recipient_plan_notification_catalog_snapshot(
                 f"recipient-plan-notification index {name} predicate mismatch: "
                 f"expected {exp_pred!r}, got {act_pred!r}"
             )
+
+
+# Canonical complete expressions for recipient_status (whitespace-normalized only).
+# Rejects cast-stripping false positives (e.g. 'ACTIVE'::text OR TRUE) and token-set
+# false positives (e.g. CHECK (... IN (...) OR TRUE) / extra values / extra clauses).
+_RECIPIENT_STATUS_CANONICAL_DEFAULTS = frozenset(
+    {
+        "'ACTIVE'::text",
+        "'ACTIVE'",
+        "('ACTIVE'::text)",
+        "('ACTIVE')",
+    }
+)
+_RECIPIENT_STATUS_CANONICAL_CHECK_DEFS = frozenset(
+    {
+        "CHECK (recipient_status IN ('ACTIVE', 'ENDED', 'WAITING'))",
+        "CHECK (recipient_status IN ('ACTIVE'::text, 'ENDED'::text, 'WAITING'::text))",
+        "CHECK ((recipient_status = ANY (ARRAY['ACTIVE'::text, 'ENDED'::text, 'WAITING'::text])))",
+        "CHECK (recipient_status = ANY (ARRAY['ACTIVE'::text, 'ENDED'::text, 'WAITING'::text]))",
+    }
+)
+
+
+def _normalize_recipient_status_sql(sql_text: str | None) -> str | None:
+    """Collapse whitespace only; keep casts and every semantic token."""
+    if sql_text is None:
+        return None
+    return " ".join(str(sql_text).split())
+
+
+def _verify_recipient_status_tag_contract(connection: Connection) -> None:
+    """Assert recipient.recipient_status column contract for revision 0015.
+
+    Proves the complete canonical normalized default expression is exactly ACTIVE,
+    column is NOT NULL, the complete CHECK predicate is exactly
+    {ACTIVE, ENDED, WAITING}, and the constraint is convalidated.
+    Marker RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK remains the restore-drill success signal.
+    """
+    col = connection.execute(
+        text(
+            """
+            SELECT is_nullable, column_default
+              FROM information_schema.columns
+             WHERE table_schema = 'erp'
+               AND table_name = 'recipient'
+               AND column_name = 'recipient_status'
+            """
+        )
+    ).mappings().one_or_none()
+    if col is None:
+        raise SystemExit("recipient_status column missing on erp.recipient")
+    if col["is_nullable"] != "NO":
+        raise SystemExit("recipient_status must be NOT NULL")
+    default_raw = col["column_default"]
+    if default_raw is None:
+        raise SystemExit("recipient_status server default must be exactly ACTIVE")
+    # Complete expression only — no cast stripping, no suffix tolerance.
+    default_norm = _normalize_recipient_status_sql(str(default_raw))
+    if default_norm not in _RECIPIENT_STATUS_CANONICAL_DEFAULTS:
+        raise SystemExit(
+            "recipient_status server default must be exactly ACTIVE "
+            f"(canonical complete expression); got {default_raw!r}"
+        )
+    check_row = connection.execute(
+        text(
+            """
+            SELECT pg_get_constraintdef(oid, true) AS definition, convalidated
+              FROM pg_constraint
+             WHERE conrelid = 'erp.recipient'::regclass
+               AND contype = 'c'
+               AND conname = 'ck_recipient_recipient_status'
+            """
+        )
+    ).mappings().one_or_none()
+    if check_row is None:
+        raise SystemExit("ck_recipient_recipient_status check constraint missing")
+    if check_row["convalidated"] is not True:
+        raise SystemExit(
+            "ck_recipient_recipient_status must be validated/convalidated"
+        )
+    definition = str(check_row["definition"])
+    definition_norm = _normalize_recipient_status_sql(definition)
+    if definition_norm not in _RECIPIENT_STATUS_CANONICAL_CHECK_DEFS:
+        raise SystemExit(
+            "ck_recipient_recipient_status must accept exactly "
+            f"ACTIVE,ENDED,WAITING (canonical complete CHECK); got {definition!r}"
+        )
 
 
 def _verify_recipient_plan_notification_contract(connection: Connection) -> None:

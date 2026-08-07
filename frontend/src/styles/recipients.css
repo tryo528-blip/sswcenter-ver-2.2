@@ -177,14 +177,6 @@
   color: var(--color-danger);
 }
 
-/* 디자인 검토 중에는 서버·검증 오류 문구가 레이아웃을 밀지 않도록 숨긴다. */
-.recipients-page .recipient-save-error,
-.recipients-page .recipient-inline-error,
-.recipients-page .recipient-state-error,
-.recipients-page .recipient-status-error {
-  display: none;
-}
-
 .recipient-workspace {
   display: grid;
   grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.7fr);
@@ -770,9 +762,9 @@ button.recipient-list-row {
 button.recipient-list-row {
   align-items: flex-start;
   width: 100%;
-  height: 45px;
+  height: auto;
   min-height: 45px;
-  overflow: hidden;
+  overflow: visible;
   padding: 12px 15px;
   color: var(--text-main);
   text-align: left;
@@ -850,8 +842,13 @@ button.recipient-list-row.is-selected {
 }
 
 .recipient-list-services {
+  overflow: visible;
   color: var(--text-muted);
   font-weight: 500;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .recipient-list-grade {
@@ -860,8 +857,21 @@ button.recipient-list-row.is-selected {
 }
 
 .recipient-list-copay {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 4px;
+  overflow: visible;
   color: var(--text-muted);
   font-weight: 500;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.recipient-list-copay-sep {
+  color: var(--text-light);
+  font-weight: 400;
 }
 
 .recipient-basic-section .recipient-detail-summary > :nth-child(1) {
@@ -910,7 +920,7 @@ button.recipient-list-row.is-selected {
 }
 
 .recipient-list-footer {
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -981,15 +991,20 @@ button.recipient-list-row.is-selected {
   padding: 18px;
 }
 
-.recipient-detail-panel.is-idle > :not(.recipient-detail-heading):not(.recipient-detail-nav):not(.recipient-idle-message) {
+/* Idle (no selection): keep heading + idle message only.
+   Create flow: when panel also has .is-creating, expose the basic/create section
+   so the register form and createError alert are not hidden by idle chrome. */
+.recipient-detail-panel.is-idle:not(.is-creating) > :not(.recipient-detail-heading):not(.recipient-detail-nav):not(.recipient-idle-message) {
   display: none;
 }
 
-.recipient-detail-panel.is-idle .recipient-detail-heading button {
+.recipient-detail-panel.is-idle.is-creating > :not(.recipient-detail-heading):not(.recipient-detail-nav):not(.recipient-basic-section) {
   display: none;
 }
 
-.recipient-detail-panel.is-idle .recipient-detail-heading .recipient-create-actions {
+/* Idle may hide the detail-extras toggle only — never the whole create action group
+   or every heading button (that blocked "수급자 등록" with empty lists). */
+.recipient-detail-panel.is-idle .recipient-detail-heading .recipient-detail-toggle {
   display: none;
 }
 
@@ -1285,9 +1300,30 @@ button.recipient-list-row.is-selected {
   margin-bottom: 18px;
 }
 
-/* The workspace panel already identifies the page; keep the duplicate shell heading out of layout. */
-.recipient-page-heading {
+/*
+ * The workspace panel already identifies the page; keep only the duplicate title out of layout.
+ * Do NOT set display:none on .recipient-page-heading itself — that hides the list status chip
+ * (aria-live loading/error) which must remain visible to users and the accessibility tree.
+ */
+.recipient-page-heading > :not(.recipient-page-status) {
   display: none;
+}
+
+/* Avoid empty heading chrome expanding layout when status has no content. */
+.recipient-page-heading {
+  margin-bottom: 0;
+  padding: 0;
+  border-bottom: none;
+  min-height: 0;
+}
+
+.recipient-page-status {
+  min-height: 0;
+}
+
+.recipient-page-status:not(:empty) {
+  margin-bottom: 10px;
+  min-height: 20px;
 }
 
 .recipient-page-heading h1,

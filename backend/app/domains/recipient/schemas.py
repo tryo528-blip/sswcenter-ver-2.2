@@ -4,7 +4,8 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 
 class StrictModel(BaseModel):
@@ -14,6 +15,18 @@ class StrictModel(BaseModel):
 class RecipientSexCode(StrEnum):
     MALE = "MALE"
     FEMALE = "FEMALE"
+
+
+class RecipientStatus(StrEnum):
+    """Manually assigned recipient display/filter tag (memo-like).
+
+    Stored/API values only. Display labels: ACTIVE=이용중, ENDED=계약종료,
+    WAITING=대기중. Independent of recipient_contract periods and other domains.
+    """
+
+    ACTIVE = "ACTIVE"
+    ENDED = "ENDED"
+    WAITING = "WAITING"
 
 
 PositiveVersion = Annotated[int, Field(gt=0)]
@@ -35,14 +48,69 @@ class RecipientUpdateRequest(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     birth_date: date | None = None
     sex_code: RecipientSexCode | None = None
+    # Optional by omission; explicit JSON null is rejected (not nullable).
+    recipient_status: RecipientStatus | SkipJsonSchema[None] = Field(default=None)
     postal_code: str | None = Field(default=None, max_length=50)
     address: str | None = Field(default=None, max_length=1000)
     home_phone: str | None = Field(default=None, max_length=100)
     mobile_phone: str | None = Field(default=None, max_length=100)
     memo: str | None = Field(default=None, max_length=4000)
 
+    @field_validator("recipient_status", mode="before")
+    @classmethod
+    def _reject_null_recipient_status(cls, value: object) -> object:
+        if value is None:
+            raise ValueError(
+                "recipient_status cannot be null; omit the field to leave it unchanged"
+            )
+        return value
+
 
 class RecipientResponse(StrictModel):
+    id: int
+    name: str
+    birth_date: date
+    sex_code: RecipientSexCode
+    recipient_status: RecipientStatus
+    recipient_no: str | None
+    postal_code: str | None
+    address: str | None
+    home_phone: str | None
+    mobile_phone: str | None
+    memo: str | None
+    row_version: int
+
+
+class RecipientListStatusFilter(StrEnum):
+    """Query filter for GET /recipients list status (manual tag equality)."""
+
+    ALL = "ALL"
+    ACTIVE = "ACTIVE"
+    ENDED = "ENDED"
+    WAITING = "WAITING"
+
+
+class RecipientListServiceTypeItem(StrictModel):
+    service_type_code: str
+    display_name: str
+
+
+class RecipientListServiceGroupItem(StrictModel):
+    service_group_code: str
+    display_name: str
+    service_types: list[RecipientListServiceTypeItem]
+
+
+class RecipientListItem(StrictModel):
+    """List projection: base recipient fields plus today-scoped summary columns.
+
+    Detail GET continues to use RecipientResponse (no list summary fields).
+    Columns: grade / name / age(via birth_date) / copayment / services.
+    copayment_rate is always null — W1C benefit ledger stores benefit_code only;
+    no official numeric rate source is wired in this packet.
+    Does not include recipient_status or any derived row status field.
+    """
+
     id: int
     name: str
     birth_date: date
@@ -54,10 +122,14 @@ class RecipientResponse(StrictModel):
     mobile_phone: str | None
     memo: str | None
     row_version: int
+    grade_code: str | None
+    benefit_code: str | None
+    copayment_rate: int | None
+    services: list[RecipientListServiceGroupItem]
 
 
 class RecipientListResponse(StrictModel):
-    items: list[RecipientResponse]
+    items: list[RecipientListItem]
     total: int = Field(ge=0)
     page: int = Field(ge=1)
     page_size: int = Field(ge=1)

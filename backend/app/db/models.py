@@ -1241,6 +1241,10 @@ class Recipient(Base):
             "sex_code IN ('MALE','FEMALE','TEST')",
             name="ck_recipient_sex_code",
         ),
+        CheckConstraint(
+            "recipient_status IN ('ACTIVE','ENDED','WAITING')",
+            name="recipient_status",
+        ),
         CheckConstraint("row_version > 0", name="ck_recipient_row_version_positive"),
         ForeignKeyConstraint(
             ["created_by_account_id"],
@@ -1261,6 +1265,9 @@ class Recipient(Base):
     name: Mapped[str] = mapped_column(Text)
     birth_date: Mapped[date] = mapped_column(Date)
     sex_code: Mapped[str] = mapped_column(Text)
+    recipient_status: Mapped[str] = mapped_column(
+        Text, server_default=text("'ACTIVE'")
+    )
     recipient_no: Mapped[str | None] = mapped_column(Text)
     memo: Mapped[str | None] = mapped_column(Text)
     postal_code: Mapped[str | None] = mapped_column(Text)

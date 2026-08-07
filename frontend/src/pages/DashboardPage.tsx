@@ -1,4 +1,9 @@
-import { useState, useEffect, type CSSProperties, type FormEvent } from 'react';
+import {
+  useState,
+  useEffect,
+  type CSSProperties,
+  type FormEvent,
+} from 'react';
 import { Link } from 'react-router';
 import {
   DndContext,
@@ -21,28 +26,29 @@ import type { Todo } from '../components/dashboard/todoState';
 import { fetchAllStaff } from '../services/staffApi';
 import { listRecipientDeadlines, listRecipients, type RecipientDeadlineItem } from '../services/recipientApi';
 
+// Display-only placeholders (not bound to live summary/API contracts).
+// Ratio rows: literal 1nn/1mm. Count rows: literal 1nn + existing unit.
 const staffTasks = [
-  ['보수교육', '2/3'],
-  ['직원상담', '1/5'],
-  ['인권교육', '0/12'],
-  ['연간교육', '4/8'],
-  ['건강검진', '5/5'],
-  ['신규교육', '2명'],
+  ['보수교육', '1nn/1mm'],
+  ['직원상담', '1nn/1mm'],
+  ['인권교육', '1nn/1mm'],
+  ['연간교육', '1nn/1mm'],
+  ['건강검진', '1nn/1mm'],
+  ['신규교육', '1nn명'],
 ] as const;
 
 const recipientTasks = [
-  ['상담반영', '3/7'],
-  ['반기평가', '2/4'],
-  ['서류미비', '2건'],
-  ['인정만료', '1건'],
-  ['계약만료', '3건'],
+  ['상담반영', '1nn/1mm'],
+  ['반기평가', '1nn/1mm'],
+  ['서류미비', '1nn건'],
+  ['인정만료', '1nn건'],
+  ['계약만료', '1nn건'],
 ] as const;
 
 
 type WorkItem = {
   id: string;
   label: string;
-  completed?: boolean;
 };
 
 type WorkCard = {
@@ -80,7 +86,7 @@ const initialWorkCards: WorkCard[] = [
     taskName: '신규 직원 입사',
     due: '2026-08-21',
     items: [
-      { id: 'document-check', label: '입사 서류 확인', completed: true },
+      { id: 'document-check', label: '입사 서류 확인' },
       { id: 'schedule-check', label: '근무 일정 등록' },
     ],
   },
@@ -102,9 +108,6 @@ function SortableWorkCard({
     opacity: isDragging ? 0.58 : 1,
     zIndex: isDragging ? 2 : undefined,
   };
-
-  const totalItems = card.items.length;
-  const completedItems = card.items.filter((i) => i.completed).length;
 
   return (
     <article
@@ -128,7 +131,7 @@ function SortableWorkCard({
       <p>{card.taskName}</p>
       <ul className="dashboard-work-subtask-list">
         {card.items.map((item) => (
-          <li key={item.id} className={`dashboard-work-subtask ${item.completed ? 'is-complete' : ''}`}>
+          <li key={item.id} className="dashboard-work-subtask">
             <span className="dashboard-work-subtask-label">
               <span>{item.label}</span>
             </span>
@@ -136,9 +139,6 @@ function SortableWorkCard({
         ))}
       </ul>
       <footer className="dashboard-work-card-footer">
-        <span className="dashboard-work-card-state">
-          {completedItems}/{totalItems} 완료
-        </span>
         <span className="dashboard-dday" aria-label={`마감 ${ddayOverride ?? card.dday}`}>
           {ddayOverride ?? card.dday}
         </span>
@@ -309,12 +309,35 @@ export const DashboardPage = () => {
   useEffect(() => {
     const abortController = new AbortController();
     const { signal } = abortController;
+    let active = true;
+
+    const isStale = () => !active || signal.aborted;
+
+    const toErrorMessage = (err: unknown): string | null => {
+      if (!(err instanceof Error)) return '오류가 발생했습니다.';
+      if (err.name === 'AbortError') return null;
+      return err.message || '오류가 발생했습니다.';
+    };
 
     async function loadCounts() {
-      try {
-        // Fetch staff list to get total and CARE_WORKER start dates
-        const staffResult = await fetchAllStaff(signal);
-        if (signal.aborted) return;
+      // Start employee, recipient-total, and upcoming-deadline queries concurrently
+      // (no sequential waterfall). Preserve existing API bindings and semantics.
+      const staffPromise = fetchAllStaff(signal);
+      const recipientPromise = listRecipients({ pageSize: 1, signal });
+      const deadlinePromise = listRecipientDeadlines(signal);
+
+      const [staffSettled, recipientSettled, deadlineSettled] = await Promise.allSettled([
+        staffPromise,
+        recipientPromise,
+        deadlinePromise,
+      ]);
+
+      if (isStale()) return;
+
+      const errors: string[] = [];
+
+      if (staffSettled.status === 'fulfilled') {
+        const staffResult = staffSettled.value;
         setStaffCount(staffResult.total);
 
         // Find the most recent CARE_WORKER and compute D+ from its current employment start date
@@ -341,33 +364,38 @@ export const DashboardPage = () => {
             dplus: computeDaysSince(latestCareWorker.startDate),
           });
         }
-      } catch (err: unknown) {
-        if (signal.aborted) return;
-        // 401 / network error – silently keep fallback counts
-        if (err instanceof Error && err.name !== 'AbortError') {
-          setApiError(err.message);
-        }
+      } else {
+        const msg = toErrorMessage(staffSettled.reason);
+        if (msg) errors.push(msg);
       }
 
-      try {
-        // Fetch recipient total
-        const recipientResult = await listRecipients({ pageSize: 1, signal });
-        if (signal.aborted) return;
-        setRecipientCount(recipientResult.total);
-        const deadlineResult = await listRecipientDeadlines(signal);
-        if (signal.aborted) return;
-        setRecipientDeadlines(deadlineResult.items);
-      } catch (err: unknown) {
-        if (signal.aborted) return;
-        if (err instanceof Error && err.name !== 'AbortError') {
-          setApiError((prev) => (prev ? prev + '; ' + err.message : err.message));
-        }
+      if (recipientSettled.status === 'fulfilled') {
+        setRecipientCount(recipientSettled.value.total);
+      } else {
+        const msg = toErrorMessage(recipientSettled.reason);
+        if (msg) errors.push(msg);
+      }
+
+      if (deadlineSettled.status === 'fulfilled') {
+        setRecipientDeadlines(deadlineSettled.value.items);
+      } else {
+        const msg = toErrorMessage(deadlineSettled.reason);
+        if (msg) errors.push(msg);
+      }
+
+      // Abort/unmount safety: never update state after cancel
+      if (isStale()) return;
+
+      // Partial failure: keep successful slices; render exactly one alert surface
+      if (errors.length > 0) {
+        setApiError([...new Set(errors)].join('; '));
       }
     }
 
     loadCounts();
 
     return () => {
+      active = false;
       abortController.abort();
     };
   }, []);

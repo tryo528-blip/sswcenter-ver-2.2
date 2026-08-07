@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, UIEvent } from 'react';
 import RecipientW1cPanel from '../components/recipients/RecipientW1cPanel';
 import RecipientContractPanel from '../components/recipients/RecipientContractPanel';
 import '../styles/recipients.css';
@@ -14,6 +14,7 @@ import {
   invalidatePayerSnapshot,
   invalidatePlanNotification,
   invalidatePrimaryGuardianPeriod,
+  isRecipientStatus,
   listGuardians,
   listPayerSnapshots,
   listPlanNotifications,
@@ -37,7 +38,12 @@ import type {
   PrimaryGuardianPeriodReplacementRequest,
   Recipient,
   RecipientCreateRequest,
+  RecipientListItem,
+  RecipientListResponse,
+  RecipientListServiceGroupItem,
+  RecipientListStatusFilter,
   RecipientSexCode,
+  RecipientStatus,
   RecipientUpdateRequest,
 } from '../services/recipientApi';
 
@@ -45,6 +51,7 @@ type RecipientFormState = {
   name: string;
   birth_date: string;
   sex_code: RecipientSexCode;
+  recipient_status: RecipientStatus;
   postal_code: string;
   address: string;
   address_detail: string;
@@ -53,9 +60,31 @@ type RecipientFormState = {
   memo: string;
 };
 
+type RecipientEditableField =
+  | 'name'
+  | 'birth_date'
+  | 'sex_code'
+  | 'recipient_status'
+  | 'postal_code'
+  | 'address'
+  | 'home_phone'
+  | 'mobile_phone'
+  | 'memo';
+
+type RecipientFieldConflict = {
+  field: RecipientEditableField;
+  label: string;
+  userValue: string;
+  serverValue: string;
+};
+
 type RecipientStaleConflict = {
   original: Recipient;
   latest: Recipient;
+  draftAtConflict: RecipientFormState;
+  sameFieldConflicts: RecipientFieldConflict[];
+  /** When false, same-field collision: no automatic reapply; form shows server latest. */
+  canAutoReapply: boolean;
 };
 
 type GuardianFormState = {
@@ -92,10 +121,106 @@ type EmbeddedRecipient = Recipient & {
 
 const PAGE_SIZE = 100;
 
+/** UI display order: 이용중, 전체, 계약종료, 대기중 */
+const LIST_STATUS_FILTERS: readonly RecipientListStatusFilter[] = [
+  'ACTIVE',
+  'ALL',
+  'ENDED',
+  'WAITING',
+];
+
+const LIST_STATUS_LABELS: Record<RecipientListStatusFilter, string> = {
+  ACTIVE: '이용중',
+  ALL: '전체',
+  ENDED: '계약종료',
+  WAITING: '대기중',
+};
+
+function parseStatusFilter(rawValue: string | null): RecipientListStatusFilter {
+  if (rawValue && (LIST_STATUS_FILTERS as readonly string[]).includes(rawValue)) {
+    return rawValue as RecipientListStatusFilter;
+  }
+  // First screen / missing URL status defaults to ACTIVE (UI). API default remains ALL when omitted.
+  return 'ACTIVE';
+}
+
+/**
+ * Read-only list projection for summary display (name/grade context only).
+ * Never use this as an editable detail form source or PATCH payload base:
+ * list rows do not carry recipient_status; inventing ACTIVE would overwrite real tags.
+ */
+function recipientIdentityFromListItem(item: RecipientListItem): Recipient {
+  return {
+    id: item.id,
+    name: item.name,
+    birth_date: item.birth_date,
+    sex_code: item.sex_code,
+    // Placeholder only for TypeScript Recipient shape; not used for edit/PATCH.
+    recipient_status: 'ACTIVE',
+    recipient_no: item.recipient_no,
+    postal_code: item.postal_code,
+    address: item.address,
+    home_phone: item.home_phone,
+    mobile_phone: item.mobile_phone,
+    memo: item.memo,
+    row_version: item.row_version,
+  };
+}
+
+/** Patch list-row identity fields after detail save; keep server projection columns. */
+function mergeRecipientIntoListItem(
+  item: RecipientListItem,
+  recipient: Recipient,
+): RecipientListItem {
+  return {
+    ...item,
+    id: recipient.id,
+    name: recipient.name,
+    birth_date: recipient.birth_date,
+    sex_code: recipient.sex_code,
+    recipient_no: recipient.recipient_no,
+    postal_code: recipient.postal_code,
+    address: recipient.address,
+    home_phone: recipient.home_phone,
+    mobile_phone: recipient.mobile_phone,
+    memo: recipient.memo,
+    row_version: recipient.row_version,
+  };
+}
+
+function formatGradeCode(value: string | null | undefined): string {
+  if (value == null || !String(value).trim()) return '미지정';
+  const normalized = String(value).trim();
+  return /등급$/.test(normalized) ? normalized : `${normalized}등급`;
+}
+
+function formatBenefitCode(value: string | null | undefined): string {
+  if (value == null || !String(value).trim()) return '없음';
+  return String(value).trim();
+}
+
+function formatCopaymentRate(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '미지정';
+  return `${value}%`;
+}
+
+function formatListServices(services: RecipientListServiceGroupItem[] | null | undefined): string {
+  if (!services?.length) return '없음';
+  return services
+    .map((group) => {
+      const types = group.service_types?.length
+        ? group.service_types.map((type) => type.display_name).join(', ')
+        : '없음';
+      return `${group.display_name}: ${types}`;
+    })
+    .join(' · ');
+}
+
 const emptyRecipientForm = (): RecipientFormState => ({
   name: '',
   birth_date: '',
   sex_code: 'MALE',
+  recipient_status: 'ACTIVE',
   postal_code: '',
   address: '',
   address_detail: '',
@@ -164,15 +289,47 @@ function recipientCreatePayload(form: RecipientFormState): RecipientCreateReques
   };
 }
 
-function recipientUpdatePayload(
-  form: RecipientFormState,
-  expectedRowVersion: number,
-): RecipientUpdateRequest {
+const RECIPIENT_FIELD_LABELS: Record<RecipientEditableField, string> = {
+  name: '이름',
+  birth_date: '생년월일',
+  sex_code: '성별',
+  recipient_status: '상태',
+  postal_code: '우편번호',
+  address: '주소',
+  home_phone: '자택 전화',
+  mobile_phone: '휴대전화',
+  memo: '출처 메모',
+};
+
+function formatFieldDisplay(value: string | null | undefined): string {
+  if (value == null || value === '') return '없음';
+  return value;
+}
+
+/**
+ * Shared normalization for draft vs baseline dirty comparison and PATCH diffs.
+ * Trim text, empty/whitespace-only optional fields → null (same as form payload).
+ */
+function recipientComparableValues(recipient: Recipient): Record<RecipientEditableField, string | null> {
   return {
-    expected_row_version: expectedRowVersion,
+    name: recipient.name.trim(),
+    birth_date: recipient.birth_date,
+    sex_code: recipient.sex_code,
+    recipient_status: recipient.recipient_status,
+    postal_code: optionalText(recipient.postal_code ?? ''),
+    address: optionalText(recipient.address ?? ''),
+    home_phone: optionalText(recipient.home_phone ?? ''),
+    mobile_phone: optionalText(recipient.mobile_phone ?? ''),
+    memo: optionalText(recipient.memo ?? ''),
+  };
+}
+
+function formComparableValues(form: RecipientFormState): Record<RecipientEditableField, string | null> {
+  return {
     name: form.name.trim(),
     birth_date: form.birth_date,
     sex_code: form.sex_code,
+    recipient_status: form.recipient_status,
     postal_code: optionalText(form.postal_code),
     address: combinedRecipientAddress(form),
     home_phone: optionalText(form.home_phone),
@@ -181,11 +338,71 @@ function recipientUpdatePayload(
   };
 }
 
+function changedRecipientFields(
+  baseline: Recipient,
+  draft: RecipientFormState,
+): RecipientEditableField[] {
+  const base = recipientComparableValues(baseline);
+  const next = formComparableValues(draft);
+  return (Object.keys(base) as RecipientEditableField[]).filter((key) => base[key] !== next[key]);
+}
+
+function serverChangedRecipientFields(original: Recipient, latest: Recipient): RecipientEditableField[] {
+  const a = recipientComparableValues(original);
+  const b = recipientComparableValues(latest);
+  return (Object.keys(a) as RecipientEditableField[]).filter((key) => a[key] !== b[key]);
+}
+
+/** PATCH body with only fields that differ from baseline (omit untouched, e.g. status). */
+function recipientChangedFieldsPayload(
+  baseline: Recipient,
+  draft: RecipientFormState,
+  expectedRowVersion: number,
+): RecipientUpdateRequest {
+  const payload: RecipientUpdateRequest = { expected_row_version: expectedRowVersion };
+  const changed = changedRecipientFields(baseline, draft);
+  const next = formComparableValues(draft);
+  for (const field of changed) {
+    if (field === 'name') payload.name = next.name ?? undefined;
+    else if (field === 'birth_date') payload.birth_date = next.birth_date;
+    else if (field === 'sex_code') payload.sex_code = next.sex_code as RecipientSexCode;
+    else if (field === 'recipient_status') {
+      payload.recipient_status = next.recipient_status as RecipientStatus;
+    } else if (field === 'postal_code') payload.postal_code = next.postal_code;
+    else if (field === 'address') payload.address = next.address;
+    else if (field === 'home_phone') payload.home_phone = next.home_phone;
+    else if (field === 'mobile_phone') payload.mobile_phone = next.mobile_phone;
+    else if (field === 'memo') payload.memo = next.memo;
+  }
+  return payload;
+}
+
+function recipientHasDraftChanges(baseline: Recipient, draft: RecipientFormState): boolean {
+  return changedRecipientFields(baseline, draft).length > 0;
+}
+
+/**
+ * Runtime-validate detail GET before opening the editor.
+ * Rejects wrong id, missing/null/invalid recipient_status, or incomplete identity.
+ */
+function validateDetailRecipient(raw: unknown, expectedId: string): Recipient | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const candidate = raw as Partial<Recipient>;
+  if (normalizeId(candidate.id) !== expectedId) return null;
+  if (!isRecipientStatus(candidate.recipient_status)) return null;
+  if (typeof candidate.row_version !== 'number' || !(candidate.row_version > 0)) return null;
+  if (typeof candidate.name !== 'string' || !candidate.name.trim()) return null;
+  if (typeof candidate.birth_date !== 'string' || !candidate.birth_date) return null;
+  if (candidate.sex_code !== 'MALE' && candidate.sex_code !== 'FEMALE') return null;
+  return candidate as Recipient;
+}
+
 function recipientFormFromRecipient(recipient: Recipient): RecipientFormState {
   return {
     name: recipient.name,
     birth_date: recipient.birth_date,
     sex_code: recipient.sex_code,
+    recipient_status: recipient.recipient_status,
     postal_code: recipient.postal_code ?? '',
     address: recipient.address ?? '',
     address_detail: '',
@@ -195,32 +412,36 @@ function recipientFormFromRecipient(recipient: Recipient): RecipientFormState {
   };
 }
 
-function recipientReapplyPayload(
+/**
+ * Merge user-changed fields from draft onto latest server values.
+ * When excludeFields is set (same-field conflicts), those fields stay at server latest;
+ * only disjoint user edits are preserved.
+ */
+function mergeUserChangesOntoLatest(
+  latest: Recipient,
   original: Recipient,
   draft: RecipientFormState,
-  expectedRowVersion: number,
-): RecipientUpdateRequest {
-  const payload: RecipientUpdateRequest = { expected_row_version: expectedRowVersion };
-  if (draft.name.trim() !== original.name) payload.name = draft.name.trim();
-  if (draft.birth_date !== original.birth_date) payload.birth_date = draft.birth_date;
-  if (draft.sex_code !== original.sex_code) payload.sex_code = draft.sex_code;
-  if (optionalText(draft.postal_code) !== original.postal_code) {
-    payload.postal_code = optionalText(draft.postal_code);
+  excludeFields?: ReadonlySet<RecipientEditableField>,
+): RecipientFormState {
+  const merged = recipientFormFromRecipient(latest);
+  const userChanged = changedRecipientFields(original, draft);
+  const draftValues = formComparableValues(draft);
+  for (const field of userChanged) {
+    if (excludeFields?.has(field)) continue;
+    if (field === 'name') merged.name = draftValues.name ?? '';
+    else if (field === 'birth_date') merged.birth_date = draftValues.birth_date ?? '';
+    else if (field === 'sex_code') merged.sex_code = (draftValues.sex_code as RecipientSexCode) ?? 'MALE';
+    else if (field === 'recipient_status') {
+      merged.recipient_status = (draftValues.recipient_status as RecipientStatus) ?? 'ACTIVE';
+    } else if (field === 'postal_code') merged.postal_code = draftValues.postal_code ?? '';
+    else if (field === 'address') {
+      merged.address = draftValues.address ?? '';
+      merged.address_detail = '';
+    } else if (field === 'home_phone') merged.home_phone = draftValues.home_phone ?? '';
+    else if (field === 'mobile_phone') merged.mobile_phone = draftValues.mobile_phone ?? '';
+    else if (field === 'memo') merged.memo = draftValues.memo ?? '';
   }
-  const draftAddress = combinedRecipientAddress(draft);
-  if (draftAddress !== original.address) {
-    payload.address = draftAddress;
-  }
-  if (optionalText(draft.home_phone) !== original.home_phone) {
-    payload.home_phone = optionalText(draft.home_phone);
-  }
-  if (optionalText(draft.mobile_phone) !== original.mobile_phone) {
-    payload.mobile_phone = optionalText(draft.mobile_phone);
-  }
-  if (optionalText(draft.memo) !== original.memo) {
-    payload.memo = optionalText(draft.memo);
-  }
-  return payload;
+  return merged;
 }
 
 function guardianFormFromGuardian(guardian: Guardian): GuardianFormState {
@@ -287,6 +508,41 @@ function isApiErrorCode(error: unknown, code: string): boolean {
   return isKnownApiError && (error as { code?: string }).code === code;
 }
 
+/** Validate list response contract fields used for infinite scroll. */
+function isValidListResponse(response: RecipientListResponse): boolean {
+  if (!response || typeof response !== 'object') return false;
+  if (!Array.isArray(response.items)) return false;
+  if (typeof response.total !== 'number' || !Number.isFinite(response.total) || response.total < 0) {
+    return false;
+  }
+  if (typeof response.page !== 'number' || !Number.isFinite(response.page) || response.page < 1) {
+    return false;
+  }
+  if (
+    typeof response.page_size !== 'number' ||
+    !Number.isFinite(response.page_size) ||
+    response.page_size < 1
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** Append incoming rows, dropping duplicates by recipient id. */
+function appendItemsById(
+  existing: RecipientListItem[],
+  incoming: RecipientListItem[],
+): RecipientListItem[] {
+  const seen = new Set(existing.map((item) => item.id));
+  const merged = [...existing];
+  for (const item of incoming) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    merged.push(item);
+  }
+  return merged;
+}
+
 function safeErrorMessage(error: unknown, fallback: string): string {
   const isKnownApiError =
     error instanceof ApiError ||
@@ -307,11 +563,6 @@ function safeErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function parsePage(rawValue: string | null): number {
-  const parsed = Number.parseInt(rawValue ?? '1', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-}
-
 function normalizeId(value: number | string | null | undefined): string | null {
   return value === null || value === undefined ? null : String(value);
 }
@@ -324,25 +575,54 @@ function formatNullable(value: string | null | undefined): string {
   return value?.trim() ? value : '없음';
 }
 
-function formatAge(birthDate: string): string {
-  const birthYear = Number(birthDate.slice(0, 4));
-  const currentYear = new Date().getFullYear();
-  if (!Number.isInteger(birthYear) || birthYear <= 0 || birthYear > currentYear) return '미확인';
-
-  const age = currentYear - birthYear + 1;
-  return age >= 0 ? `${age}세` : '미확인';
+/** Calendar Y/M/D in Asia/Seoul (not the host local timezone). */
+function seoulCalendarParts(date: Date): { year: number; month: number; day: number } | null {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = Number(parts.find((part) => part.type === 'year')?.value);
+  const month = Number(parts.find((part) => part.type === 'month')?.value);
+  const day = Number(parts.find((part) => part.type === 'day')?.value);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  return { year, month, day };
 }
 
+/** International/Korean full age (만 나이): years since birth, minus 1 if birthday not yet reached. */
 function formatInternationalAge(birthDate: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) return '미지정';
-  const birth = new Date(`${birthDate}T00:00:00`);
-  const now = new Date();
-  if (Number.isNaN(birth.getTime()) || birth > now) return '미지정';
+  const [yearStr, monthStr, dayStr] = birthDate.split('-');
+  const birthYear = Number(yearStr);
+  const birthMonth = Number(monthStr);
+  const birthDay = Number(dayStr);
+  // Birth dates are date-only; validate real calendar day without host-local wall time.
+  const birthProbe = new Date(Date.UTC(birthYear, birthMonth - 1, birthDay));
+  if (
+    Number.isNaN(birthProbe.getTime()) ||
+    birthProbe.getUTCFullYear() !== birthYear ||
+    birthProbe.getUTCMonth() + 1 !== birthMonth ||
+    birthProbe.getUTCDate() !== birthDay
+  ) {
+    return '미지정';
+  }
 
-  let age = now.getFullYear() - birth.getFullYear();
+  const seoul = seoulCalendarParts(new Date());
+  if (!seoul) return '미지정';
+
+  // Future relative to the current Asia/Seoul calendar day → 미지정.
+  if (
+    birthYear > seoul.year ||
+    (birthYear === seoul.year && birthMonth > seoul.month) ||
+    (birthYear === seoul.year && birthMonth === seoul.month && birthDay > seoul.day)
+  ) {
+    return '미지정';
+  }
+
+  let age = seoul.year - birthYear;
   const birthdayPassed =
-    now.getMonth() > birth.getMonth() ||
-    (now.getMonth() === birth.getMonth() && now.getDate() >= birth.getDate());
+    seoul.month > birthMonth || (seoul.month === birthMonth && seoul.day >= birthDay);
   if (!birthdayPassed) age -= 1;
   return age >= 0 ? `${age}세` : '미지정';
 }
@@ -382,21 +662,24 @@ export const RecipientsPage = () => {
   const [location, setLocation] = useState<BrowserLocation>(readBrowserLocation);
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const listScrollTopRef = useRef(0);
+  /** Last successfully loaded search/status key; used to detect filter resets. */
+  const listFilterKeyRef = useRef<string | null>(null);
+  /** Last successfully loaded API page for the current filter (append cursor). */
+  const loadedPageRef = useRef(0);
+  /** Monotonic generation: search/status/listReload bumps so late responses are ignored. */
+  const listFetchGenRef = useRef(0);
+  /** In-flight append guard (sync) so the same next page is not requested twice. */
+  const listLoadingMoreRef = useRef(false);
+  const listLoadMoreAbortRef = useRef<AbortController | null>(null);
   const [recipientForm, setRecipientForm] = useState<RecipientFormState>(emptyRecipientForm);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createGrade, setCreateGrade] = useState('');
-  const [createCopay, setCreateCopay] = useState('BASIC');
   const [detailExtrasOpen, setDetailExtrasOpen] = useState(false);
   const [createSaving, setCreateSaving] = useState(false);
   const [createMessage, setCreateMessage] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [listData, setListData] = useState<{
-    items: Recipient[];
-    total: number;
-    page: number;
-    page_size: number;
-  } | null>(null);
+  const [listData, setListData] = useState<RecipientListResponse | null>(null);
   const [listLoading, setListLoading] = useState(true);
+  const [listLoadingMore, setListLoadingMore] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [listReload, setListReload] = useState(0);
   const [workspaceReload, setWorkspaceReload] = useState(0);
@@ -441,9 +724,8 @@ export const RecipientsPage = () => {
 
   const query = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const search = query.get('search') ?? '';
-  const filter = query.get('filter') ?? 'ALL';
-  const sort = query.get('sort') ?? 'name_asc';
-  const page = parsePage(query.get('page'));
+  // URL may keep a display key (`filter`); server query must be `status`.
+  const statusFilter = parseStatusFilter(query.get('status') ?? query.get('filter'));
   const selectedId = query.get('selected');
   const detailId = query.get('detail');
   const activeId = detailId ?? selectedId;
@@ -454,8 +736,6 @@ export const RecipientsPage = () => {
     setCreateError(null);
     setCreateMessage(null);
     setRecipientForm(emptyRecipientForm());
-    setCreateGrade('');
-    setCreateCopay('BASIC');
   }, [createSaving]);
 
   useEffect(() => {
@@ -497,6 +777,14 @@ export const RecipientsPage = () => {
     [],
   );
 
+  // First screen must explicitly use status=ACTIVE in the URL (API default remains ALL when omitted).
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (!params.get('status') && !params.get('filter')) {
+      updateQuery({ status: 'ACTIVE' }, true);
+    }
+  }, [location.search, updateQuery]);
+
   const selectedRecipient = useMemo(
     () =>
       (selectedId
@@ -505,41 +793,157 @@ export const RecipientsPage = () => {
     [listData, selectedId],
   );
 
-  const visibleRecipients = useMemo(() => {
-    const items = [...(listData?.items ?? [])];
-    items.sort((left, right) => {
-      const nameComparison = left.name.localeCompare(right.name, 'ko');
-      const comparison =
-        nameComparison ||
-        String(left.id).localeCompare(String(right.id), 'en', { numeric: true });
-      return sort === 'name_desc' ? comparison * -1 : comparison;
-    });
-    return items;
-  }, [listData, sort]);
+  // Server owns sort/filter/paging; client appends pages in response order.
+  const visibleRecipients = listData?.items ?? [];
+  const listTotal = listData?.total ?? 0;
+  const listHasMore =
+    listData != null &&
+    typeof listData.total === 'number' &&
+    Number.isFinite(listData.total) &&
+    listData.items.length < listData.total;
 
+  // First load / search / status / listReload: page 1 replace (reset cursor + rows on filter change).
   useEffect(() => {
     const controller = new AbortController();
-    let cancelled = false;
+    const filterKey = `${search}\0${statusFilter}`;
+    const isFilterChange =
+      listFilterKeyRef.current !== null && listFilterKeyRef.current !== filterKey;
+    const fetchGen = ++listFetchGenRef.current;
+
+    // Cancel any in-flight append so a late page-2 cannot land under a new filter.
+    listLoadMoreAbortRef.current?.abort();
+    listLoadMoreAbortRef.current = null;
+    listLoadingMoreRef.current = false;
+    setListLoadingMore(false);
+    loadedPageRef.current = 0;
+
     setListLoading(true);
     setListError(null);
+    // Drop prior projection immediately on search/status change so old
+    // rows/total never sit under the new query while loading.
+    if (isFilterChange) {
+      setListData(null);
+    }
 
-    listRecipients({ search, page, pageSize: PAGE_SIZE, signal: controller.signal })
+    listRecipients({
+      search,
+      status: statusFilter,
+      page: 1,
+      pageSize: PAGE_SIZE,
+      signal: controller.signal,
+    })
       .then((response) => {
-        if (cancelled) return;
-        setListData(response);
+        if (fetchGen !== listFetchGenRef.current) return;
+        if (!isValidListResponse(response)) {
+          setListLoading(false);
+          setListData(null);
+          loadedPageRef.current = 0;
+          setListError('수급자 목록 응답이 올바르지 않습니다.');
+          return;
+        }
+        listFilterKeyRef.current = filterKey;
+        loadedPageRef.current = response.page;
+        setListData({
+          items: response.items,
+          total: response.total,
+          page: response.page,
+          page_size: response.page_size,
+        });
         setListLoading(false);
+
+        // After a search/status change, drop selected/detail that are not in the
+        // first page (preserve search/status). Apply first-row selection when
+        // selected is gone. Skip on initial load so deep-links remain.
+        if (!isFilterChange) return;
+        const current = new URLSearchParams(readBrowserLocation().search);
+        const curSelected = current.get('selected');
+        const curDetail = current.get('detail');
+        const pageIds = new Set(
+          response.items
+            .map((item) => normalizeId(item.id))
+            .filter((id): id is string => id !== null),
+        );
+        const updates: Record<string, string | null> = {};
+        if (curSelected && !pageIds.has(curSelected)) {
+          updates.selected = response.items.length
+            ? normalizeId(response.items[0].id)
+            : null;
+        }
+        if (curDetail && !pageIds.has(curDetail)) {
+          updates.detail = null;
+        }
+        if (Object.keys(updates).length > 0) {
+          updateQuery(updates, true);
+        }
       })
       .catch((error: unknown) => {
-        if (cancelled || isAbortError(error)) return;
+        if (fetchGen !== listFetchGenRef.current || isAbortError(error)) return;
         setListLoading(false);
+        setListData(null);
+        loadedPageRef.current = 0;
         setListError(safeErrorMessage(error, '수급자 목록을 불러오지 못했습니다.'));
       });
 
     return () => {
-      cancelled = true;
       controller.abort();
     };
-  }, [listReload, page, search]);
+  }, [listReload, search, statusFilter, updateQuery]);
+
+  const loadMoreRecipients = useCallback(() => {
+    if (listLoading || listLoadingMoreRef.current) return;
+    if (!listData || !listHasMore) return;
+    if (typeof listData.total !== 'number' || !Number.isFinite(listData.total)) return;
+
+    const nextPage = loadedPageRef.current + 1;
+    if (nextPage < 2) return;
+
+    const fetchGen = listFetchGenRef.current;
+    const controller = new AbortController();
+    // Single in-flight append: filter resets abort via listLoadMoreAbortRef.
+    listLoadMoreAbortRef.current = controller;
+    listLoadingMoreRef.current = true;
+    setListLoadingMore(true);
+    setListError(null);
+
+    listRecipients({
+      search,
+      status: statusFilter,
+      page: nextPage,
+      pageSize: PAGE_SIZE,
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (fetchGen !== listFetchGenRef.current) return;
+        if (!isValidListResponse(response)) {
+          setListError('수급자 목록 응답이 올바르지 않습니다.');
+          return;
+        }
+        setListData((current) => {
+          if (!current || fetchGen !== listFetchGenRef.current) return current;
+          const items = appendItemsById(current.items, response.items);
+          loadedPageRef.current = response.page;
+          return {
+            items,
+            total: response.total,
+            page: response.page,
+            page_size: response.page_size,
+          };
+        });
+      })
+      .catch((error: unknown) => {
+        if (fetchGen !== listFetchGenRef.current || isAbortError(error)) return;
+        // Keep already-loaded rows; surface append failure without inventing totals.
+        setListError(safeErrorMessage(error, '수급자 목록을 더 불러오지 못했습니다.'));
+      })
+      .finally(() => {
+        if (fetchGen !== listFetchGenRef.current) return;
+        listLoadingMoreRef.current = false;
+        setListLoadingMore(false);
+        if (listLoadMoreAbortRef.current === controller) {
+          listLoadMoreAbortRef.current = null;
+        }
+      });
+  }, [listData, listHasMore, listLoading, search, statusFilter]);
 
   useEffect(() => {
     if (selectedId || !listData?.items.length) return;
@@ -603,32 +1007,15 @@ export const RecipientsPage = () => {
     setGuardianError(null);
     setPrimaryPeriodsError(null);
     setPayerError(null);
-
-    const inlineFallback = listData?.items.find((item) => normalizeId(item.id) === activeId) ?? null;
-    if (inlineFallback) {
-      const embeddedFallback = inlineFallback as EmbeddedRecipient;
-      const inlineGuardians = embeddedFallback.guardians ?? [];
-      setDetailRecipient(inlineFallback);
-      setDetailForm({
-        name: inlineFallback.name,
-        birth_date: inlineFallback.birth_date,
-        sex_code: inlineFallback.sex_code,
-        postal_code: inlineFallback.postal_code ?? '',
-        address: inlineFallback.address ?? '',
-        address_detail: '',
-        home_phone: inlineFallback.home_phone ?? '',
-        mobile_phone: inlineFallback.mobile_phone ?? '',
-        memo: inlineFallback.memo ?? '',
-      });
-      setGuardians(inlineGuardians);
-      setGuardianForms(guardianFormsFromGuardians(inlineGuardians));
-      setGuardianEditSnapshots(guardianFormsFromGuardians(inlineGuardians));
-      setGuardianEditOpen([false, false]);
-      setEditingGuardianIds([
-        inlineGuardians[0] ? normalizeId(inlineGuardians[0].id) : null,
-        inlineGuardians[1] ? normalizeId(inlineGuardians[1].id) : null,
-      ]);
-    }
+    // Editable detail form requires a successful detail GET. Do not seed form/PATCH
+    // state from list rows (list has no recipient_status; synthetic ACTIVE is unsafe).
+    setDetailRecipient(null);
+    setDetailForm(emptyRecipientForm());
+    setGuardians([]);
+    setGuardianForms(guardianFormsFromGuardians([]));
+    setGuardianEditSnapshots(guardianFormsFromGuardians([]));
+    setGuardianEditOpen([false, false]);
+    setEditingGuardianIds([null, null]);
 
     Promise.allSettled([
       getRecipient(activeId, controller.signal),
@@ -638,23 +1025,35 @@ export const RecipientsPage = () => {
     ]).then(([recipientResult, guardianResult, periodResult, payerResult]) => {
       if (cancelled) return;
 
-      const listFallback =
-        listData?.items.find((item) => normalizeId(item.id) === activeId) ?? null;
-      const recipient = valueFromResult(recipientResult) ?? listFallback;
-      const embedded = recipient as EmbeddedRecipient | null;
+      const rawRecipient = valueFromResult(recipientResult);
+      const embedded = (valueFromResult(recipientResult) as EmbeddedRecipient | undefined) ?? null;
       const embeddedGuardians = embedded?.guardians ?? [];
       const guardianResponse = valueFromResult(guardianResult);
       const periodResponse = valueFromResult(periodResult);
       const payerResponse = valueFromResult(payerResult);
       const resolvedGuardians = guardianResponse?.items ?? embeddedGuardians;
 
-      if (recipient) {
-        setDetailRecipient(recipient);
-        setDetailForm(recipientFormFromRecipient(recipient));
+      const validated =
+        rawRecipient && activeId
+          ? validateDetailRecipient(rawRecipient, activeId)
+          : null;
+
+      if (validated) {
+        setDetailRecipient(validated);
+        setDetailForm(recipientFormFromRecipient(validated));
         setDetailStaleConflict(null);
       } else if (recipientResult.status === 'rejected') {
         setDetailRecipient(null);
+        setDetailForm(emptyRecipientForm());
         setDetailError(safeErrorMessage(recipientResult.reason, '수급자 상세를 불러오지 못했습니다.'));
+      } else {
+        setDetailRecipient(null);
+        setDetailForm(emptyRecipientForm());
+        setDetailError(
+          rawRecipient
+            ? '수급자 상세 응답이 올바르지 않아 편집할 수 없습니다.'
+            : '수급자 상세를 불러오지 못했습니다.',
+        );
       }
 
       setGuardians(resolvedGuardians);
@@ -684,7 +1083,13 @@ export const RecipientsPage = () => {
       cancelled = true;
       controller.abort();
     };
-  }, [activeId, detailStaleConflict, listData, workspaceReload]);
+    // Do not depend on listData: successful detail PATCH updates the list row and
+    // bumps listReload → new listData. Re-running this effect would clear
+    // detailRecipient/form (and wipe 422 draft + role=alert errors) mid-edit, so
+    // status-only follow-up PATCH and validation error UI would never land.
+    // Detail reloads only on activeId change, explicit workspaceReload, or
+    // stale-conflict lifecycle (detailStaleConflict).
+  }, [activeId, detailStaleConflict, workspaceReload]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -780,24 +1185,20 @@ export const RecipientsPage = () => {
 
     setCreateSaving(true);
     try {
-      const created = await createRecipient(recipientCreatePayload(recipientForm));
-      const createdEmbedded = created as EmbeddedRecipient;
+      const createdRaw = await createRecipient(recipientCreatePayload(recipientForm));
+      const createdEmbedded = createdRaw as EmbeddedRecipient;
+      const createdId = normalizeId(createdRaw.id);
+      const created =
+        createdId != null ? validateDetailRecipient(createdRaw, createdId) : null;
       setCreateMessage('수급자를 저장했습니다.');
       setRecipientForm(emptyRecipientForm());
-      setCreateGrade('');
-      setCreateCopay('BASIC');
-      setDetailRecipient(created);
-      setDetailForm({
-        name: created.name,
-        birth_date: created.birth_date,
-        sex_code: created.sex_code,
-        postal_code: created.postal_code ?? '',
-        address: created.address ?? '',
-        address_detail: '',
-        home_phone: created.home_phone ?? '',
-        mobile_phone: created.mobile_phone ?? '',
-        memo: created.memo ?? '',
-      });
+      if (created) {
+        setDetailRecipient(created);
+        setDetailForm(recipientFormFromRecipient(created));
+      } else {
+        setDetailRecipient(null);
+        setDetailForm(emptyRecipientForm());
+      }
       const createdGuardians = createdEmbedded.guardians ?? [];
       setGuardians(createdGuardians);
       setGuardianForms(guardianFormsFromGuardians(createdGuardians));
@@ -809,8 +1210,8 @@ export const RecipientsPage = () => {
       ]);
       updateQuery(
         {
-          selected: normalizeId(created.id),
-          detail: normalizeId(created.id),
+          selected: createdId,
+          detail: createdId,
         },
         false,
       );
@@ -825,15 +1226,63 @@ export const RecipientsPage = () => {
     }
   };
 
-  const captureRecipientStaleConflict = async (original: Recipient): Promise<void> => {
+  const captureRecipientStaleConflict = async (
+    original: Recipient,
+    draft: RecipientFormState,
+  ): Promise<void> => {
     try {
-      const latest = await getRecipient(activeId ?? '');
-      if (normalizeId(latest.id) !== activeId) {
+      const rawLatest = await getRecipient(activeId ?? '');
+      const latest =
+        activeId != null ? validateDetailRecipient(rawLatest, activeId) : null;
+      if (!latest) {
         setDetailError('저장 충돌 후 대상 수급자의 최신 정보를 확인하지 못했습니다. 입력은 유지됩니다.');
         return;
       }
-      setDetailStaleConflict({ original, latest });
-      setDetailError('다른 사용자가 먼저 변경했습니다. 최신 서버값을 확인하고 필요한 변경만 다시 적용해주세요.');
+
+      const userChanged = new Set(changedRecipientFields(original, draft));
+      const serverChanged = new Set(serverChangedRecipientFields(original, latest));
+      const sameFields = [...userChanged].filter((field) => serverChanged.has(field));
+      const sameFieldSet = new Set(sameFields);
+      const draftValues = formComparableValues(draft);
+      const latestValues = recipientComparableValues(latest);
+      const sameFieldConflicts: RecipientFieldConflict[] = sameFields.map((field) => ({
+        field,
+        label: RECIPIENT_FIELD_LABELS[field],
+        userValue: formatFieldDisplay(draftValues[field]),
+        serverValue: formatFieldDisplay(latestValues[field]),
+      }));
+
+      if (sameFieldConflicts.length > 0) {
+        // Same-field collision: server wins only for colliding fields; preserve disjoint user edits.
+        // Active baseline/row_version become latest; next PATCH diffs current form vs that baseline.
+        const merged = mergeUserChangesOntoLatest(latest, original, draft, sameFieldSet);
+        setDetailRecipient(latest);
+        setDetailForm(merged);
+        setDetailStaleConflict({
+          original,
+          latest,
+          draftAtConflict: draft,
+          sameFieldConflicts,
+          canAutoReapply: false,
+        });
+        setDetailError('이미 수정되었습니다');
+        return;
+      }
+
+      // Different fields only: preserve user draft values on top of latest baseline.
+      const merged = mergeUserChangesOntoLatest(latest, original, draft);
+      setDetailRecipient(latest);
+      setDetailForm(merged);
+      setDetailStaleConflict({
+        original,
+        latest,
+        draftAtConflict: draft,
+        sameFieldConflicts: [],
+        canAutoReapply: true,
+      });
+      setDetailError(
+        '다른 사용자가 먼저 변경했습니다. 최신 서버값을 확인하고 필요한 변경만 다시 적용해주세요.',
+      );
     } catch (error: unknown) {
       if (!isAbortError(error)) {
         setDetailError(
@@ -848,21 +1297,42 @@ export const RecipientsPage = () => {
 
   const handleDetailSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!detailRecipient || !activeId) return;
+    // PATCH only after a successful detail GET (never from list-only identity).
+    if (!detailRecipient || !activeId || detailLoading || detailSaving) return;
+    if (!recipientHasDraftChanges(detailRecipient, detailForm)) return;
+    // Freeze request baseline/draft at click so in-flight UI cannot change the payload.
+    const baselineAtSave = detailRecipient;
+    const draftAtSave = detailForm;
     setDetailMessage(null);
     setDetailError(null);
     setDetailSaving(true);
     try {
-      const updated = await updateRecipient(
+      const updatedRaw = await updateRecipient(
         activeId,
-        recipientUpdatePayload(detailForm, detailRecipient.row_version),
+        recipientChangedFieldsPayload(
+          baselineAtSave,
+          draftAtSave,
+          baselineAtSave.row_version,
+        ),
       );
+      const updated = validateDetailRecipient(updatedRaw, activeId);
+      if (!updated) {
+        setDetailError('저장 응답이 올바르지 않습니다. 다시 불러와 주세요.');
+        return;
+      }
       setDetailRecipient(updated);
       setDetailForm(recipientFormFromRecipient(updated));
       setDetailStaleConflict(null);
       setListData((current) =>
         current
-          ? { ...current, items: current.items.map((item) => (normalizeId(item.id) === activeId ? updated : item)) }
+          ? {
+              ...current,
+              items: current.items.map((item) =>
+                normalizeId(item.id) === activeId
+                  ? mergeRecipientIntoListItem(item, updated)
+                  : item,
+              ),
+            }
           : current,
       );
       setDetailMessage('수급자 정보를 저장했습니다.');
@@ -870,7 +1340,7 @@ export const RecipientsPage = () => {
     } catch (error: unknown) {
       if (!isAbortError(error)) {
         if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
-          await captureRecipientStaleConflict(detailRecipient);
+          await captureRecipientStaleConflict(baselineAtSave, draftAtSave);
         } else {
           setDetailError(safeErrorMessage(error, '수급자 정보를 저장하지 못했습니다.'));
         }
@@ -881,23 +1351,33 @@ export const RecipientsPage = () => {
   };
 
   const handleDetailReapply = async () => {
-    if (!detailStaleConflict || !activeId) return;
-    if (!detailForm.name.trim() || !detailForm.birth_date || !detailForm.sex_code) {
+    if (!detailStaleConflict || !activeId || !detailStaleConflict.canAutoReapply) return;
+    // Always diff the live form against the latest active baseline — never a stale pre-edit snapshot.
+    const baseline = detailRecipient ?? detailStaleConflict.latest;
+    const draft = detailForm;
+    if (!draft.name.trim() || !draft.birth_date || !draft.sex_code) {
       setDetailError('이름, 생년월일, 성별을 입력해주세요.');
+      return;
+    }
+    if (!recipientHasDraftChanges(baseline, draft)) {
+      setDetailError(null);
+      setDetailStaleConflict(null);
       return;
     }
     setDetailError(null);
     setDetailMessage(null);
     setDetailSaving(true);
     try {
-      const updated = await updateRecipient(
+      // Only fields that differ from the current latest baseline (post any user re-edit).
+      const updatedRaw = await updateRecipient(
         activeId,
-        recipientReapplyPayload(
-          detailStaleConflict.original,
-          detailForm,
-          detailStaleConflict.latest.row_version,
-        ),
+        recipientChangedFieldsPayload(baseline, draft, baseline.row_version),
       );
+      const updated = validateDetailRecipient(updatedRaw, activeId);
+      if (!updated) {
+        setDetailError('다시 적용 응답이 올바르지 않습니다. 다시 불러와 주세요.');
+        return;
+      }
       setDetailRecipient(updated);
       setDetailForm(recipientFormFromRecipient(updated));
       setDetailStaleConflict(null);
@@ -905,14 +1385,21 @@ export const RecipientsPage = () => {
       setDetailMessage('최신 버전에 변경 내용을 다시 적용했습니다.');
       setListData((current) =>
         current
-          ? { ...current, items: current.items.map((item) => (normalizeId(item.id) === activeId ? updated : item)) }
+          ? {
+              ...current,
+              items: current.items.map((item) =>
+                normalizeId(item.id) === activeId
+                  ? mergeRecipientIntoListItem(item, updated)
+                  : item,
+              ),
+            }
           : current,
       );
       setListReload((current) => current + 1);
     } catch (error: unknown) {
       if (!isAbortError(error)) {
         if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
-          await captureRecipientStaleConflict(detailStaleConflict.original);
+          await captureRecipientStaleConflict(baseline, draft);
         } else {
           setDetailError(safeErrorMessage(error, '변경 내용을 다시 적용하지 못했습니다.'));
         }
@@ -1189,8 +1676,14 @@ export const RecipientsPage = () => {
     );
   };
 
-  const handleListScroll = (scrollTop: number) => {
-    listScrollTopRef.current = scrollTop;
+  const handleListScroll = (event: UIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget;
+    listScrollTopRef.current = target.scrollTop;
+    const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+    // Near bottom of the list panel (not window): request next page.
+    if (remaining <= 80) {
+      loadMoreRecipients();
+    }
   };
 
   const activeListRecipient = useMemo(
@@ -1199,10 +1692,36 @@ export const RecipientsPage = () => {
       null,
     [activeId, listData],
   );
+  // Grade/copay live only on list projection. Use them solely when the list row id
+  // matches the active detail target — never fall back to selectedRecipient (first-row).
+  const detailListProjection =
+    activeListRecipient && activeId && normalizeId(activeListRecipient.id) === activeId
+      ? activeListRecipient
+      : null;
+  // Summary panel may use list identity for non-status display only.
+  // Editable detail form requires detailRecipient from a successful detail GET.
   const detailViewRecipient =
     detailRecipient && normalizeId(detailRecipient.id) === activeId
       ? detailRecipient
-      : activeListRecipient ?? (detailId ? null : selectedRecipient);
+      : activeListRecipient
+        ? recipientIdentityFromListItem(activeListRecipient)
+        : detailId
+          ? null
+          : selectedRecipient
+            ? recipientIdentityFromListItem(selectedRecipient)
+            : null;
+  // Form only after successful detail GET (detailRecipient never seeded from list).
+  // PATCH/validation errors keep detailRecipient so draft remains editable.
+  const detailFormReady =
+    Boolean(detailRecipient) &&
+    normalizeId(detailRecipient?.id) === activeId &&
+    !detailLoading;
+  const detailSaveEnabled =
+    detailFormReady &&
+    Boolean(detailRecipient) &&
+    !detailSaving &&
+    !detailLoading &&
+    recipientHasDraftChanges(detailRecipient!, detailForm);
   const guardianNames = useMemo(
     () => new Map(guardians.map((guardian) => [normalizeId(guardian.id), guardian.name])),
     [guardians],
@@ -1213,7 +1732,11 @@ export const RecipientsPage = () => {
         <div>
           <h1>수급자 관리</h1>
         </div>
-        <div className="recipient-page-status" aria-live="polite">
+        <div
+          className="recipient-page-status"
+          data-testid="recipient-list-status"
+          aria-live="polite"
+        >
           {listLoading ? (
             <span className="recipient-status recipient-status-loading">목록 불러오는 중</span>
           ) : listError ? (
@@ -1232,7 +1755,9 @@ export const RecipientsPage = () => {
               <input
                 data-testid="recipient-search-input"
                 value={search}
-                onChange={(event) => updateQuery({ search: event.target.value, page: '1' }, true)}
+                onChange={(event) =>
+                  updateQuery({ search: event.target.value, page: null }, true)
+                }
                 placeholder="이름 검색"
               />
             </label>
@@ -1240,17 +1765,27 @@ export const RecipientsPage = () => {
               <span className="visually-hidden">상태</span>
               <select
                 data-testid="recipient-filter-select"
-                value={filter}
-                onChange={(event) => updateQuery({ filter: event.target.value, page: '1' }, true)}
+                value={statusFilter}
+                onChange={(event) =>
+                  updateQuery(
+                    {
+                      status: event.target.value,
+                      filter: null,
+                      page: null,
+                    },
+                    true,
+                  )
+                }
               >
-                <option value="ACTIVE">이용중</option>
-                <option value="ALL">전체</option>
-                <option value="HISTORY">계약종료</option>
-                <option value="WAITING">대기중</option>
+                {LIST_STATUS_FILTERS.map((value) => (
+                  <option key={value} value={value}>
+                    {LIST_STATUS_LABELS[value]}
+                  </option>
+                ))}
               </select>
             </label>
             <span className="recipient-count" data-testid="recipient-count" aria-live="polite">
-              총 {listData?.total ?? 0}명
+              총 {listTotal}명
             </span>
           </div>
 
@@ -1270,21 +1805,29 @@ export const RecipientsPage = () => {
             ref={listScrollRef}
             className="recipient-list-scroll"
             data-testid="recipient-list-scroll"
-            onScroll={(event) => handleListScroll(event.currentTarget.scrollTop)}
+            onScroll={handleListScroll}
           >
             {listLoading && !visibleRecipients.length ? (
               <div className="recipient-list-row recipient-list-row-placeholder">
                 <span data-testid="recipient-list-loading">목록을 불러오는 중입니다.</span>
               </div>
             ) : null}
-            {listError ? <div className="recipient-inline-error">{listError}</div> : null}
+            {listError ? (
+              <div className="recipient-inline-error" role="alert">
+                {listError}
+              </div>
+            ) : null}
             {!listLoading && !listError && !visibleRecipients.length ? (
               <div className="recipient-empty-state">등록된 수급자가 없습니다.</div>
             ) : null}
             {visibleRecipients.map((recipient, index) => {
               const id = normalizeId(recipient.id);
               const isSelected = id === selectedId;
-              const listIndex = (page - 1) * (listData?.page_size ?? PAGE_SIZE) + index + 1;
+              const listIndex = index + 1;
+              const servicesLabel = formatListServices(recipient.services);
+              const benefitLabel = formatBenefitCode(recipient.benefit_code);
+              const copayLabel = formatCopaymentRate(recipient.copayment_rate);
+              const gradeLabel = formatGradeCode(recipient.grade_code);
               return (
                 <button
                   className={`recipient-list-row${isSelected ? ' is-selected' : ''}`}
@@ -1293,7 +1836,12 @@ export const RecipientsPage = () => {
                   type="button"
                   onClick={() => openDetail(recipient.id)}
                 >
-                  <span className="recipient-list-cell recipient-list-grade">미지정</span>
+                  <span
+                    className="recipient-list-cell recipient-list-grade"
+                    data-testid="recipient-list-grade"
+                  >
+                    {gradeLabel}
+                  </span>
                   <span className="recipient-list-row-main">
                     <span className="recipient-list-index" aria-hidden="true">{listIndex}</span>
                     <strong>{recipient.name}</strong>
@@ -1304,9 +1852,27 @@ export const RecipientsPage = () => {
                     <span className="visually-hidden">자택: <span data-testid="recipient-list-home-phone">{formatNullable(recipient.home_phone)}</span></span>
                     <span className="visually-hidden">휴대전화: <span data-testid="recipient-list-mobile-phone">{formatNullable(recipient.mobile_phone)}</span></span>
                   </span>
-                  <span className="recipient-list-cell recipient-list-age">{formatAge(recipient.birth_date)}</span>
-                  <span className="recipient-list-cell recipient-list-copay">미지정</span>
-                  <span className="recipient-list-cell recipient-list-services">미지정</span>
+                  <span className="recipient-list-cell recipient-list-age" data-testid="recipient-list-age">
+                    {formatInternationalAge(recipient.birth_date)}
+                  </span>
+                  <span
+                    className="recipient-list-cell recipient-list-copay"
+                    data-testid="recipient-list-copay"
+                    title={`급여 ${benefitLabel} · 본인부담 ${copayLabel}`}
+                  >
+                    <span data-testid="recipient-list-benefit">{benefitLabel}</span>
+                    <span className="recipient-list-copay-sep" aria-hidden="true">
+                      ·
+                    </span>
+                    <span data-testid="recipient-list-copay-rate">{copayLabel}</span>
+                  </span>
+                  <span
+                    className="recipient-list-cell recipient-list-services"
+                    data-testid="recipient-list-services"
+                    title={servicesLabel}
+                  >
+                    {servicesLabel}
+                  </span>
                   <span className="visually-hidden recipient-list-row-meta">
                     <span data-testid="recipient-list-recipient-no">
                       {formatRecipientNo(recipient.recipient_no)}
@@ -1315,24 +1881,11 @@ export const RecipientsPage = () => {
                 </button>
               );
             })}
-          </div>
-
-          <div className="recipient-list-footer">
-            <button
-              type="button"
-              disabled={page <= 1}
-              onClick={() => updateQuery({ page: String(Math.max(1, page - 1)) }, true)}
-            >
-              이전
-            </button>
-            <span data-testid="recipient-page-indicator">{page}</span>
-            <button
-              type="button"
-              disabled={page * (listData?.page_size ?? PAGE_SIZE) >= (listData?.total ?? 0)}
-              onClick={() => updateQuery({ page: String(page + 1) }, true)}
-            >
-              다음
-            </button>
+            {listLoadingMore ? (
+              <div className="recipient-list-row recipient-list-row-placeholder">
+                <span data-testid="recipient-list-loading-more">목록을 더 불러오는 중입니다.</span>
+              </div>
+            ) : null}
           </div>
 
           {false && (
@@ -1424,7 +1977,11 @@ export const RecipientsPage = () => {
                 />
               </label>
             </div>
-            {createError ? <div className="recipient-inline-error">{createError}</div> : null}
+            {createError ? (
+              <div className="recipient-inline-error" role="alert">
+                {createError}
+              </div>
+            ) : null}
             {createMessage ? <div className="recipient-inline-note">{createMessage}</div> : null}
             <div className="recipient-form-actions">
               <button className="recipient-primary-button" data-testid="recipient-submit-button" type="submit" disabled={createSaving}>
@@ -1436,7 +1993,7 @@ export const RecipientsPage = () => {
         </section>
 
         <section
-          className={`recipient-detail-panel${activeId ? '' : ' is-idle'}`}
+          className={`recipient-detail-panel${activeId ? '' : ' is-idle'}${createOpen ? ' is-creating' : ''}`}
           data-testid="recipient-detail-workspace"
         >
           <div className="recipient-detail-heading">
@@ -1471,8 +2028,6 @@ export const RecipientsPage = () => {
                 setCreateError(null);
                 setCreateMessage(null);
                 setRecipientForm(emptyRecipientForm());
-                setCreateGrade('');
-                setCreateCopay('BASIC');
                 setDetailExtrasOpen(false);
                 setCreateOpen(true);
               }}
@@ -1498,7 +2053,12 @@ export const RecipientsPage = () => {
           ) : null}
 
           {detailLoading ? <div className="recipient-inline-note">상세 정보를 불러오는 중입니다.</div> : null}
-          {detailError ? <div className="recipient-inline-error">{detailError}</div> : null}
+          {/* Single accessible alert: non-conflict errors only. Stale conflict owns its own alert. */}
+          {detailError && !detailStaleConflict ? (
+            <div className="recipient-inline-error" role="alert">
+              {detailError}
+            </div>
+          ) : null}
 
           {!detailExtrasOpen ? (
             <>
@@ -1545,24 +2105,17 @@ export const RecipientsPage = () => {
                     <option value="FEMALE">여성</option>
                   </select>
                 </label>
-                <label className="recipient-summary-item recipient-create-summary-field">
+                {/*
+                  Grade/copay are not on RecipientCreateRequest — do not offer editable
+                  controls that look savable. Show contract-honest 미지정 (same as 인정번호).
+                */}
+                <div className="recipient-summary-item">
                   <span>등급</span>
-                  <select
-                    data-testid="recipient-grade-select"
-                    value={createGrade}
-                    onChange={(event) => setCreateGrade(event.target.value)}
-                  >
-                    <option value="">미지정</option>
-                    <option value="1">1등급</option>
-                    <option value="2">2등급</option>
-                    <option value="3">3등급</option>
-                    <option value="4">4등급</option>
-                    <option value="5">5등급</option>
-                  </select>
-                </label>
+                  <strong data-testid="recipient-create-grade">미지정</strong>
+                </div>
                 <div className="recipient-summary-item">
                   <span>인정번호</span>
-                  <strong>L1234567890</strong>
+                  <strong data-testid="recipient-create-certification-number">미지정</strong>
                 </div>
                 <label className="recipient-summary-item recipient-create-summary-field">
                   <span>휴대전화</span>
@@ -1587,19 +2140,10 @@ export const RecipientsPage = () => {
                     aria-required="true"
                   />
                 </label>
-                <label className="recipient-summary-item recipient-create-summary-field">
+                <div className="recipient-summary-item">
                   <span>본인부담금</span>
-                  <select
-                    data-testid="recipient-copay-select"
-                    value={createCopay}
-                    onChange={(event) => setCreateCopay(event.target.value)}
-                  >
-                    <option value="BASIC">기초</option>
-                    <option value="6">6%</option>
-                    <option value="9">9%</option>
-                    <option value="15">15%</option>
-                  </select>
-                </label>
+                  <strong data-testid="recipient-create-copay">미지정</strong>
+                </div>
                 <div className="recipient-summary-item recipient-summary-item-address recipient-create-summary-field recipient-address-summary-field">
                   <span>주소</span>
                   <div className="recipient-address-input-row">
@@ -1624,7 +2168,11 @@ export const RecipientsPage = () => {
                     />
                   </div>
                 </div>
-                {createError ? <div className="recipient-inline-error">{createError}</div> : null}
+                {createError ? (
+                  <div className="recipient-inline-error" role="alert">
+                    {createError}
+                  </div>
+                ) : null}
                 {createMessage ? <div className="recipient-inline-note">{createMessage}</div> : null}
               </form>
             ) : (
@@ -1649,11 +2197,13 @@ export const RecipientsPage = () => {
                 </div>
                 <div className="recipient-summary-item">
                   <span>등급</span>
-                  <strong data-testid="recipient-detail-grade">미지정</strong>
+                  <strong data-testid="recipient-detail-grade">
+                    {formatGradeCode(detailListProjection?.grade_code)}
+                  </strong>
                 </div>
                 <div className="recipient-summary-item">
                   <span>인정번호</span>
-                  <strong>L1234567890</strong>
+                  <strong data-testid="recipient-detail-certification-number">미지정</strong>
                 </div>
                 <div className="recipient-summary-item">
                   <span>휴대전화</span>
@@ -1663,7 +2213,9 @@ export const RecipientsPage = () => {
                 </div>
                 <div className="recipient-summary-item">
                   <span>본인부담금</span>
-                  <strong data-testid="recipient-detail-copay">미지정</strong>
+                  <strong data-testid="recipient-detail-copay">
+                    {formatCopaymentRate(detailListProjection?.copayment_rate)}
+                  </strong>
                 </div>
                 <div className="recipient-summary-item recipient-summary-item-address">
                   <span>주소</span>
@@ -1687,26 +2239,55 @@ export const RecipientsPage = () => {
           </span>
 
           {detailStaleConflict ? (
-            <div className="recipient-stale-panel" role="alert">
+            <div className="recipient-stale-panel">
+              {detailError ? (
+                <div
+                  className="recipient-inline-error"
+                  role="alert"
+                  data-testid="recipient-stale-conflict-message"
+                >
+                  {detailError}
+                </div>
+              ) : null}
               <div data-testid="recipient-stale-latest-value">
                 최신 서버값: {detailStaleConflict.latest.name}
               </div>
-              <div data-testid="recipient-stale-diff">
-                사용자 입력: {detailForm.name || '없음'} / 최신 서버값: {detailStaleConflict.latest.name}
-              </div>
-              <button
-                className="recipient-secondary-button"
-                data-testid="recipient-stale-reapply"
-                type="button"
-                onClick={() => void handleDetailReapply()}
-                disabled={detailSaving}
-              >
-                최신 버전에 변경 내용 다시 적용
-              </button>
+              {detailStaleConflict.sameFieldConflicts.length > 0 ? (
+                <div
+                  className="recipient-stale-diff"
+                  data-testid="recipient-same-field-conflict-log"
+                >
+                  {detailStaleConflict.sameFieldConflicts.map((entry) => (
+                    <div
+                      key={entry.field}
+                      data-testid={`recipient-conflict-field-${entry.field}`}
+                    >
+                      {entry.label}({entry.field}): 사용자 {entry.userValue} / 서버{' '}
+                      {entry.serverValue}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="recipient-stale-diff" data-testid="recipient-stale-diff">
+                  사용자 입력: {detailStaleConflict.draftAtConflict.name || '없음'} / 최신
+                  서버값: {detailStaleConflict.latest.name}
+                </div>
+              )}
+              {detailStaleConflict.canAutoReapply ? (
+                <button
+                  className="recipient-secondary-button"
+                  data-testid="recipient-stale-reapply"
+                  type="button"
+                  onClick={() => void handleDetailReapply()}
+                  disabled={detailSaving || detailLoading}
+                >
+                  최신 버전에 변경 내용 다시 적용
+                </button>
+              ) : null}
             </div>
           ) : null}
 
-          {detailViewRecipient ? (
+          {detailFormReady ? (
             <form className="recipient-detail-form" onSubmit={handleDetailSubmit}>
               <div className="recipient-subsection-heading">
                 <h3>기본정보</h3>
@@ -1720,6 +2301,7 @@ export const RecipientsPage = () => {
                     value={detailForm.name}
                     onChange={(event) => setDetailForm((current) => ({ ...current, name: event.target.value }))}
                     required
+                    disabled={detailSaving}
                   />
                 </label>
                 <label className="recipient-field">
@@ -1730,6 +2312,7 @@ export const RecipientsPage = () => {
                     value={detailForm.birth_date}
                     onChange={(event) => setDetailForm((current) => ({ ...current, birth_date: event.target.value }))}
                     required
+                    disabled={detailSaving}
                   />
                 </label>
                 <label className="recipient-field">
@@ -1744,9 +2327,29 @@ export const RecipientsPage = () => {
                       }))
                     }
                     required
+                    disabled={detailSaving}
                   >
                     <option value="MALE">남성</option>
                     <option value="FEMALE">여성</option>
+                  </select>
+                </label>
+                <label className="recipient-field">
+                  상태
+                  <select
+                    data-testid="recipient-detail-status-select"
+                    value={detailForm.recipient_status}
+                    onChange={(event) =>
+                      setDetailForm((current) => ({
+                        ...current,
+                        recipient_status: event.target.value as RecipientStatus,
+                      }))
+                    }
+                    required
+                    disabled={detailSaving}
+                  >
+                    <option value="ACTIVE">이용중</option>
+                    <option value="ENDED">계약종료</option>
+                    <option value="WAITING">대기중</option>
                   </select>
                 </label>
                 <label className="recipient-field">
@@ -1754,6 +2357,7 @@ export const RecipientsPage = () => {
                   <input
                     value={detailForm.postal_code}
                     onChange={(event) => setDetailForm((current) => ({ ...current, postal_code: event.target.value }))}
+                    disabled={detailSaving}
                   />
                 </label>
                 <label className="recipient-field recipient-field-wide">
@@ -1761,6 +2365,7 @@ export const RecipientsPage = () => {
                   <input
                     value={detailForm.address}
                     onChange={(event) => setDetailForm((current) => ({ ...current, address: event.target.value }))}
+                    disabled={detailSaving}
                   />
                 </label>
                 <label className="recipient-field">
@@ -1768,6 +2373,7 @@ export const RecipientsPage = () => {
                   <input
                     value={detailForm.home_phone}
                     onChange={(event) => setDetailForm((current) => ({ ...current, home_phone: event.target.value }))}
+                    disabled={detailSaving}
                   />
                 </label>
                 <label className="recipient-field">
@@ -1775,6 +2381,7 @@ export const RecipientsPage = () => {
                   <input
                     value={detailForm.mobile_phone}
                     onChange={(event) => setDetailForm((current) => ({ ...current, mobile_phone: event.target.value }))}
+                    disabled={detailSaving}
                   />
                 </label>
                 <label className="recipient-field recipient-field-wide">
@@ -1782,12 +2389,18 @@ export const RecipientsPage = () => {
                   <textarea
                     value={detailForm.memo}
                     onChange={(event) => setDetailForm((current) => ({ ...current, memo: event.target.value }))}
+                    disabled={detailSaving}
                   />
                 </label>
               </div>
               {detailMessage ? <div className="recipient-inline-note">{detailMessage}</div> : null}
               <div className="recipient-form-actions">
-                <button className="recipient-primary-button" type="submit" disabled={detailSaving}>
+                <button
+                  className="recipient-primary-button"
+                  type="submit"
+                  data-testid="recipient-detail-save"
+                  disabled={!detailSaveEnabled}
+                >
                   {detailSaving ? '저장 중…' : '기본정보 저장'}
                 </button>
               </div>

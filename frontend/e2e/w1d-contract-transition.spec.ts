@@ -93,12 +93,46 @@ async function openNamedRecipient(
   emitBaselineOk(projectName, scenario);
 }
 
+/**
+ * Product mounts contract / certification-transition panels only after the user
+ * expands detail extras (detailExtrasOpen=false by default).
+ * Expand via the real accessible control (role+name primary; testid secondary).
+ */
+async function expandDetailExtras(page: Page) {
+  const toggle = page.getByRole('button', { name: /세부정보|추가정보/ });
+  await expect(toggle, 'W1D_E2E_DETAIL_EXTRAS_TOGGLE_MISSING').toBeVisible({
+    timeout: 10000,
+  });
+  // Secondary identity only — not a substitute for role/name selection.
+  await expect(toggle, 'W1D_E2E_DETAIL_EXTRAS_TOGGLE_TESTID').toHaveAttribute(
+    'data-testid',
+    'recipient-detail-toggle',
+  );
+  await expect(toggle, 'W1D_E2E_DETAIL_EXTRAS_ALREADY_EXPANDED').toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await toggle.click();
+  await expect(toggle, 'W1D_E2E_DETAIL_EXTRAS_NOT_EXPANDED_AFTER_CLICK').toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  const extras = page.getByTestId('recipient-detail-extra-sections');
+  const contractPanel = page.getByTestId('recipient-contract-panel');
+  const transitionPanel = page.getByTestId('certification-transition-panel');
+  await expect(
+    extras.or(contractPanel).or(transitionPanel),
+    'W1D_E2E_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE',
+  ).toBeVisible({ timeout: 10000 });
+}
+
 test.describe('W1D live contract transition E2E', () => {
   // Scenario A: first-contract / recipient_no issuance surface.
   test('scenario-contract-create: baseline then contract surface', async ({ page }, testInfo) => {
     const scenario = 'contract-create';
     const name = projectRecipientName(testInfo.project.name, scenario);
     await openNamedRecipient(page, name, testInfo.project.name, scenario);
+    await expandDetailExtras(page);
 
     const panel = page.getByTestId('recipient-contract-panel');
     await expect(panel, 'W1D_E2E_CONTRACT_PANEL_MISSING').toBeVisible({ timeout: 10000 });
@@ -132,6 +166,7 @@ test.describe('W1D live contract transition E2E', () => {
     const scenario = 'transition-stale';
     const name = projectRecipientName(testInfo.project.name, scenario);
     await openNamedRecipient(page, name, testInfo.project.name, scenario);
+    await expandDetailExtras(page);
 
     const transitionA = page.getByTestId('certification-transition-panel');
     await expect(transitionA, 'W1D_E2E_TRANSITION_PANEL_MISSING').toBeVisible({
@@ -162,6 +197,7 @@ test.describe('W1D live contract transition E2E', () => {
         pageB.getByTestId('recipient-detail-workspace'),
         'W1D_HARNESS_E2E_RECIPIENT_DETAIL_BASELINE',
       ).toBeVisible({ timeout: 20000 });
+      await expandDetailExtras(pageB);
 
       const transitionB = pageB.getByTestId('certification-transition-panel');
       await expect(transitionB, 'W1D_E2E_TRANSITION_PANEL_MISSING').toBeVisible({
@@ -411,6 +447,7 @@ test.describe('W1D live contract transition E2E', () => {
     const scenario = 'ended-new-only';
     const name = projectRecipientName(testInfo.project.name, scenario);
     await openNamedRecipient(page, name, testInfo.project.name, scenario);
+    await expandDetailExtras(page);
 
     const panel = page.getByTestId('recipient-contract-panel');
     await expect(panel, 'W1D_E2E_CONTRACT_PANEL_MISSING').toBeVisible({ timeout: 10000 });

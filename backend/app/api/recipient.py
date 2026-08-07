@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, status
 
@@ -32,6 +32,7 @@ from app.domains.recipient.schemas import (
     RecipientDeadlineListResponse,
     RecipientErrorEnvelope,
     RecipientListResponse,
+    RecipientListStatusFilter,
     RecipientResponse,
     RecipientUpdateRequest,
 )
@@ -71,11 +72,20 @@ def list_recipients(
     current_account: RecipientViewAccountDependency,
     service: RecipientServiceDependency,
     search: str | None = Query(default=None, max_length=200),
+    status: Annotated[
+        RecipientListStatusFilter,
+        Query(),
+    ] = RecipientListStatusFilter.ALL,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> RecipientListResponse:
     del current_account
-    return service.list_recipients(search=search, page=page, page_size=page_size)
+    return service.list_recipients(
+        search=search,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get(

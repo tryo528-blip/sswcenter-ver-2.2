@@ -2268,10 +2268,53 @@ export interface components {
             /** Message */
             message: string;
         };
+        /**
+         * RecipientListItem
+         * @description List projection: base recipient fields plus today-scoped summary columns.
+         *
+         *     Detail GET continues to use RecipientResponse (no list summary fields).
+         *     Columns: grade / name / age(via birth_date) / copayment / services.
+         *     copayment_rate is always null — W1C benefit ledger stores benefit_code only;
+         *     no official numeric rate source is wired in this packet.
+         */
+        RecipientListItem: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /**
+             * Birth Date
+             * Format: date
+             */
+            birth_date: string;
+            sex_code: components["schemas"]["RecipientSexCode"];
+            /** Recipient No */
+            recipient_no: string | null;
+            /** Postal Code */
+            postal_code: string | null;
+            /** Address */
+            address: string | null;
+            /** Home Phone */
+            home_phone: string | null;
+            /** Mobile Phone */
+            mobile_phone: string | null;
+            /** Memo */
+            memo: string | null;
+            /** Row Version */
+            row_version: number;
+            /** Grade Code */
+            grade_code: string | null;
+            /** Benefit Code */
+            benefit_code: string | null;
+            /** Copayment Rate */
+            copayment_rate: number | null;
+            /** Services */
+            services: components["schemas"]["RecipientListServiceGroupItem"][];
+        };
         /** RecipientListResponse */
         RecipientListResponse: {
             /** Items */
-            items: components["schemas"]["RecipientResponse"][];
+            items: components["schemas"]["RecipientListItem"][];
             /** Total */
             total: number;
             /** Page */
@@ -2279,6 +2322,35 @@ export interface components {
             /** Page Size */
             page_size: number;
         };
+        /** RecipientListServiceGroupItem */
+        RecipientListServiceGroupItem: {
+            /** Service Group Code */
+            service_group_code: string;
+            /** Display Name */
+            display_name: string;
+            /** Service Types */
+            service_types: components["schemas"]["RecipientListServiceTypeItem"][];
+        };
+        /** RecipientListServiceTypeItem */
+        RecipientListServiceTypeItem: {
+            /** Service Type Code */
+            service_type_code: string;
+            /** Display Name */
+            display_name: string;
+        };
+        /**
+         * RecipientListStatusFilter
+         * @description Query filter for GET /recipients list status (manual tag equality).
+         * @enum {string}
+         */
+        RecipientListStatusFilter: "ALL" | "ACTIVE" | "ENDED" | "WAITING";
+        /**
+         * RecipientStatus
+         * @description Manually assigned recipient display/filter tag (memo-like).
+         *     Display: ACTIVE=이용중, ENDED=계약종료, WAITING=대기중.
+         * @enum {string}
+         */
+        RecipientStatus: "ACTIVE" | "ENDED" | "WAITING";
         /** RecipientResponse */
         RecipientResponse: {
             /** Id */
@@ -2291,6 +2363,7 @@ export interface components {
              */
             birth_date: string;
             sex_code: components["schemas"]["RecipientSexCode"];
+            recipient_status: components["schemas"]["RecipientStatus"];
             /** Recipient No */
             recipient_no: string | null;
             /** Postal Code */
@@ -2320,6 +2393,7 @@ export interface components {
             /** Birth Date */
             birth_date?: string | null;
             sex_code?: components["schemas"]["RecipientSexCode"] | null;
+            recipient_status?: components["schemas"]["RecipientStatus"];
             /** Postal Code */
             postal_code?: string | null;
             /** Address */
@@ -7403,6 +7477,7 @@ export interface operations {
         parameters: {
             query?: {
                 search?: string | null;
+                status?: components["schemas"]["RecipientListStatusFilter"];
                 page?: number;
                 page_size?: number;
             };

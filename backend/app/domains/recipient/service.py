@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from calendar import monthrange
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -26,7 +28,11 @@ from app.domains.recipient.policies import (
     clean_required_text,
     validate_period,
 )
-from app.domains.recipient.repository import RecipientRepository
+from app.domains.recipient.repository import (
+    SERVICE_GROUP_ORDER,
+    SERVICE_TYPE_ORDER_BY_GROUP,
+    RecipientRepository,
+)
 from app.domains.recipient.schemas import (
     GuardianCreateRequest,
     GuardianListResponse,
@@ -50,11 +56,33 @@ from app.domains.recipient.schemas import (
     RecipientDeadlineItem,
     RecipientDeadlineKind,
     RecipientDeadlineListResponse,
+    RecipientListItem,
     RecipientListResponse,
+    RecipientListServiceGroupItem,
+    RecipientListServiceTypeItem,
+    RecipientListStatusFilter,
     RecipientResponse,
     RecipientSexCode,
+    RecipientStatus,
     RecipientUpdateRequest,
 )
+
+_SEOUL = ZoneInfo("Asia/Seoul")
+_TodayFn = Callable[[], date]
+_today_override: _TodayFn | None = None
+
+
+def set_today_seoul(fn: _TodayFn | None) -> None:
+    """Test seam: override Asia/Seoul calendar date, or None to restore real clock."""
+    global _today_override
+    _today_override = fn
+
+
+def today_seoul() -> date:
+    if _today_override is not None:
+        return _today_override()
+    return datetime.now(_SEOUL).date()
+
 
 _MESSAGES = {
     "RECIPIENT_NOT_FOUND": "수급자를 찾을 수 없습니다.",
@@ -264,6 +292,7 @@ class RecipientService:
             name=recipient.name,
             birth_date=recipient.birth_date,
             sex_code=RecipientSexCode(recipient.sex_code),
+            recipient_status=RecipientStatus(recipient.recipient_status),
             recipient_no=recipient.recipient_no,
             postal_code=recipient.postal_code,
             address=recipient.address,
@@ -271,6 +300,84 @@ class RecipientService:
             mobile_phone=recipient.mobile_phone,
             memo=recipient.memo,
             row_version=recipient.row_version,
+        )
+
+    @staticmethod
+    def _build_service_groups(
+        raw_services: list[tuple[str, str, str, str]],
+    ) -> list[RecipientListServiceGroupItem]:
+        """Group and order current services by frozen catalog order.
+
+        raw_services: (group_code, group_name, type_code, type_name), already unique.
+        """
+        if not raw_services:
+            return []
+        by_group: dict[str, tuple[str, list[RecipientListServiceTypeItem]]] = {}
+        type_rank = {
+            type_code: index
+            for type_codes in SERVICE_TYPE_ORDER_BY_GROUP.values()
+            for index, type_code in enumerate(type_codes)
+        }
+        for group_code, group_name, type_code, type_name in raw_services:
+            if group_code not in by_group:
+                by_group[group_code] = (group_name, [])
+            by_group[group_code][1].append(
+                RecipientListServiceTypeItem(
+                    service_type_code=type_code,
+                    display_name=type_name,
+                )
+            )
+        groups: list[RecipientListServiceGroupItem] = []
+        ordered_group_codes = sorted(
+            by_group.keys(),
+            key=lambda code: (
+                SERVICE_GROUP_ORDER.index(code) if code in SERVICE_GROUP_ORDER else 999,
+                code,
+            ),
+        )
+        for group_code in ordered_group_codes:
+            group_name, type_items = by_group[group_code]
+            type_items_sorted = sorted(
+                type_items,
+                key=lambda item: (
+                    type_rank.get(item.service_type_code, 999),
+                    item.service_type_code,
+                ),
+            )
+            groups.append(
+                RecipientListServiceGroupItem(
+                    service_group_code=group_code,
+                    display_name=group_name,
+                    service_types=type_items_sorted,
+                )
+            )
+        return groups
+
+    def _list_item_response(
+        self,
+        recipient: Recipient,
+        *,
+        grade_code: str | None,
+        benefit_code: str | None,
+        raw_services: list[tuple[str, str, str, str]],
+    ) -> RecipientListItem:
+        return RecipientListItem(
+            id=recipient.id,
+            name=recipient.name,
+            birth_date=recipient.birth_date,
+            sex_code=RecipientSexCode(recipient.sex_code),
+            recipient_no=recipient.recipient_no,
+            postal_code=recipient.postal_code,
+            address=recipient.address,
+            home_phone=recipient.home_phone,
+            mobile_phone=recipient.mobile_phone,
+            memo=recipient.memo,
+            row_version=recipient.row_version,
+            grade_code=grade_code,
+            benefit_code=benefit_code,
+            # W1C benefit ledger has benefit_code only; no numeric rate column.
+            copayment_rate=None,
+            services=self._build_service_groups(raw_services),
         )
 
     @staticmethod
@@ -330,6 +437,7 @@ class RecipientService:
             name=name,
             birth_date=payload.birth_date,
             sex_code=payload.sex_code.value,
+            recipient_status=RecipientStatus.ACTIVE.value,
             recipient_no=None,
             postal_code=clean_optional_text(payload.postal_code),
             address=clean_optional_text(payload.address),
@@ -366,14 +474,41 @@ class RecipientService:
         search: str | None,
         page: int,
         page_size: int,
+        status: RecipientListStatusFilter | str = RecipientListStatusFilter.ALL,
     ) -> RecipientListResponse:
+        """Read-only list. Uses Asia/Seoul today; never creates tasks/notifications."""
+        as_of = today_seoul()
+        status_value = (
+            status.value if isinstance(status, RecipientListStatusFilter) else str(status)
+        )
         items, total = self.repository.list_recipients(
             search=search,
+            status=status_value,
+            as_of=as_of,
             offset=(page - 1) * page_size,
             limit=page_size,
         )
+        recipient_ids = [item.id for item in items]
+        contracts_by_id = self.repository.load_effective_contracts_by_recipient(
+            recipient_ids,
+            as_of,
+        )
+        grades_by_id = self.repository.load_effective_grade_codes(recipient_ids, as_of)
+        benefits_by_id = self.repository.load_effective_benefit_codes(recipient_ids, as_of)
+
+        list_items: list[RecipientListItem] = []
+        for item in items:
+            raw_services = contracts_by_id.get(item.id, [])
+            list_items.append(
+                self._list_item_response(
+                    item,
+                    grade_code=grades_by_id.get(item.id),
+                    benefit_code=benefits_by_id.get(item.id),
+                    raw_services=raw_services,
+                )
+            )
         return RecipientListResponse(
-            items=[self._recipient_response(item) for item in items],
+            items=list_items,
             total=total,
             page=page,
             page_size=page_size,
@@ -405,6 +540,10 @@ class RecipientService:
             if payload.sex_code is None:
                 raise _domain_error("VALIDATION_ERROR", 422, field="sex_code")
             recipient.sex_code = payload.sex_code.value
+        if "recipient_status" in fields_set:
+            if payload.recipient_status is None:
+                raise _domain_error("VALIDATION_ERROR", 422, field="recipient_status")
+            recipient.recipient_status = payload.recipient_status.value
         for field_name in ("postal_code", "address", "home_phone", "mobile_phone", "memo"):
             if field_name in fields_set:
                 setattr(

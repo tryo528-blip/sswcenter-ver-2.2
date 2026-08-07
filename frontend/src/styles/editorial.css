@@ -240,7 +240,15 @@
 
 /* Dashboard */
 .dashboard-api-error {
-  display: none;
+  display: block;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--border-radius-md);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .dashboard-content-grid {
@@ -366,6 +374,100 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   margin-left: 0;
+}
+
+/* Accessible click-through for staff summary 보수교육 row only.
+   Keeps dashboard-task-row visual contract; adds keyboard focus affordance. */
+button.dashboard-task-row-button {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+
+button.dashboard-task-row-button:hover {
+  color: var(--color-primary);
+}
+
+button.dashboard-task-row-button:focus-visible {
+  outline: 1px solid var(--color-primary-border);
+  outline-offset: 2px;
+}
+
+.dashboard-ce-panel {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-primary-border, rgba(0, 0, 0, 0.08));
+  min-width: 0;
+}
+
+.dashboard-ce-panel-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.dashboard-ce-panel-year,
+.dashboard-ce-panel-status,
+.dashboard-ce-panel-empty {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-main);
+  opacity: 0.86;
+}
+
+.dashboard-ce-panel-error {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.dashboard-ce-panel-error-message {
+  margin: 0 0 6px;
+}
+
+.dashboard-ce-panel-retry {
+  display: inline-block;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--color-primary, inherit);
+  background: transparent;
+  border: 1px solid var(--color-primary-border, rgba(0, 0, 0, 0.16));
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.dashboard-ce-panel-retry:focus-visible {
+  outline: 1px solid var(--color-primary-border);
+  outline-offset: 2px;
+}
+
+.dashboard-ce-staff-list {
+  margin: 0;
+  padding: 0 0 0 1.1em;
+  list-style: disc;
+}
+
+.dashboard-ce-staff-list li {
+  margin: 2px 0;
+  font-size: 13px;
+}
+
+.dashboard-ce-staff-link {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.dashboard-ce-staff-link:hover,
+.dashboard-ce-staff-link:focus-visible {
+  text-decoration: underline;
 }
 
 .dashboard-top-rail {
@@ -540,11 +642,6 @@
   border: 1px solid var(--color-primary);
 }
 
-.dashboard-work-subtask.is-complete {
-  color: var(--text-muted);
-  opacity: 0.3;
-}
-
 .dashboard-work-subtask-label {
   display: flex;
   align-items: center;
@@ -560,13 +657,6 @@
   margin-top: auto;
   padding-top: 10px;
   font-size: 12px;
-}
-
-.dashboard-work-card-state {
-  display: none;
-  color: var(--text-muted);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
 }
 
 .dashboard-work-card-due {
