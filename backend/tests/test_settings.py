@@ -206,9 +206,7 @@ class TestProductionSecretsFailClosed:
             ("543210zyxwvutsrqponmlkjihgfedcba", "sequence"),
         ],
     )
-    def test_raw_secret_weakness_rejected(
-        self, pin_pepper: str, expected_match: str
-    ) -> None:
+    def test_raw_secret_weakness_rejected(self, pin_pepper: str, expected_match: str) -> None:
         with pytest.raises(ValidationError, match=expected_match):
             Settings(**_prod_kwargs(pin_pepper=pin_pepper))  # type: ignore[arg-type]
 

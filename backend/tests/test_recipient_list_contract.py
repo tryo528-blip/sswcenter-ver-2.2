@@ -379,9 +379,7 @@ def test_update_request_accepts_recipient_status_and_rejects_invalid() -> None:
         )
     # Explicit JSON null is rejected (optional-by-omission only).
     with pytest.raises(ValidationError):
-        RecipientUpdateRequest.model_validate(
-            {"expected_row_version": 1, "recipient_status": None}
-        )
+        RecipientUpdateRequest.model_validate({"expected_row_version": 1, "recipient_status": None})
     omitted = RecipientUpdateRequest(expected_row_version=1)
     assert "recipient_status" not in omitted.model_fields_set
     assert omitted.recipient_status is None
@@ -452,11 +450,7 @@ def test_migration_0015_source_is_linked_and_not_silently_skippable() -> None:
 
     repo_root = Path(__file__).resolve().parents[2]
     migration = (
-        repo_root
-        / "backend"
-        / "alembic"
-        / "versions"
-        / "20260806_0015_recipient_status_tag.py"
+        repo_root / "backend" / "alembic" / "versions" / "20260806_0015_recipient_status_tag.py"
     )
     assert migration.is_file(), "migration 0015 must exist (not silently skipped)"
     source = migration.read_text(encoding="utf-8")
@@ -496,16 +490,14 @@ def test_postcheck_0015_recipient_status_source_and_marker_contract() -> None:
     assert "def _normalize_recipient_status_sql" in source
     assert "_RECIPIENT_STATUS_CANONICAL_DEFAULTS" in source
     assert "_RECIPIENT_STATUS_CANONICAL_CHECK_DEFS" in source
-    fn_src = source.split("def _verify_recipient_status_tag_contract", 1)[1].split(
-        "\ndef _", 1
-    )[0]
+    fn_src = source.split("def _verify_recipient_status_tag_contract", 1)[1].split("\ndef _", 1)[0]
     # Complete canonical default ACTIVE (not cast-stripping / token splitting).
     assert "server default must be exactly ACTIVE" in fn_src
     assert "canonical complete expression" in fn_src
     assert "must be NOT NULL" in fn_src
     # Reject weak token extraction / cast discard patterns inside the verifier body.
     assert "default_core" not in fn_src
-    assert "split(\"::\"" not in fn_src
+    assert 'split("::"' not in fn_src
     assert "re.findall" not in fn_src
     assert "quoted_tokens" not in fn_src
     # Exact CHECK complete predicate {ACTIVE, ENDED, WAITING} + convalidated.
@@ -646,11 +638,7 @@ def test_repository_status_predicate_applied_to_items_and_count() -> None:
     from pathlib import Path
 
     repo_path = (
-        Path(__file__).resolve().parents[1]
-        / "app"
-        / "domains"
-        / "recipient"
-        / "repository.py"
+        Path(__file__).resolve().parents[1] / "app" / "domains" / "recipient" / "repository.py"
     )
     source = repo_path.read_text(encoding="utf-8")
     assert "Recipient.recipient_status ==" in source
@@ -753,6 +741,7 @@ def test_migration_0015_lifecycle_upgrade_downgrade_reupgrade() -> None:
 
     def _alembic(target: str, *, direction: str) -> None:
         from alembic.config import Config
+
         from alembic import command
 
         previous_url = os.environ.get("SSWCENTER_DATABASE_URL")
@@ -829,13 +818,9 @@ def test_migration_0015_lifecycle_upgrade_downgrade_reupgrade() -> None:
         with engine.begin() as connection:
             rev = _revision(connection)
             if rev != _REV_0014:
-                pytest.fail(
-                    f"expected revision {_REV_0014} before lifecycle upgrade, got {rev!r}"
-                )
+                pytest.fail(f"expected revision {_REV_0014} before lifecycle upgrade, got {rev!r}")
             if _has_status_column(connection):
-                pytest.fail(
-                    "recipient_status must not exist at 0014 before lifecycle upgrade"
-                )
+                pytest.fail("recipient_status must not exist at 0014 before lifecycle upgrade")
 
             # Seed actor + pre-existing recipient without the new column.
             staff_id = int(
@@ -908,17 +893,21 @@ def test_migration_0015_lifecycle_upgrade_downgrade_reupgrade() -> None:
             if not _has_status_column(connection):
                 pytest.fail("recipient_status column missing after upgrade to 0015")
 
-            col = connection.execute(
-                text(
-                    """
+            col = (
+                connection.execute(
+                    text(
+                        """
                     SELECT is_nullable, column_default
                       FROM information_schema.columns
                      WHERE table_schema = 'erp'
                        AND table_name = 'recipient'
                        AND column_name = 'recipient_status'
                     """
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             assert col["is_nullable"] == "NO"
             assert col["column_default"] is not None
             assert "ACTIVE" in str(col["column_default"])
@@ -929,17 +918,21 @@ def test_migration_0015_lifecycle_upgrade_downgrade_reupgrade() -> None:
             ).scalar_one()
             assert status == "ACTIVE"
 
-            check = connection.execute(
-                text(
-                    """
+            check = (
+                connection.execute(
+                    text(
+                        """
                     SELECT conname, pg_get_constraintdef(oid, true) AS definition
                       FROM pg_constraint
                      WHERE conrelid = 'erp.recipient'::regclass
                        AND contype = 'c'
                        AND conname = 'ck_recipient_recipient_status'
                     """
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             assert check["conname"] == "ck_recipient_recipient_status"
             definition = str(check["definition"])
             assert "ACTIVE" in definition and "ENDED" in definition and "WAITING" in definition

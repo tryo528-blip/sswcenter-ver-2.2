@@ -2276,6 +2276,7 @@ export interface components {
          *     Columns: grade / name / age(via birth_date) / copayment / services.
          *     copayment_rate is always null — W1C benefit ledger stores benefit_code only;
          *     no official numeric rate source is wired in this packet.
+         *     Does not include recipient_status or any derived row status field.
          */
         RecipientListItem: {
             /** Id */
@@ -2344,13 +2345,6 @@ export interface components {
          * @enum {string}
          */
         RecipientListStatusFilter: "ALL" | "ACTIVE" | "ENDED" | "WAITING";
-        /**
-         * RecipientStatus
-         * @description Manually assigned recipient display/filter tag (memo-like).
-         *     Display: ACTIVE=이용중, ENDED=계약종료, WAITING=대기중.
-         * @enum {string}
-         */
-        RecipientStatus: "ACTIVE" | "ENDED" | "WAITING";
         /** RecipientResponse */
         RecipientResponse: {
             /** Id */
@@ -2384,6 +2378,15 @@ export interface components {
          * @enum {string}
          */
         RecipientSexCode: "MALE" | "FEMALE";
+        /**
+         * RecipientStatus
+         * @description Manually assigned recipient display/filter tag (memo-like).
+         *
+         *     Stored/API values only. Display labels: ACTIVE=이용중, ENDED=계약종료,
+         *     WAITING=대기중. Independent of recipient_contract periods and other domains.
+         * @enum {string}
+         */
+        RecipientStatus: "ACTIVE" | "ENDED" | "WAITING";
         /** RecipientUpdateRequest */
         RecipientUpdateRequest: {
             /** Expected Row Version */
@@ -2393,6 +2396,7 @@ export interface components {
             /** Birth Date */
             birth_date?: string | null;
             sex_code?: components["schemas"]["RecipientSexCode"] | null;
+            /** Recipient Status */
             recipient_status?: components["schemas"]["RecipientStatus"];
             /** Postal Code */
             postal_code?: string | null;

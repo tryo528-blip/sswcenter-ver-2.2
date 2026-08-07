@@ -256,9 +256,7 @@ def _assert_standard_error_envelope(body: dict[str, Any], *, expect_code: str) -
 
 
 def _row_count(connection, table: str) -> int:
-    return int(
-        connection.execute(text(f"SELECT COUNT(*) FROM erp.{table}")).scalar_one()
-    )
+    return int(connection.execute(text(f"SELECT COUNT(*) FROM erp.{table}")).scalar_one())
 
 
 # ---------------------------------------------------------------------------
@@ -919,9 +917,7 @@ def _strict_nonbool_int(value: Any, *, label: str) -> int:
     return value
 
 
-def _assert_keyset_exact(
-    row: dict[str, Any], expected_keys: frozenset[str], *, label: str
-) -> None:
+def _assert_keyset_exact(row: dict[str, Any], expected_keys: frozenset[str], *, label: str) -> None:
     actual = set(row.keys())
     if actual != set(expected_keys):
         missing = sorted(expected_keys - actual)
@@ -963,9 +959,7 @@ def _assert_open_ended_range_exact(value: Any, start: date, *, label: str) -> No
         _fail(f"{label}_OPEN_RANGE_NOT_EXACT")
 
 
-def _assert_field_canon_equal(
-    after_val: Any, before_val: Any, *, label: str, field: str
-) -> None:
+def _assert_field_canon_equal(after_val: Any, before_val: Any, *, label: str, field: str) -> None:
     if _canon_row({field: after_val}) != _canon_row({field: before_val}):
         _fail(f"{label}_FIELD_{field}")
 
@@ -1016,9 +1010,10 @@ def _assert_ended_row_exact_projection(
         label=f"{label}_PERIOD",
     )
 
-    if _strict_nonbool_int(
-        after_row.get("updated_by_account_id"), label=f"{label}_UPDATED_BY"
-    ) != account_id:
+    if (
+        _strict_nonbool_int(after_row.get("updated_by_account_id"), label=f"{label}_UPDATED_BY")
+        != account_id
+    ):
         _fail(f"{label}_UPDATED_BY_ACCOUNT")
 
     before_ts = _normalize_utc_timestamp(
@@ -1055,9 +1050,7 @@ def _assert_ended_row_exact_projection(
     for key in expected_keys:
         if key in allowed_delta:
             continue
-        _assert_field_canon_equal(
-            after_row.get(key), before_row.get(key), label=label, field=key
-        )
+        _assert_field_canon_equal(after_row.get(key), before_row.get(key), label=label, field=key)
 
 
 def _assert_new_cert_row_complete(
@@ -1074,10 +1067,7 @@ def _assert_new_cert_row_complete(
     _assert_keyset_exact(row, _W1C_CERT_ROW_KEYS, label="W1D_TRN03_NEW_CERT")
     if _strict_nonbool_int(row.get("id"), label="W1D_TRN03_NEW_CERT_ID") != new_cert_id:
         _fail("W1D_TRN03_NEW_CERT_ID_VALUE")
-    if (
-        _strict_nonbool_int(row.get("recipient_id"), label="W1D_TRN03_NEW_CERT_RID")
-        != recipient_id
-    ):
+    if _strict_nonbool_int(row.get("recipient_id"), label="W1D_TRN03_NEW_CERT_RID") != recipient_id:
         _fail("W1D_TRN03_NEW_CERT_RECIPIENT")
     if not _date_field_equals(row.get("start_date"), new_start):
         _fail("W1D_TRN03_NEW_CERT_START")
@@ -1133,15 +1123,11 @@ def _assert_new_grade_row_complete(
     ):
         _fail("W1D_TRN03_NEW_GRADE_RECIPIENT")
     if (
-        _strict_nonbool_int(
-            row.get("certification_period_id"), label="W1D_TRN03_NEW_GRADE_PARENT"
-        )
+        _strict_nonbool_int(row.get("certification_period_id"), label="W1D_TRN03_NEW_GRADE_PARENT")
         != new_cert_id
     ):
         _fail("W1D_TRN03_NEW_GRADE_PARENT_VALUE")
-    if type(row.get("grade_code")) is not str or row.get("grade_code") != str(
-        new_grade_code
-    ):
+    if type(row.get("grade_code")) is not str or row.get("grade_code") != str(new_grade_code):
         _fail("W1D_TRN03_NEW_GRADE_CODE")
     if not _date_field_equals(row.get("start_date"), new_start):
         _fail("W1D_TRN03_NEW_GRADE_START")
@@ -1168,12 +1154,8 @@ def _assert_new_grade_row_complete(
         _fail("W1D_TRN03_NEW_GRADE_UPDATED_BY")
     if _strict_nonbool_int(row.get("row_version"), label="W1D_TRN03_NEW_GRADE_RV") != 1:
         _fail("W1D_TRN03_NEW_GRADE_ROW_VERSION")
-    gcat = _normalize_utc_timestamp(
-        row.get("created_at_utc"), label="W1D_TRN03_NEW_GRADE_CAT"
-    )
-    guat = _normalize_utc_timestamp(
-        row.get("updated_at_utc"), label="W1D_TRN03_NEW_GRADE_UAT"
-    )
+    gcat = _normalize_utc_timestamp(row.get("created_at_utc"), label="W1D_TRN03_NEW_GRADE_CAT")
+    guat = _normalize_utc_timestamp(row.get("updated_at_utc"), label="W1D_TRN03_NEW_GRADE_UAT")
     if _validate_ts_exact_equal(gcat, sealed_apply_ts) is not None:
         _fail("W1D_TRN03_NEW_GRADE_CREATED_TS_NOT_SEALED")
     if _validate_ts_exact_equal(guat, sealed_apply_ts) is not None:
@@ -1197,10 +1179,7 @@ def _assert_new_contract_row_complete(
 ) -> None:
     """Complete planned W1D 0011 recipient_contract to_jsonb contract."""
     _assert_keyset_exact(row, _W1D_CONTRACT_ROW_KEYS, label="W1D_TRN03_NEW_CONTRACT")
-    if (
-        _strict_nonbool_int(row.get("id"), label="W1D_TRN03_NEW_CONTRACT_ID")
-        != new_contract_id
-    ):
+    if _strict_nonbool_int(row.get("id"), label="W1D_TRN03_NEW_CONTRACT_ID") != new_contract_id:
         _fail("W1D_TRN03_NEW_CONTRACT_ID_VALUE")
     if (
         _strict_nonbool_int(row.get("recipient_id"), label="W1D_TRN03_NEW_CONTRACT_RID")
@@ -1208,9 +1187,7 @@ def _assert_new_contract_row_complete(
     ):
         _fail("W1D_TRN03_NEW_CONTRACT_RECIPIENT")
     if (
-        _strict_nonbool_int(
-            row.get("service_type_id"), label="W1D_TRN03_NEW_CONTRACT_ST"
-        )
+        _strict_nonbool_int(row.get("service_type_id"), label="W1D_TRN03_NEW_CONTRACT_ST")
         != service_type_id
     ):
         _fail("W1D_TRN03_NEW_CONTRACT_SERVICE_TYPE")
@@ -1240,27 +1217,19 @@ def _assert_new_contract_row_complete(
     if row.get("replacement_contract_id") is not None:
         _fail("W1D_TRN03_NEW_CONTRACT_REPLACEMENT")
     if (
-        _strict_nonbool_int(
-            row.get("created_by_account_id"), label="W1D_TRN03_NEW_CONTRACT_CB"
-        )
+        _strict_nonbool_int(row.get("created_by_account_id"), label="W1D_TRN03_NEW_CONTRACT_CB")
         != account_id
     ):
         _fail("W1D_TRN03_NEW_CONTRACT_CREATED_BY")
     if (
-        _strict_nonbool_int(
-            row.get("updated_by_account_id"), label="W1D_TRN03_NEW_CONTRACT_UB"
-        )
+        _strict_nonbool_int(row.get("updated_by_account_id"), label="W1D_TRN03_NEW_CONTRACT_UB")
         != account_id
     ):
         _fail("W1D_TRN03_NEW_CONTRACT_UPDATED_BY")
     if _strict_nonbool_int(row.get("row_version"), label="W1D_TRN03_NEW_CONTRACT_RV") != 1:
         _fail("W1D_TRN03_NEW_CONTRACT_ROW_VERSION")
-    ccat = _normalize_utc_timestamp(
-        row.get("created_at_utc"), label="W1D_TRN03_NEW_CONTRACT_CAT"
-    )
-    cuat = _normalize_utc_timestamp(
-        row.get("updated_at_utc"), label="W1D_TRN03_NEW_CONTRACT_UAT"
-    )
+    ccat = _normalize_utc_timestamp(row.get("created_at_utc"), label="W1D_TRN03_NEW_CONTRACT_CAT")
+    cuat = _normalize_utc_timestamp(row.get("updated_at_utc"), label="W1D_TRN03_NEW_CONTRACT_UAT")
     if _validate_ts_exact_equal(ccat, sealed_apply_ts) is not None:
         _fail("W1D_TRN03_NEW_CONTRACT_CREATED_TS_NOT_SEALED")
     if _validate_ts_exact_equal(cuat, sealed_apply_ts) is not None:
@@ -1316,15 +1285,9 @@ def _assert_single_winner_ledger_projection(
     """
     after = _full_ledger_state(connection, recipient_id)
 
-    _assert_rows_exact_equal(
-        before["recipient"], after["recipient"], label="RECIPIENT"
-    )
-    _assert_rows_exact_equal(
-        before["identity"], after["identity"], label="IDENTITY"
-    )
-    _assert_rows_exact_equal(
-        before["counter"], after["counter"], label="COUNTER"
-    )
+    _assert_rows_exact_equal(before["recipient"], after["recipient"], label="RECIPIENT")
+    _assert_rows_exact_equal(before["identity"], after["identity"], label="IDENTITY")
+    _assert_rows_exact_equal(before["counter"], after["counter"], label="COUNTER")
 
     before_cert = _index_rows_by_id(before["cert"], label="CERT_BEFORE")
     after_cert = _index_rows_by_id(after["cert"], label="CERT_AFTER")
@@ -1407,9 +1370,7 @@ def _assert_single_winner_ledger_projection(
         _fail("W1D_HARNESS_SERVICE_TYPE_LOOKUP: " + type(exc).__name__)
     if service_type_id is None:
         _fail("W1D_HARNESS_SERVICE_TYPE_MISSING: " + replacement_service_type_code)
-    service_type_id = _strict_nonbool_int(
-        service_type_id, label="W1D_TRN03_SERVICE_TYPE_ID"
-    )
+    service_type_id = _strict_nonbool_int(service_type_id, label="W1D_TRN03_SERVICE_TYPE_ID")
 
     if new_cert_id not in after_cert:
         _fail("W1D_TRN03_SINGLE_WINNER_NEW_CERT_MISSING")
@@ -1453,9 +1414,7 @@ def _assert_single_winner_ledger_projection(
     )
 
     # Sealed apply timestamp must fall inside DB clock window (pure predicate).
-    win_err = _validate_ts_in_window(
-        sealed_apply_ts, apply_window_start, apply_window_end
-    )
+    win_err = _validate_ts_in_window(sealed_apply_ts, apply_window_start, apply_window_end)
     if win_err is not None:
         _fail("W1D_TRN03_" + win_err)
 
@@ -1477,17 +1436,12 @@ def _assert_single_winner_ledger_projection(
         _fail("W1D_TRN03_SINGLE_WINNER_AUDIT_ACTION")
     if appended.get("entity_type") != "RECIPIENT":
         _fail("W1D_TRN03_SINGLE_WINNER_AUDIT_ENTITY_TYPE")
-    if (
-        _strict_nonbool_int(appended.get("entity_pk"), label="W1D_TRN03_AUDIT_EPK")
-        != recipient_id
-    ):
+    if _strict_nonbool_int(appended.get("entity_pk"), label="W1D_TRN03_AUDIT_EPK") != recipient_id:
         _fail("W1D_TRN03_SINGLE_WINNER_AUDIT_ENTITY_PK")
     if str(appended.get("request_id")) != str(correlation):
         _fail("W1D_TRN03_SINGLE_WINNER_AUDIT_CORRELATION")
     if (
-        _strict_nonbool_int(
-            appended.get("actor_account_id"), label="W1D_TRN03_AUDIT_ACTOR"
-        )
+        _strict_nonbool_int(appended.get("actor_account_id"), label="W1D_TRN03_AUDIT_ACTOR")
         != account_id
     ):
         _fail("W1D_TRN03_SINGLE_WINNER_AUDIT_ACTOR")
@@ -1685,9 +1639,11 @@ def _validate_ts_strictly_after(before: datetime, after: datetime) -> str | None
 def _validate_ts_in_window(
     ts: datetime, window_start: datetime, window_end: datetime
 ) -> str | None:
-    if type(ts) is not datetime or type(window_start) is not datetime or type(
-        window_end
-    ) is not datetime:
+    if (
+        type(ts) is not datetime
+        or type(window_start) is not datetime
+        or type(window_end) is not datetime
+    ):
         return "TS_TYPE"
     if ts.tzinfo is None or window_start.tzinfo is None or window_end.tzinfo is None:
         return "TS_NAIVE"
@@ -1747,10 +1703,7 @@ def _is_json_domain_value(value: Any) -> bool:
     if type(value) is list:
         return all(_is_json_domain_value(item) for item in value)
     if type(value) is dict:
-        return all(
-            type(key) is str and _is_json_domain_value(item)
-            for key, item in value.items()
-        )
+        return all(type(key) is str and _is_json_domain_value(item) for key, item in value.items())
     return False
 
 
@@ -1764,9 +1717,7 @@ def _json_domain_values_equal(left: Any, right: Any) -> bool:
     if type(left) is list:
         if len(left) != len(right):
             return False
-        return all(
-            _json_domain_values_equal(a, b) for a, b in zip(left, right, strict=True)
-        )
+        return all(_json_domain_values_equal(a, b) for a, b in zip(left, right, strict=True))
     if type(left) is dict:
         if set(left.keys()) != set(right.keys()):
             return False
@@ -1867,18 +1818,17 @@ def _r19_timestamp_mutant_selfcheck() -> None:
     window_start = datetime(2035, 7, 1, 11, 59, 0, tzinfo=UTC)
     window_end = datetime(2035, 7, 1, 12, 1, 0, tzinfo=UTC)
     # Valid control.
-    if _validate_old_row_sealed_timestamp(
-        before_ts=before, after_ts=after, sealed_apply_ts=sealed
-    ) is not None:
+    if (
+        _validate_old_row_sealed_timestamp(before_ts=before, after_ts=after, sealed_apply_ts=sealed)
+        is not None
+    ):
         _fail("W1D_R19_TS_MUTANT_GOOD_OLD_REJECTED")
     if _validate_ts_in_window(sealed, window_start, window_end) is not None:
         _fail("W1D_R19_TS_MUTANT_GOOD_WINDOW_REJECTED")
     if _validate_ts_exact_equal(sealed, sealed) is not None:
         _fail("W1D_R19_TS_MUTANT_GOOD_EQUAL_REJECTED")
     # Unequal row/audit timestamp.
-    if _validate_ts_exact_equal(
-        datetime(2035, 7, 1, 12, 0, 1, tzinfo=UTC), sealed
-    ) is None:
+    if _validate_ts_exact_equal(datetime(2035, 7, 1, 12, 0, 1, tzinfo=UTC), sealed) is None:
         _fail("W1D_R19_TS_MUTANT_UNEQUAL_ACCEPTED")
     # Equality / not strictly after old.
     if _validate_ts_strictly_after(before, before) is None:
@@ -1886,13 +1836,17 @@ def _r19_timestamp_mutant_selfcheck() -> None:
     if _validate_ts_strictly_after(sealed, before) is None:
         _fail("W1D_R19_TS_MUTANT_BEFORE_OLD_ACCEPTED")
     # Window edges.
-    if _validate_ts_in_window(
-        datetime(2035, 7, 1, 11, 58, 0, tzinfo=UTC), window_start, window_end
-    ) is None:
+    if (
+        _validate_ts_in_window(
+            datetime(2035, 7, 1, 11, 58, 0, tzinfo=UTC), window_start, window_end
+        )
+        is None
+    ):
         _fail("W1D_R19_TS_MUTANT_BEFORE_WINDOW_ACCEPTED")
-    if _validate_ts_in_window(
-        datetime(2035, 7, 1, 12, 2, 0, tzinfo=UTC), window_start, window_end
-    ) is None:
+    if (
+        _validate_ts_in_window(datetime(2035, 7, 1, 12, 2, 0, tzinfo=UTC), window_start, window_end)
+        is None
+    ):
         _fail("W1D_R19_TS_MUTANT_AFTER_WINDOW_ACCEPTED")
     # Naive / wrong type.
     naive = datetime(2035, 7, 1, 12, 0, 0)
@@ -1954,15 +1908,21 @@ def _r19_audit_proj_mutant_selfcheck() -> None:
     }
 
     def _rej(actual: Any, expected: dict[str, Any], *, side: str, tag: str) -> None:
-        if _validate_exact_audit_projection(
-            actual, expected, authorized_preview_hash=ph, side=side
-        ) is None:
+        if (
+            _validate_exact_audit_projection(
+                actual, expected, authorized_preview_hash=ph, side=side
+            )
+            is None
+        ):
             _fail(f"W1D_R20_AUDIT_MUTANT_ACCEPTED:{tag}")
 
     def _acc(actual: Any, expected: dict[str, Any], *, side: str, tag: str) -> None:
-        if _validate_exact_audit_projection(
-            actual, expected, authorized_preview_hash=ph, side=side
-        ) is not None:
+        if (
+            _validate_exact_audit_projection(
+                actual, expected, authorized_preview_hash=ph, side=side
+            )
+            is not None
+        ):
             _fail(f"W1D_R20_AUDIT_MUTANT_GOOD_REJECTED:{tag}")
 
     _acc(before_ok, before_ok, side="before", tag="before_control")
@@ -2075,14 +2035,13 @@ def _r19_audit_proj_mutant_selfcheck() -> None:
     tup_mut = dict(before_ok)
     tup_mut["contracts"] = tuple(before_ok["contracts"])  # type: ignore[assignment]
     _rej(tup_mut, before_ok, side="before", tag="tuple_container")
+
     # R22: every non-JSON domain mutant still goes through shared predicate only.
     class _CustomAuditObj:
         pass
 
     custom_mut = dict(before_ok)
-    custom_mut["certification_periods"] = [
-        {"id": 1, "row_version": 1, "x": _CustomAuditObj()}
-    ]
+    custom_mut["certification_periods"] = [{"id": 1, "row_version": 1, "x": _CustomAuditObj()}]
     _rej(custom_mut, before_ok, side="before", tag="non_json_custom_object")
     uuid_mut = dict(before_ok)
     uuid_mut["certification_periods"] = [
@@ -2114,9 +2073,7 @@ def _r19_audit_proj_mutant_selfcheck() -> None:
     ]
     _rej(nonstr_key_mut, before_ok, side="before", tag="non_json_nonstr_key")
     nested_set_mut = dict(before_ok)
-    nested_set_mut["certification_periods"] = [
-        {"id": 1, "row_version": 1, "tags": {1, 2}}
-    ]
+    nested_set_mut["certification_periods"] = [{"id": 1, "row_version": 1, "tags": {1, 2}}]
     _rej(nested_set_mut, before_ok, side="before", tag="nested_non_json_set")
     # Finite float remains JSON-domain when structure/types match exactly.
     fin_ok = dict(before_ok)
@@ -2155,48 +2112,69 @@ def _r20_pack_mutant_selfcheck() -> None:
     if e is None:
         _fail("W1D_R20_PACK_MUTANT_UUID_STRING_ACCEPTED")
     for tag, obj in (
-        ("invalid_str", _Fake(
-            new_certification_period_id=1,
-            new_grade_period_id=2,
-            new_contract_ids=[3],
-            audit_correlation_id="not-a-uuid",
-        )),
-        ("none_corr", _Fake(
-            new_certification_period_id=1,
-            new_grade_period_id=2,
-            new_contract_ids=[3],
-            audit_correlation_id=None,
-        )),
-        ("int_corr", _Fake(
-            new_certification_period_id=1,
-            new_grade_period_id=2,
-            new_contract_ids=[3],
-            audit_correlation_id=1,
-        )),
-        ("bool_corr", _Fake(
-            new_certification_period_id=1,
-            new_grade_period_id=2,
-            new_contract_ids=[3],
-            audit_correlation_id=True,
-        )),
-        ("bad_cert", _Fake(
-            new_certification_period_id="1",
-            new_grade_period_id=2,
-            new_contract_ids=[3],
-            audit_correlation_id=good_uuid,
-        )),
-        ("bad_list", _Fake(
-            new_certification_period_id=1,
-            new_grade_period_id=2,
-            new_contract_ids=3,
-            audit_correlation_id=good_uuid,
-        )),
-        ("bad_member", _Fake(
-            new_certification_period_id=1,
-            new_grade_period_id=2,
-            new_contract_ids=["3"],
-            audit_correlation_id=good_uuid,
-        )),
+        (
+            "invalid_str",
+            _Fake(
+                new_certification_period_id=1,
+                new_grade_period_id=2,
+                new_contract_ids=[3],
+                audit_correlation_id="not-a-uuid",
+            ),
+        ),
+        (
+            "none_corr",
+            _Fake(
+                new_certification_period_id=1,
+                new_grade_period_id=2,
+                new_contract_ids=[3],
+                audit_correlation_id=None,
+            ),
+        ),
+        (
+            "int_corr",
+            _Fake(
+                new_certification_period_id=1,
+                new_grade_period_id=2,
+                new_contract_ids=[3],
+                audit_correlation_id=1,
+            ),
+        ),
+        (
+            "bool_corr",
+            _Fake(
+                new_certification_period_id=1,
+                new_grade_period_id=2,
+                new_contract_ids=[3],
+                audit_correlation_id=True,
+            ),
+        ),
+        (
+            "bad_cert",
+            _Fake(
+                new_certification_period_id="1",
+                new_grade_period_id=2,
+                new_contract_ids=[3],
+                audit_correlation_id=good_uuid,
+            ),
+        ),
+        (
+            "bad_list",
+            _Fake(
+                new_certification_period_id=1,
+                new_grade_period_id=2,
+                new_contract_ids=3,
+                audit_correlation_id=good_uuid,
+            ),
+        ),
+        (
+            "bad_member",
+            _Fake(
+                new_certification_period_id=1,
+                new_grade_period_id=2,
+                new_contract_ids=["3"],
+                audit_correlation_id=good_uuid,
+            ),
+        ),
     ):
         _pp, ee = _try_pack_structured_winner_result(obj)
         if ee is None:
@@ -2211,9 +2189,7 @@ def _r20_normalizer_coupling_selfcheck() -> None:
     if "_try_normalize_utc_timestamp(" not in src:
         _fail("W1D_R20_NORMALIZER_SOURCE_NOT_DELEGATING")
     before = _TRY_NORMALIZE_CALLS
-    got = _normalize_utc_timestamp(
-        datetime(2035, 1, 1, 0, 0, 0, tzinfo=UTC), label="r20_coupling"
-    )
+    got = _normalize_utc_timestamp(datetime(2035, 1, 1, 0, 0, 0, tzinfo=UTC), label="r20_coupling")
     if got.tzinfo is None:
         _fail("W1D_R20_NORMALIZER_COUPLING_NAIVE")
     if _TRY_NORMALIZE_CALLS <= before:
@@ -2237,9 +2213,7 @@ _HTTP_APPLY_RESPONSE_KEYS = frozenset(
         "recipient_no",
     }
 )
-_CANONICAL_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+_CANONICAL_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def _canonical_uuid_str(value: object) -> str | None:
@@ -2267,9 +2241,7 @@ def _canonical_audit_request_id(raw: object) -> str | None:
     return None
 
 
-def _strict_positive_int_list(
-    value: object, *, exact_len: int | None = None
-) -> bool:
+def _strict_positive_int_list(value: object, *, exact_len: int | None = None) -> bool:
     if type(value) is not list:
         return False
     if exact_len is not None and len(value) != exact_len:
@@ -2353,10 +2325,7 @@ def _validate_http_apply_success_response(
     ngrade = body.get("new_grade_period_id")
     if type(ngrade) is not int or ngrade <= 0:
         return "HTTP_APPLY_NEW_GRADE_ID"
-    if (
-        type(expected_new_grade_period_id) is not int
-        or expected_new_grade_period_id <= 0
-    ):
+    if type(expected_new_grade_period_id) is not int or expected_new_grade_period_id <= 0:
         return "HTTP_APPLY_EXPECTED_NEW_GRADE_ID"
     if ngrade != expected_new_grade_period_id:
         return "HTTP_APPLY_NEW_GRADE_ID_VALUE"
@@ -2368,9 +2337,7 @@ def _validate_http_apply_success_response(
         else None,
     ):
         return "HTTP_APPLY_EXPECTED_NEW_CONTRACT_IDS"
-    if not _strict_positive_int_list(
-        ncids, exact_len=len(expected_new_contract_ids)
-    ):
+    if not _strict_positive_int_list(ncids, exact_len=len(expected_new_contract_ids)):
         if type(ncids) is not list:
             return "HTTP_APPLY_NEW_CONTRACT_IDS_TYPE"
         return "HTTP_APPLY_NEW_CONTRACT_IDS"
@@ -2559,9 +2526,7 @@ def _capture_authorized_preview(preview: Any, *, label: str) -> str:
         canonical = preview.canonical_hash
     except AttributeError:
         _fail(f"W1D_TRN_CANONICAL_HASH_ATTR_MISSING: {label}")
-    auth = _assert_preview_hash_shape(
-        canonical, label=label + ".canonical_hash"
-    )
+    auth = _assert_preview_hash_shape(canonical, label=label + ".canonical_hash")
     try:
         version = preview.serialization_version
     except AttributeError:
@@ -2606,32 +2571,41 @@ def _canonical_transition_projection(
     """
     auth_hash = _assert_preview_hash_shape(preview_hash, label="projection_input")
     try:
-        cert_rows = connection.execute(
-            text(
-                """
+        cert_rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT id, start_date, end_date, row_version, invalidated_at_utc
                 FROM erp.recipient_certification_period
                 WHERE recipient_id = :rid
                 ORDER BY id
                 """
-            ),
-            {"rid": recipient_id},
-        ).mappings().all()
-        grade_rows = connection.execute(
-            text(
-                """
+                ),
+                {"rid": recipient_id},
+            )
+            .mappings()
+            .all()
+        )
+        grade_rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT id, certification_period_id, grade_code, start_date, end_date,
                        row_version, invalidated_at_utc
                 FROM erp.recipient_grade_period
                 WHERE recipient_id = :rid
                 ORDER BY id
                 """
-            ),
-            {"rid": recipient_id},
-        ).mappings().all()
-        contract_rows = connection.execute(
-            text(
-                """
+                ),
+                {"rid": recipient_id},
+            )
+            .mappings()
+            .all()
+        )
+        contract_rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT c.id, st.code AS service_type_code, sg.code AS service_group_code,
                        c.start_date, c.end_date, c.row_version, c.invalidated_at_utc
                 FROM erp.recipient_contract c
@@ -2640,9 +2614,12 @@ def _canonical_transition_projection(
                 WHERE c.recipient_id = :rid
                 ORDER BY c.id
                 """
-            ),
-            {"rid": recipient_id},
-        ).mappings().all()
+                ),
+                {"rid": recipient_id},
+            )
+            .mappings()
+            .all()
+        )
     except Exception as exc:
         _fail(f"W1D_HARNESS_PROJECTION_QUERY: {type(exc).__name__}")
 
@@ -2661,9 +2638,7 @@ def _canonical_transition_projection(
 
     # Active multiset: non-invalidated contracts only (invalidated_at_utc is
     # filter input, not a projection key — plan § schema).
-    active_contracts = [
-        r for r in contract_rows if r["invalidated_at_utc"] is None
-    ]
+    active_contracts = [r for r in contract_rows if r["invalidated_at_utc"] is None]
     multiset = sorted(str(r["service_type_code"]) for r in active_contracts)
     projection: dict[str, Any] = {
         "preview_hash": auth_hash,
@@ -2727,9 +2702,7 @@ def test_w1d_pg_00_first_contract_recipient_no_race_and_rollback(
         # J-H01: virgin cluster MUST have absent counter row ??never DELETE/reset.
         before_counter = _counter_sequence(connection)
         if before_counter is not None:
-            _fail(
-                "W1D_REC03_COUNTER_NOT_VIRGIN: expected None got " + str(before_counter)
-            )
+            _fail("W1D_REC03_COUNTER_NOT_VIRGIN: expected None got " + str(before_counter))
         expected_after = 1
 
     def worker(service_code: str) -> str:
@@ -2831,16 +2804,12 @@ def test_w1d_pg_00_first_contract_recipient_no_race_and_rollback(
             {"id": case_second.recipient_id},
         ).scalar_one()
         # J-W1D-R5-M01: exact format on second recipient issuance + inequality.
-        second_no = _assert_recipient_no_exact(
-            second_no, label="W1D_REC03_SECOND_RECIPIENT_NO"
-        )
+        second_no = _assert_recipient_no_exact(second_no, label="W1D_REC03_SECOND_RECIPIENT_NO")
         if second_no == recipient_no:
             _fail("W1D_REC03_SECOND_RECIPIENT_NO_NOT_DISTINCT")
         after_second = _counter_sequence(connection)
         if after_second is None or int(after_second) != 2:
-            _fail(
-                "W1D_REC03_COUNTER_NOT_2_AFTER_SECOND: " + str(after_second)
-            )
+            _fail("W1D_REC03_COUNTER_NOT_2_AFTER_SECOND: " + str(after_second))
         counter_after_race = 2  # baseline for re-contract on first recipient
 
     # N2: re-contract after closed race period; non-overlapping; no number change.
@@ -2866,9 +2835,7 @@ def test_w1d_pg_00_first_contract_recipient_no_race_and_rollback(
             {"id": case.recipient_id},
         ).scalar_one()
         # J-W1D-R5-M01: final persisted + immutable re-contract value exact format.
-        again = _assert_recipient_no_exact(
-            again, label="W1D_REC03_RECIPIENT_NO_RECONTRACT"
-        )
+        again = _assert_recipient_no_exact(again, label="W1D_REC03_RECIPIENT_NO_RECONTRACT")
         if again != recipient_no:
             _fail("W1D_REC03_RECIPIENT_NO_MUTATED_ON_RECONTRACT")
         counter_after_re = _counter_sequence(connection)
@@ -2884,9 +2851,7 @@ def test_w1d_pg_00_first_contract_recipient_no_race_and_rollback(
         from app.domains.w1d import fault as w1d_fault  # type: ignore
     except Exception:
         _fail("W1D_FAULT_SEAM_MISSING: app.domains.w1d.fault")
-    set_fault = getattr(w1d_fault, "set_fault_point", None) or getattr(
-        w1d_fault, "install", None
-    )
+    set_fault = getattr(w1d_fault, "set_fault_point", None) or getattr(w1d_fault, "install", None)
     if set_fault is None:
         _fail("W1D_FAULT_SEAM_MISSING: install/set_fault_point")
     with database_engine.connect() as connection:
@@ -2926,9 +2891,7 @@ def test_w1d_pg_00_first_contract_recipient_no_race_and_rollback(
         if (
             int(
                 connection.execute(
-                    text(
-                        "SELECT COUNT(*) FROM erp.recipient_contract WHERE recipient_id = :id"
-                    ),
+                    text("SELECT COUNT(*) FROM erp.recipient_contract WHERE recipient_id = :id"),
                     {"id": case2.recipient_id},
                 ).scalar_one()
             )
@@ -3137,9 +3100,7 @@ def test_w1d_pg_03_reactivation_forbidden_and_new_contract(
         try:
             try:
                 connection.execute(
-                    text(
-                        "UPDATE erp.recipient_contract SET end_date = NULL WHERE id = :id"
-                    ),
+                    text("UPDATE erp.recipient_contract SET end_date = NULL WHERE id = :id"),
                     {"id": contract_id},
                 )
                 transaction.commit()
@@ -3426,21 +3387,18 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
         before_hash = _full_ledger_fingerprint(connection, case.recipient_id)
 
     proposed_end = date(2026, 6, 30)
-    replacements = (
-        _replacement_items(
-            schemas,
-            contract_id,
-            date(2026, 7, 1),
-            signer_name="TEST_W1D_SIGNER_CANARY",
-            signer_phone="TEST_W1D_SIGNER_PHONE",
-            end_reason_text="TEST_W1D_END_REASON_PII",
-        )
-        + _replacement_items(
-            schemas,
-            contract_b_id,
-            date(2026, 7, 1),
-            service_type_code=SERVICE_HOME_BATH,
-        )
+    replacements = _replacement_items(
+        schemas,
+        contract_id,
+        date(2026, 7, 1),
+        signer_name="TEST_W1D_SIGNER_CANARY",
+        signer_phone="TEST_W1D_SIGNER_PHONE",
+        end_reason_text="TEST_W1D_END_REASON_PII",
+    ) + _replacement_items(
+        schemas,
+        contract_b_id,
+        date(2026, 7, 1),
+        service_type_code=SERVICE_HOME_BATH,
     )
     preview_request = schemas.CertificationTransitionPreviewRequest(
         new_start_date=date(2026, 7, 1),
@@ -3473,9 +3431,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
         _fail("W1D_TRN01_AFFECTED_CERT_IDS: " + repr(affected_certs))
     if [int(x) for x in affected_grades] != [int(grade_id)]:
         _fail("W1D_TRN01_AFFECTED_GRADE_IDS: " + repr(affected_grades))
-    if sorted(int(x) for x in affected_contracts) != sorted(
-        [int(contract_id), int(contract_b_id)]
-    ):
+    if sorted(int(x) for x in affected_contracts) != sorted([int(contract_id), int(contract_b_id)]):
         _fail("W1D_TRN01_AFFECTED_CONTRACT_IDS: " + repr(affected_contracts))
     multiset = list(getattr(preview, "service_multiset", None) or [])
     if sorted(str(x) for x in multiset) != sorted([SERVICE_HOME_CARE, SERVICE_HOME_BATH]):
@@ -3545,9 +3501,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
                 if code != "CERTIFICATION_TRANSITION_REPLACEMENT_MISMATCH":
                     _fail(label + "_CODE: " + code)
         with database_engine.connect() as connection:
-            _assert_write_zero_pair(
-                connection, case.recipient_id, fp0, audit0, label=label
-            )
+            _assert_write_zero_pair(connection, case.recipient_id, fp0, audit0, label=label)
 
     # R4-03: ALL_MISSING vs PARTIAL must differ (two bound contracts in preview).
     assert_mismatch("W1D_TRN02_ALL_MISSING", [])
@@ -3560,9 +3514,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
         end_reason_text="TEST_W1D_END_REASON_PII",
     )
     assert_mismatch("W1D_TRN02_PARTIAL", partial_only_first)
-    extra = list(replacements) + _replacement_items(
-        schemas, contract_id + 99999, date(2026, 7, 1)
-    )
+    extra = list(replacements) + _replacement_items(schemas, contract_id + 99999, date(2026, 7, 1))
     assert_mismatch("W1D_TRN02_ADDITIONAL", extra)
     dup = list(replacements) + list(replacements)
     assert_mismatch("W1D_TRN02_DUPLICATE", dup)
@@ -3626,9 +3578,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
         )
         database_session.commit()
     with database_engine.connect() as connection:
-        grade_stale_fp, grade_stale_audit = _write_zero_pair(
-            connection, case.recipient_id
-        )
+        grade_stale_fp, grade_stale_audit = _write_zero_pair(connection, case.recipient_id)
     with session_factory() as database_session:
         service = service_cls(database_session)
         try:
@@ -3690,9 +3640,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
                 include_new_ids=False,
             )
         # R6-03 / R10-03: clock window starts immediately before apply.
-        apply_window_start = database_session.execute(
-            text("SELECT clock_timestamp()")
-        ).scalar_one()
+        apply_window_start = database_session.execute(text("SELECT clock_timestamp()")).scalar_one()
         applied = service.apply_certification_transition(
             case.recipient_id,
             schemas.CertificationTransitionApplyRequest(
@@ -3707,9 +3655,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
         resp_new_cert = getattr(applied, "new_certification_period_id", None)
         resp_new_grade = getattr(applied, "new_grade_period_id", None)
         resp_new_contracts = getattr(applied, "new_contract_ids", None)
-        apply_window_end = database_session.execute(
-            text("SELECT clock_timestamp()")
-        ).scalar_one()
+        apply_window_end = database_session.execute(text("SELECT clock_timestamp()")).scalar_one()
 
     # B1 / R6-04: exact end dates + exact success rows for two replacements.
     with database_engine.connect() as connection:
@@ -3718,9 +3664,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
             {"id": grade_id},
         ).scalar_one()
         cert_end = connection.execute(
-            text(
-                "SELECT end_date FROM erp.recipient_certification_period WHERE id = :id"
-            ),
+            text("SELECT end_date FROM erp.recipient_certification_period WHERE id = :id"),
             {"id": cert_id},
         ).scalar_one()
         if grade_end != proposed_end:
@@ -3736,9 +3680,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
                 {"id": original_id},
             ).scalar_one()
             if original_end != proposed_end:
-                _fail(
-                    f"W1D_TRN04_{label}_NOT_ENDED_AT_PROPOSED: " + str(original_end)
-                )
+                _fail(f"W1D_TRN04_{label}_NOT_ENDED_AT_PROPOSED: " + str(original_end))
 
         # R24: strict response ID types (no int() coercion on apply response).
         if type(resp_new_contracts) is not list:
@@ -3747,18 +3689,17 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
             _fail("W1D_TRN04_RESPONSE_CONTRACT_IDS_TYPE")
         resp_contract_ids = list(resp_new_contracts)
         if len(resp_contract_ids) != 2 or len(set(resp_contract_ids)) != 2:
-            _fail(
-                "W1D_TRN04_RESPONSE_CONTRACT_IDS_SHAPE: " + repr(resp_contract_ids)
-            )
+            _fail("W1D_TRN04_RESPONSE_CONTRACT_IDS_SHAPE: " + repr(resp_contract_ids))
         if type(resp_new_cert) is not int or resp_new_cert <= 0:
             _fail("W1D_TRN04_RESPONSE_NEW_CERT_ID_MISSING")
         if type(resp_new_grade) is not int or resp_new_grade <= 0:
             _fail("W1D_TRN04_RESPONSE_NEW_GRADE_ID_MISSING")
 
         # Exactly one new certification for recipient with exact dates + response ID.
-        new_cert_rows = connection.execute(
-            text(
-                """
+        new_cert_rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT id, start_date, end_date, invalidated_at_utc
                 FROM erp.recipient_certification_period
                 WHERE recipient_id = :rid
@@ -3766,9 +3707,12 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
                   AND invalidated_at_utc IS NULL
                 ORDER BY id
                 """
-            ),
-            {"rid": case.recipient_id},
-        ).mappings().all()
+                ),
+                {"rid": case.recipient_id},
+            )
+            .mappings()
+            .all()
+        )
         if len(new_cert_rows) != 1:
             _fail("W1D_TRN04_NEW_CERT_COUNT: " + str(len(new_cert_rows)))
         if new_cert_rows[0]["id"] != resp_new_cert:
@@ -3777,9 +3721,10 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
             _fail("W1D_TRN04_NEW_CERT_END_MISMATCH: " + str(new_cert_rows[0]["end_date"]))
 
         # Exactly one new grade under that certification.
-        new_grade_rows = connection.execute(
-            text(
-                """
+        new_grade_rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT id, certification_period_id, grade_code, start_date, end_date,
                        invalidated_at_utc
                 FROM erp.recipient_grade_period
@@ -3788,9 +3733,12 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
                   AND invalidated_at_utc IS NULL
                 ORDER BY id
                 """
-            ),
-            {"rid": case.recipient_id},
-        ).mappings().all()
+                ),
+                {"rid": case.recipient_id},
+            )
+            .mappings()
+            .all()
+        )
         if len(new_grade_rows) != 1:
             _fail("W1D_TRN04_NEW_GRADE_COUNT: " + str(len(new_grade_rows)))
         if new_grade_rows[0]["id"] != resp_new_grade:
@@ -3800,14 +3748,13 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
         if str(new_grade_rows[0]["grade_code"]) != "4":
             _fail("W1D_TRN04_NEW_GRADE_CODE_MISMATCH")
         if new_grade_rows[0]["end_date"] != date(2027, 6, 30):
-            _fail(
-                "W1D_TRN04_NEW_GRADE_END_MISMATCH: " + str(new_grade_rows[0]["end_date"])
-            )
+            _fail("W1D_TRN04_NEW_GRADE_END_MISMATCH: " + str(new_grade_rows[0]["end_date"]))
 
         # Exactly two new contracts by response IDs: HOME_CARE + HOME_BATH multiset.
-        new_ctr_rows = connection.execute(
-            text(
-                """
+        new_ctr_rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT c.id, c.recipient_id, c.start_date, c.end_date,
                        c.invalidated_at_utc, st.code AS service_code
                 FROM erp.recipient_contract c
@@ -3815,9 +3762,12 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
                 WHERE c.id IN (:id0, :id1)
                 ORDER BY c.id
                 """
-            ),
-            {"id0": resp_contract_ids[0], "id1": resp_contract_ids[1]},
-        ).mappings().all()
+                ),
+                {"id0": resp_contract_ids[0], "id1": resp_contract_ids[1]},
+            )
+            .mappings()
+            .all()
+        )
         if len(new_ctr_rows) != 2:
             _fail("W1D_TRN04_NEW_CONTRACT_ROW_COUNT: " + str(len(new_ctr_rows)))
         found_ids = {int(r["id"]) for r in new_ctr_rows}
@@ -3863,16 +3813,12 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
                 f"before={len(audit_rows_before)} after={len(audit_rows_after)}"
             )
         before_canon = _canonical_audit_rows_json(audit_rows_before)
-        prefix_canon = _canonical_audit_rows_json(
-            audit_rows_after[: len(audit_rows_before)]
-        )
+        prefix_canon = _canonical_audit_rows_json(audit_rows_after[: len(audit_rows_before)])
         if before_canon != prefix_canon:
             _fail("W1D_TRN04_AUDIT_PREEXISTING_MUTATED_OR_REORDERED")
         row = audit_rows_after[-1]
         if row.get("action_code") != "CERTIFICATION_TRANSITION_APPLY":
-            _fail(
-                "W1D_TRN04_AUDIT_APPENDED_ACTION: " + str(row.get("action_code"))
-            )
+            _fail("W1D_TRN04_AUDIT_APPENDED_ACTION: " + str(row.get("action_code")))
         if row.get("entity_type") != "RECIPIENT":
             _fail("W1D_TRN04_AUDIT_APPENDED_ENTITY_TYPE: " + str(row.get("entity_type")))
         if int(row.get("entity_pk", -1)) != case.recipient_id:
@@ -3914,12 +3860,8 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
         occurred_utc = _normalize_utc_timestamp(
             row["occurred_at_utc"], label="audit.occurred_at_utc"
         )
-        window_start_utc = _normalize_utc_timestamp(
-            apply_window_start, label="apply_window_start"
-        )
-        window_end_utc = _normalize_utc_timestamp(
-            apply_window_end, label="apply_window_end"
-        )
+        window_start_utc = _normalize_utc_timestamp(apply_window_start, label="apply_window_start")
+        window_end_utc = _normalize_utc_timestamp(apply_window_end, label="apply_window_end")
         if not (window_start_utc <= occurred_utc <= window_end_utc):
             _fail(
                 "W1D_TRN04_AUDIT_TIMESTAMP_OUT_OF_WINDOW: "
@@ -4086,9 +4028,7 @@ def test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit(
     try:
         with session_factory() as database_session:
             service = service_cls(database_session)
-            preview3 = service.preview_certification_transition(
-                case3.recipient_id, req, account
-            )
+            preview3 = service.preview_certification_transition(case3.recipient_id, req, account)
             try:
                 service.apply_certification_transition(
                     case3.recipient_id,
@@ -4159,9 +4099,7 @@ def test_w1d_pg_06_api_auth_csrf_and_error_envelope(
         unauth = client.post(collection, json=payload_a)
         if unauth.status_code != 401:
             _fail("W1D_API_UNAUTH_NOT_401: " + str(unauth.status_code))
-        _assert_standard_error_envelope(
-            unauth.json(), expect_code="AUTHENTICATION_REQUIRED"
-        )
+        _assert_standard_error_envelope(unauth.json(), expect_code="AUTHENTICATION_REQUIRED")
         with database_engine.connect() as connection:
             if _full_ledger_fingerprint(connection, case.recipient_id) != snap_u:
                 _fail("W1D_API_UNAUTH_WROTE_ROWS")
@@ -4176,9 +4114,7 @@ def test_w1d_pg_06_api_auth_csrf_and_error_envelope(
         with database_engine.connect() as connection:
             before_contracts = int(
                 connection.execute(
-                    text(
-                        "SELECT COUNT(*) FROM erp.recipient_contract WHERE recipient_id = :id"
-                    ),
+                    text("SELECT COUNT(*) FROM erp.recipient_contract WHERE recipient_id = :id"),
                     {"id": case.recipient_id},
                 ).scalar_one()
             )
@@ -4195,9 +4131,7 @@ def test_w1d_pg_06_api_auth_csrf_and_error_envelope(
                 _fail("W1D_API_CSRF_LEFT_DB_WRITES")
             after_no_csrf = int(
                 connection.execute(
-                    text(
-                        "SELECT COUNT(*) FROM erp.recipient_contract WHERE recipient_id = :id"
-                    ),
+                    text("SELECT COUNT(*) FROM erp.recipient_contract WHERE recipient_id = :id"),
                     {"id": case.recipient_id},
                 ).scalar_one()
             )
@@ -4543,9 +4477,7 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
                 pool_pre_ping=True,
                 connect_args={"options": f"-c application_name={app_name}"},
             )
-            factory = sessionmaker(
-                bind=engine, expire_on_commit=False, autoflush=False
-            )
+            factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
             barrier.wait()
             with factory() as database_session:
                 service = service_cls(database_session)
@@ -4645,17 +4577,21 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
     def _assert_no_apply_sessions() -> None:
         try:
             with database_engine.connect() as connection:
-                residual = connection.execute(
-                    text(
-                        """
+                residual = (
+                    connection.execute(
+                        text(
+                            """
                         SELECT application_name, COUNT(*) AS n
                         FROM pg_stat_activity
                         WHERE application_name IN (:a, :b, :blocker)
                         GROUP BY application_name
                         """
-                    ),
-                    {"a": name_a, "b": name_b, "blocker": blocker_name},
-                ).mappings().all()
+                        ),
+                        {"a": name_a, "b": name_b, "blocker": blocker_name},
+                    )
+                    .mappings()
+                    .all()
+                )
         except Exception as exc:
             _fail("W1D_TRN03_SESSION_QUERY_FAILED: " + type(exc).__name__)
         if residual:
@@ -4676,12 +4612,8 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
         )
         mon = threading.Thread(target=monitor_both_waiting, daemon=True)
         mon.start()
-        t1 = threading.Thread(
-            target=apply_worker, args=(token_a, name_a), daemon=True
-        )
-        t2 = threading.Thread(
-            target=apply_worker, args=(token_b, name_b), daemon=True
-        )
+        t1 = threading.Thread(target=apply_worker, args=(token_a, name_a), daemon=True)
+        t2 = threading.Thread(target=apply_worker, args=(token_b, name_b), daemon=True)
         t1.start()
         t2.start()
         try:
@@ -4777,13 +4709,9 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
         _fail("W1D_R19_PURE_MUTANT_SELFCHECK_FAILED")
 
     ok_items = [
-        item
-        for item in apply_results
-        if type(item) is dict and item.get("status") == "SUCCESS"
+        item for item in apply_results if type(item) is dict and item.get("status") == "SUCCESS"
     ]
-    stale_count = sum(
-        1 for item in apply_results if item == "CERTIFICATION_TRANSITION_STALE"
-    )
+    stale_count = sum(1 for item in apply_results if item == "CERTIFICATION_TRANSITION_STALE")
     if len(ok_items) != 1 or stale_count != 1:
         _fail(
             "W1D_TRN03_CONCURRENT_APPLY_RESULT: "
@@ -4922,9 +4850,7 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
         id_map = {"cert": c_id, "grade": g_id, "contract": ctr_id}
         mutate_id = id_map[id_from_seed]
         with session_factory() as database_session:
-            result = database_session.execute(
-                text(mutate_sql), {id_param_name: mutate_id}
-            )
+            result = database_session.execute(text(mutate_sql), {id_param_name: mutate_id})
             # J-B01: setup mutation must commit successfully (rowcount >= 1).
             if getattr(result, "rowcount", 1) == 0:
                 _fail(label + "_SETUP_MUTATION_NO_ROWS")
@@ -4983,18 +4909,14 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
             # Transition proposed_end must not have been applied on originals.
             if label != "W1D_TRN03_STALE_CERT_DATE":
                 c_end = connection.execute(
-                    text(
-                        "SELECT end_date FROM erp.recipient_certification_period WHERE id = :id"
-                    ),
+                    text("SELECT end_date FROM erp.recipient_certification_period WHERE id = :id"),
                     {"id": c_id},
                 ).scalar_one()
                 if c_end != date(2036, 12, 31):
                     _fail(label + "_CERT_PARTIALLY_ENDED: " + str(c_end))
             else:
                 c_end = connection.execute(
-                    text(
-                        "SELECT end_date FROM erp.recipient_certification_period WHERE id = :id"
-                    ),
+                    text("SELECT end_date FROM erp.recipient_certification_period WHERE id = :id"),
                     {"id": c_id},
                 ).scalar_one()
                 if c_end == date(2036, 6, 30):
@@ -5104,9 +5026,7 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
             )
         if int(bath_id) not in after_multiset:
             _fail("W1D_TRN03_STALE_SERVICE_MULTISET_BATH_MISSING")
-        post_fp_ms, post_audit_ms = _write_zero_pair(
-            connection, local_ms.recipient_id
-        )
+        post_fp_ms, post_audit_ms = _write_zero_pair(connection, local_ms.recipient_id)
     with session_factory() as database_session:
         service = service_cls(database_session)
         try:
@@ -5124,9 +5044,7 @@ def test_w1d_pg_08_concurrent_apply_and_multidim_stale(
         except Exception as exc:
             database_session.rollback()
             if _error_code(exc) != "CERTIFICATION_TRANSITION_STALE":
-                _fail(
-                    "W1D_TRN03_STALE_SERVICE_MULTISET_STALE_CODE: " + _error_code(exc)
-                )
+                _fail("W1D_TRN03_STALE_SERVICE_MULTISET_STALE_CODE: " + _error_code(exc))
     with database_engine.connect() as connection:
         _assert_write_zero_pair(
             connection,
@@ -5223,9 +5141,7 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
                 ready_barrier.wait()
                 try:
                     conn.execute(
-                        text(
-                            "SELECT id FROM erp.recipient WHERE id = :id FOR UPDATE"
-                        ),
+                        text("SELECT id FROM erp.recipient WHERE id = :id FOR UPDATE"),
                         {"id": recipient_id},
                     )
                     conn.execute(
@@ -5257,26 +5173,20 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
                         try:
                             tx.rollback()
                         except Exception as rb_exc:
-                            _record_harness(
-                                f"{app_name}:rollback:{type(rb_exc).__name__}"
-                            )
+                            _record_harness(f"{app_name}:rollback:{type(rb_exc).__name__}")
                         tx = None
                     orig = getattr(exc, "orig", None)
                     sqlstate = getattr(orig, "sqlstate", None) or getattr(
                         getattr(orig, "diag", None), "sqlstate", None
                     )
-                    cname = getattr(
-                        getattr(orig, "diag", None), "constraint_name", None
-                    )
+                    cname = getattr(getattr(orig, "diag", None), "constraint_name", None)
                     with results_lock:
                         results[app_name] = f"err:{sqlstate}:{cname}"
                     # Non-product exceptions (setup/unexpected) also go to harness channel.
                     if sqlstate != "23P01" and require_exact_cross_group_fail is False:
                         pass  # same-group expects ok only; unexpected recorded below
                     if sqlstate is None and cname is None:
-                        _record_harness(
-                            f"{app_name}:insert:{type(exc).__name__}:{exc}"
-                        )
+                        _record_harness(f"{app_name}:insert:{type(exc).__name__}:{exc}")
             except Exception as exc:
                 _record_harness(f"{app_name}:setup:{type(exc).__name__}:{exc}")
             finally:
@@ -5284,23 +5194,17 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
                     try:
                         tx.rollback()
                     except Exception as rb_exc:
-                        _record_harness(
-                            f"{app_name}:final_rollback:{type(rb_exc).__name__}"
-                        )
+                        _record_harness(f"{app_name}:final_rollback:{type(rb_exc).__name__}")
                 if conn is not None:
                     try:
                         conn.close()
                     except Exception as cl_exc:
-                        _record_harness(
-                            f"{app_name}:close:{type(cl_exc).__name__}"
-                        )
+                        _record_harness(f"{app_name}:close:{type(cl_exc).__name__}")
                 if engine is not None:
                     try:
                         engine.dispose()
                     except Exception as ds_exc:
-                        _record_harness(
-                            f"{app_name}:dispose:{type(ds_exc).__name__}"
-                        )
+                        _record_harness(f"{app_name}:dispose:{type(ds_exc).__name__}")
 
         def monitor() -> None:
             try:
@@ -5363,27 +5267,25 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
         def _assert_no_residual_sessions() -> None:
             try:
                 with database_engine.connect() as connection:
-                    residual = connection.execute(
-                        text(
-                            """
+                    residual = (
+                        connection.execute(
+                            text(
+                                """
                             SELECT application_name, COUNT(*) AS n
                             FROM pg_stat_activity
                             WHERE application_name IN (:a, :b, :blocker)
                             GROUP BY application_name
                             """
-                        ),
-                        {"a": name_a, "b": name_b, "blocker": blocker_name},
-                    ).mappings().all()
+                            ),
+                            {"a": name_a, "b": name_b, "blocker": blocker_name},
+                        )
+                        .mappings()
+                        .all()
+                    )
             except Exception as exc:
-                _fail(
-                    fail_label
-                    + "_SESSION_QUERY_FAILED: "
-                    + type(exc).__name__
-                )
+                _fail(fail_label + "_SESSION_QUERY_FAILED: " + type(exc).__name__)
             if residual:
-                detail = ",".join(
-                    f"{r['application_name']}={r['n']}" for r in residual
-                )
+                detail = ",".join(f"{r['application_name']}={r['n']}" for r in residual)
                 _fail(fail_label + "_SESSION_RESIDUAL: " + detail)
 
         try:
@@ -5424,19 +5326,13 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
                 fail_marker = fail_label + "_LOCK_MONITOR_JOIN_TIMEOUT"
                 raise RuntimeError(fail_marker)
             if monitor_errors:
-                fail_marker = (
-                    fail_label
-                    + "_LOCK_MONITOR_EXCEPTION: "
-                    + monitor_errors[0][:200]
-                )
+                fail_marker = fail_label + "_LOCK_MONITOR_EXCEPTION: " + monitor_errors[0][:200]
                 raise RuntimeError(fail_marker)
             if t1 is not None:
                 t1.join(timeout=60)
             if t2 is not None:
                 t2.join(timeout=60)
-            if (t1 is not None and t1.is_alive()) or (
-                t2 is not None and t2.is_alive()
-            ):
+            if (t1 is not None and t1.is_alive()) or (t2 is not None and t2.is_alive()):
                 fail_marker = fail_label + "_WORKER_JOIN_TIMEOUT"
                 raise RuntimeError(fail_marker)
             with results_lock:
@@ -5448,10 +5344,7 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
             ok = sum(1 for r in ordered if r == "ok")
             if ok != expect_ok:
                 fail_marker = (
-                    fail_label
-                    + "_OK_COUNT: "
-                    + ",".join(ordered)
-                    + f" ok={ok} expect={expect_ok}"
+                    fail_label + "_OK_COUNT: " + ",".join(ordered) + f" ok={ok} expect={expect_ok}"
                 )
                 raise RuntimeError(fail_marker)
             if require_exact_cross_group_fail:
@@ -5460,8 +5353,7 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
                     for r in ordered
                     if r.startswith("err:")
                     and r.split(":", 2)[1] == "23P01"
-                    and r.split(":", 2)[2]
-                    == "trg_recipient_contract_group_period_overlap"
+                    and r.split(":", 2)[2] == "trg_recipient_contract_group_period_overlap"
                 ]
                 if len(sealed) != 1:
                     fail_marker = fail_label + "_FAIL_SHAPE: " + ",".join(ordered)
@@ -5511,14 +5403,8 @@ def test_w1d_pg_09_raw_cross_group_insert_serialization(
                 fail_marker = fail_label + "_WORKER_JOIN_TIMEOUT"
             elif t2 is not None and t2.is_alive():
                 fail_marker = fail_label + "_WORKER_JOIN_TIMEOUT"
-            elif monitor_errors and (
-                fail_marker is None or "_LOCK_MONITOR" not in fail_marker
-            ):
-                fail_marker = (
-                    fail_label
-                    + "_LOCK_MONITOR_EXCEPTION: "
-                    + monitor_errors[0][:200]
-                )
+            elif monitor_errors and (fail_marker is None or "_LOCK_MONITOR" not in fail_marker):
+                fail_marker = fail_label + "_LOCK_MONITOR_EXCEPTION: " + monitor_errors[0][:200]
             if fail_marker is not None:
                 _fail(fail_marker)
 
@@ -5595,9 +5481,7 @@ def test_w1d_pg_10_apply_fault_labels_full_matrix(
     except Exception:
         _fail("W1D_FAULT_SEAM_MISSING_OR_W1C")
 
-    set_fault = getattr(w1d_fault, "set_fault_point", None) or getattr(
-        w1d_fault, "install", None
-    )
+    set_fault = getattr(w1d_fault, "set_fault_point", None) or getattr(w1d_fault, "install", None)
     if set_fault is None:
         _fail("W1D_FAULT_SEAM_MISSING: set_fault_point")
 
@@ -5694,9 +5578,7 @@ def test_w1d_pg_10_apply_fault_labels_full_matrix(
                     text_exc = f"{type(exc).__name__}:{exc}:{getattr(exc, 'code', '')}"
                     marker = f"W1D_FAULT:{label}"
                     if marker not in text_exc:
-                        _fail(
-                            f"W1D_TRN04_FAULT_{label}_WRONG_EXCEPTION: " + text_exc[:200]
-                        )
+                        _fail(f"W1D_TRN04_FAULT_{label}_WRONG_EXCEPTION: " + text_exc[:200])
         finally:
             set_fault(None)
         with database_engine.connect() as connection:
@@ -5788,9 +5670,7 @@ def test_w1d_pg_11_api_acl_csrf_token_envelopes(
         _fail("W1D_HARNESS_APP_IMPORT_MISSING")
 
     path = f"/api/v1/recipients/{admin.recipient_id}/contracts"
-    apply_path = (
-        f"/api/v1/recipients/{admin.recipient_id}/certification-transitions/apply"
-    )
+    apply_path = f"/api/v1/recipients/{admin.recipient_id}/certification-transitions/apply"
     payload = {
         "service_type_code": SERVICE_HOME_CARE,
         "start_date": "2045-01-01",
@@ -5805,9 +5685,7 @@ def test_w1d_pg_11_api_acl_csrf_token_envelopes(
         r = client.post(path, json=payload)
         if r.status_code != 401:
             _fail("W1D_API_UNAUTH_NOT_401: " + str(r.status_code))
-        _assert_standard_error_envelope(
-            r.json(), expect_code="AUTHENTICATION_REQUIRED"
-        )
+        _assert_standard_error_envelope(r.json(), expect_code="AUTHENTICATION_REQUIRED")
         with database_engine.connect() as connection:
             if _full_ledger_fingerprint(connection, admin.recipient_id) != snap0:
                 _fail("W1D_API_UNAUTH_WROTE_ROWS")
@@ -5910,6 +5788,7 @@ def test_w1d_pg_11_api_acl_csrf_token_envelopes(
         with database_engine.connect() as connection:
             if _full_ledger_fingerprint(connection, admin.recipient_id) != snap_blank:
                 _fail("W1D_API_TOKEN_BLANK_WROTE_ROWS")
+
 
 _CONTRACT_RESPONSE_FIELDS = (
     "id",
@@ -6041,11 +5920,7 @@ def _db_normalize_ts_str(value: Any, *, label: str) -> str | None:
 def _normalize_db_contract_row_for_api(row: Any, *, label: str) -> dict[str, Any]:
     """DB-driver values only → JSON-primitive ContractResponse field set."""
     rep_raw = row["replacement_contract_id"]
-    rep = (
-        None
-        if rep_raw is None
-        else _db_normalize_int(rep_raw, label=f"{label}_REP")
-    )
+    rep = None if rep_raw is None else _db_normalize_int(rep_raw, label=f"{label}_REP")
     sgc_raw = row["service_group_code"]
     if sgc_raw is not None and type(sgc_raw) is not str:
         _fail(f"{label}_DB_SERVICE_GROUP_TYPE")
@@ -6075,9 +5950,7 @@ def _normalize_db_contract_row_for_api(row: Any, *, label: str) -> dict[str, Any
         "signer_relationship_text": row["signer_relationship_text"],
         "signer_phone": row["signer_phone"],
         "end_reason_text": row["end_reason_text"],
-        "invalidated_at_utc": _db_normalize_ts_str(
-            row["invalidated_at_utc"], label=f"{label}_INV"
-        ),
+        "invalidated_at_utc": _db_normalize_ts_str(row["invalidated_at_utc"], label=f"{label}_INV"),
         "replacement_contract_id": rep,
         "row_version": _db_normalize_int(row["row_version"], label=f"{label}_RV"),
     }
@@ -6096,9 +5969,7 @@ def _assert_contract_response_matches_row(
     # No int()/date coercion on API body — exact JSON primitive equality.
     for key in _CONTRACT_RESPONSE_FIELDS:
         if body[key] != expected[key]:
-            _fail(
-                f"W1D_API_{label}_ROW_MISMATCH:{key}:{body[key]!r}!={expected[key]!r}"
-            )
+            _fail(f"W1D_API_{label}_ROW_MISMATCH:{key}:{body[key]!r}!={expected[key]!r}")
 
 
 def _r24_contract_response_mutant_selfcheck() -> None:
@@ -6161,9 +6032,7 @@ def _r24_contract_response_mutant_selfcheck() -> None:
     # Pure shape rejects string id / date object before any row compare.
     if _validate_contract_response_strict({**good, "id": "1"}) is None:
         _fail("W1D_R24_CONTRACT_MATCH_STRING_ID_GATE")
-    if _validate_contract_response_strict(
-        {**good, "start_date": date(2040, 1, 1)}
-    ) is None:
+    if _validate_contract_response_strict({**good, "start_date": date(2040, 1, 1)}) is None:
         _fail("W1D_R24_CONTRACT_MATCH_DATE_OBJECT_GATE")
 
 
@@ -6171,9 +6040,7 @@ def _r24_pg05_audit_path_source_selfcheck() -> None:
     """Prove active pg_05 uses shared exact-audit predicate (no default=str/int new_ids)."""
     import inspect
 
-    src = inspect.getsource(
-        test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit
-    )
+    src = inspect.getsource(test_w1d_pg_05_transition_preview_apply_stale_multiset_fault_audit)
     if "_validate_exact_audit_projection" not in src:
         _fail("W1D_R24_PG05_MISSING_SHARED_AUDIT_PREDICATE")
     if re.search(r"json\.dumps\([^;\n]*default\s*=\s*str", src):
@@ -6182,6 +6049,7 @@ def _r24_pg05_audit_path_source_selfcheck() -> None:
         _fail("W1D_R24_PG05_STILL_INT_COERCES_NEW_IDS")
     if "json.dumps(before_proj" in src or "json.dumps(after_proj" in src:
         _fail("W1D_R24_PG05_STILL_DUMPS_PROJECTION")
+
 
 def test_w1d_pg_12_list_get_end_contract_api(
     session_factory: sessionmaker[Session],
@@ -6262,9 +6130,10 @@ def test_w1d_pg_12_list_get_end_contract_api(
         if list_item != got_body:
             _fail("W1D_API_LIST_ITEM_NE_GET")
         with database_engine.connect() as connection:
-            row = connection.execute(
-                text(
-                    """
+            row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT c.id, c.recipient_id, st.code AS service_type_code,
                            sg.code AS service_group_code,
                            c.start_date, c.end_date, c.service_start_date,
@@ -6277,9 +6146,12 @@ def test_w1d_pg_12_list_get_end_contract_api(
                     LEFT JOIN erp.service_group sg ON sg.id = st.service_group_id
                     WHERE c.id = :id
                     """
-                ),
-                {"id": cid},
-            ).mappings().one()
+                    ),
+                    {"id": cid},
+                )
+                .mappings()
+                .one()
+            )
         _assert_contract_response_matches_row(got_body, row, label="GET")
 
         # Create a separate open-ended HOME_CARE contract as the /end target.
@@ -6328,9 +6200,10 @@ def test_w1d_pg_12_list_get_end_contract_api(
         if ended_body["row_version"] != rv_end + 1:
             _fail("W1D_API_END_ROW_VERSION_NOT_INCREMENTED")
         with database_engine.connect() as connection:
-            erow = connection.execute(
-                text(
-                    """
+            erow = (
+                connection.execute(
+                    text(
+                        """
                     SELECT c.id, c.recipient_id, st.code AS service_type_code,
                            sg.code AS service_group_code,
                            c.start_date, c.end_date, c.service_start_date,
@@ -6343,9 +6216,12 @@ def test_w1d_pg_12_list_get_end_contract_api(
                     LEFT JOIN erp.service_group sg ON sg.id = st.service_group_id
                     WHERE c.id = :id
                     """
-                ),
-                {"id": cid_end},
-            ).mappings().one()
+                    ),
+                    {"id": cid_end},
+                )
+                .mappings()
+                .one()
+            )
             if _canonical_date(erow["end_date"]) != "2051-06-30":
                 _fail("W1D_API_END_PERSISTED_DATE")
             if erow["end_reason_text"] != end_reason:
@@ -6367,9 +6243,7 @@ def test_w1d_pg_12_list_get_end_contract_api(
         )
         if stale.status_code != 409:
             _fail("W1D_API_END_STALE_NOT_409: " + str(stale.status_code))
-        _assert_standard_error_envelope(
-            stale.json(), expect_code="ROW_VERSION_CONFLICT"
-        )
+        _assert_standard_error_envelope(stale.json(), expect_code="ROW_VERSION_CONFLICT")
         with database_engine.connect() as connection:
             if _full_ledger_fingerprint(connection, case.recipient_id) != snap_stale:
                 _fail("W1D_API_END_STALE_WROTE_ROWS")
@@ -6393,9 +6267,7 @@ def test_w1d_pg_12_list_get_end_contract_api(
         )
         if end_nf.status_code != 404:
             _fail("W1D_API_END_MISSING_NOT_404: " + str(end_nf.status_code))
-        _assert_standard_error_envelope(
-            end_nf.json(), expect_code="CONTRACT_NOT_FOUND"
-        )
+        _assert_standard_error_envelope(end_nf.json(), expect_code="CONTRACT_NOT_FOUND")
         with database_engine.connect() as connection:
             if _full_ledger_fingerprint(connection, case.recipient_id) != snap_end_nf:
                 _fail("W1D_API_END_MISSING_WROTE_ROWS")
@@ -6405,9 +6277,7 @@ def test_w1d_pg_12_list_get_end_contract_api(
         nr = client.get(missing_recipient)
         if nr.status_code != 404:
             _fail("W1D_API_LIST_MISSING_RECIPIENT_NOT_404: " + str(nr.status_code))
-        _assert_standard_error_envelope(
-            nr.json(), expect_code="RECIPIENT_NOT_FOUND"
-        )
+        _assert_standard_error_envelope(nr.json(), expect_code="RECIPIENT_NOT_FOUND")
         with database_engine.connect() as connection:
             if _full_ledger_fingerprint(connection, case.recipient_id) != snap_nr:
                 _fail("W1D_API_LIST_MISSING_RECIPIENT_WROTE_ROWS")
@@ -6425,12 +6295,8 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
     except Exception:
         _fail("W1D_HARNESS_APP_IMPORT_MISSING")
     collection = f"/api/v1/recipients/{case.recipient_id}/contracts"
-    preview_path = (
-        f"/api/v1/recipients/{case.recipient_id}/certification-transitions/preview"
-    )
-    apply_path = (
-        f"/api/v1/recipients/{case.recipient_id}/certification-transitions/apply"
-    )
+    preview_path = f"/api/v1/recipients/{case.recipient_id}/certification-transitions/preview"
+    apply_path = f"/api/v1/recipients/{case.recipient_id}/certification-transitions/apply"
     preview_payload = {
         "new_start_date": "2060-07-01",
         "new_end_date": "2061-06-30",
@@ -6461,9 +6327,7 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
         prev = client.post(preview_path, json=preview_payload, headers=headers)
         if prev.status_code != 404:
             _fail("W1D_TRN_NULL_IDENTITY_PREVIEW_NOT_404: " + str(prev.status_code))
-        _assert_standard_error_envelope(
-            prev.json(), expect_code="CERTIFICATION_IDENTITY_NOT_FOUND"
-        )
+        _assert_standard_error_envelope(prev.json(), expect_code="CERTIFICATION_IDENTITY_NOT_FOUND")
         with database_engine.connect() as connection:
             if _full_ledger_fingerprint(connection, case.recipient_id) != snap_prev:
                 _fail("W1D_TRN_NULL_IDENTITY_PREVIEW_WROTE_ROWS")
@@ -6501,16 +6365,20 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
         if omit.json().get("signer_name") is not None:
             _fail("W1D_API_OMIT_SIGNER_NOT_NULL")
         with database_engine.connect() as connection:
-            o_row = connection.execute(
-                text(
-                    """
+            o_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT end_reason_text, signer_name, signer_relationship_text,
                            signer_phone
                     FROM erp.recipient_contract WHERE id = :id
                     """
-                ),
-                {"id": omit_id},
-            ).mappings().one()
+                    ),
+                    {"id": omit_id},
+                )
+                .mappings()
+                .one()
+            )
             if o_row["end_reason_text"] is not None:
                 _fail("W1D_API_OMIT_PERSISTED_END_REASON")
             if o_row["signer_name"] is not None:
@@ -6533,16 +6401,20 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
             _fail("W1D_API_NULL_CREATE_NOT_201: " + str(null_body.status_code))
         null_id = int(null_body.json()["id"])
         with database_engine.connect() as connection:
-            n_row = connection.execute(
-                text(
-                    """
+            n_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT end_reason_text, signer_name, signer_relationship_text,
                            signer_phone
                     FROM erp.recipient_contract WHERE id = :id
                     """
-                ),
-                {"id": null_id},
-            ).mappings().one()
+                    ),
+                    {"id": null_id},
+                )
+                .mappings()
+                .one()
+            )
             for col in (
                 "end_reason_text",
                 "signer_name",
@@ -6573,16 +6445,20 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
         if empty_body.json().get("signer_name") != "":
             _fail("W1D_API_EMPTY_SIGNER_RESPONSE")
         with database_engine.connect() as connection:
-            e_row = connection.execute(
-                text(
-                    """
+            e_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT end_reason_text, signer_name, signer_relationship_text,
                            signer_phone
                     FROM erp.recipient_contract WHERE id = :id
                     """
-                ),
-                {"id": empty_id},
-            ).mappings().one()
+                    ),
+                    {"id": empty_id},
+                )
+                .mappings()
+                .one()
+            )
             for col in (
                 "end_reason_text",
                 "signer_name",
@@ -6642,9 +6518,7 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
             _fail("W1D_API_END_EMPTY_REASON_RESPONSE")
         with database_engine.connect() as connection:
             er = connection.execute(
-                text(
-                    "SELECT end_reason_text FROM erp.recipient_contract WHERE id = :id"
-                ),
+                text("SELECT end_reason_text FROM erp.recipient_contract WHERE id = :id"),
                 {"id": end_empty_id},
             ).scalar_one()
             if er != "":
@@ -6667,15 +6541,19 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
         cid = int(created.json()["id"])
         rv = int(created.json().get("row_version", 1))
         with database_engine.connect() as connection:
-            row = connection.execute(
-                text(
-                    """
+            row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT signer_name, signer_relationship_text, signer_phone
                     FROM erp.recipient_contract WHERE id = :id
                     """
-                ),
-                {"id": cid},
-            ).mappings().one()
+                    ),
+                    {"id": cid},
+                )
+                .mappings()
+                .one()
+            )
             if row["signer_name"] != "유니코드서명자":
                 _fail("W1D_CON02_UNICODE_SIGNER_NOT_PRESERVED")
             if row["signer_relationship_text"] != "관계-한글":
@@ -6693,9 +6571,7 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
             _fail("W1D_API_UNICODE_END_NOT_200: " + str(ended.status_code))
         with database_engine.connect() as connection:
             reason = connection.execute(
-                text(
-                    "SELECT end_reason_text FROM erp.recipient_contract WHERE id = :id"
-                ),
+                text("SELECT end_reason_text FROM erp.recipient_contract WHERE id = :id"),
                 {"id": cid},
             ).scalar_one()
             if reason != "종료사유-自由文本-😀":
@@ -6714,9 +6590,7 @@ def test_w1d_pg_13_null_identity_and_free_text_validation(
         )
         if rev.status_code != 422:
             _fail("W1D_API_REVERSE_PERIOD_NOT_422: " + str(rev.status_code))
-        rev_env = _assert_standard_error_envelope(
-            rev.json(), expect_code="VALIDATION_ERROR"
-        )
+        rev_env = _assert_standard_error_envelope(rev.json(), expect_code="VALIDATION_ERROR")
         # R10-04: exact one-item JSON equality with W1C _domain_error message.
         field_errors = rev_env["field_errors"]
         if field_errors != W1D_REVERSE_PERIOD_FIELD_ERRORS:
@@ -6802,12 +6676,8 @@ def test_w1d_pg_14_transition_acl_csrf_all_mutations(
     paths = {
         "create": f"/api/v1/recipients/{admin.recipient_id}/contracts",
         "end": f"/api/v1/recipients/{admin.recipient_id}/contracts/1/end",
-        "preview": (
-            f"/api/v1/recipients/{admin.recipient_id}/certification-transitions/preview"
-        ),
-        "apply": (
-            f"/api/v1/recipients/{admin.recipient_id}/certification-transitions/apply"
-        ),
+        "preview": (f"/api/v1/recipients/{admin.recipient_id}/certification-transitions/preview"),
+        "apply": (f"/api/v1/recipients/{admin.recipient_id}/certification-transitions/apply"),
     }
     payload = {
         "create": {
@@ -6837,9 +6707,7 @@ def test_w1d_pg_14_transition_acl_csrf_all_mutations(
             r = client.post(path, json=payload[key])
             if r.status_code != 401:
                 _fail(f"W1D_API_{key.upper()}_UNAUTH_NOT_401: " + str(r.status_code))
-            _assert_standard_error_envelope(
-                r.json(), expect_code="AUTHENTICATION_REQUIRED"
-            )
+            _assert_standard_error_envelope(r.json(), expect_code="AUTHENTICATION_REQUIRED")
             with database_engine.connect() as connection:
                 if _full_ledger_fingerprint(connection, admin.recipient_id) != snap:
                     _fail(f"W1D_API_{key.upper()}_UNAUTH_WROTE_ROWS")
@@ -6853,21 +6721,12 @@ def test_w1d_pg_14_transition_acl_csrf_all_mutations(
             for key, path in paths.items():
                 with database_engine.connect() as connection:
                     snap = _full_ledger_fingerprint(connection, admin.recipient_id)
-                r = client.post(
-                    path, json=payload[key], headers={"X-CSRF-Token": csrf or ""}
-                )
+                r = client.post(path, json=payload[key], headers={"X-CSRF-Token": csrf or ""})
                 if r.status_code != 403:
-                    _fail(
-                        f"W1D_API_{key.upper()}_{tag}_NOT_403: " + str(r.status_code)
-                    )
-                _assert_standard_error_envelope(
-                    r.json(), expect_code="PERMISSION_REQUIRED"
-                )
+                    _fail(f"W1D_API_{key.upper()}_{tag}_NOT_403: " + str(r.status_code))
+                _assert_standard_error_envelope(r.json(), expect_code="PERMISSION_REQUIRED")
                 with database_engine.connect() as connection:
-                    if (
-                        _full_ledger_fingerprint(connection, admin.recipient_id)
-                        != snap
-                    ):
+                    if _full_ledger_fingerprint(connection, admin.recipient_id) != snap:
                         _fail(f"W1D_API_{key.upper()}_{tag}_WROTE_ROWS")
 
         # Admin missing CSRF on each mutation.
@@ -6993,10 +6852,7 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
             before_audit: str,
         ) -> dict[str, Any]:
             if response.status_code != expect_status:
-                _fail(
-                    f"W1D_API_READ_{method_label}_STATUS: "
-                    + str(response.status_code)
-                )
+                _fail(f"W1D_API_READ_{method_label}_STATUS: " + str(response.status_code))
             body = response.json()
             if expect_code is not None:
                 _assert_standard_error_envelope(body, expect_code=expect_code)
@@ -7074,9 +6930,10 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
         with database_engine.connect() as connection:
             v_fp, v_audit = _write_zero_pair(connection, admin.recipient_id)
             # Sealed list order: contract id ASC for this recipient.
-            db_rows = connection.execute(
-                text(
-                    """
+            db_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT c.id, c.recipient_id, st.code AS service_type_code,
                            sg.code AS service_group_code,
                            c.start_date, c.end_date, c.service_start_date,
@@ -7089,9 +6946,12 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
                     WHERE c.recipient_id = :rid
                     ORDER BY c.id ASC
                     """
-                ),
-                {"rid": admin.recipient_id},
-            ).mappings().all()
+                    ),
+                    {"rid": admin.recipient_id},
+                )
+                .mappings()
+                .all()
+            )
         listed = client.get(collection)
         if listed.status_code != 200:
             _fail("W1D_API_READ_LIST_VIEW_NOT_200: " + str(listed.status_code))
@@ -7108,16 +6968,12 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
             _fail("W1D_API_READ_LIST_VIEW_SHAPE")
         items = list_body["items"]
         if len(items) != len(db_rows):
-            _fail(
-                "W1D_API_READ_LIST_VIEW_COUNT: "
-                + f"api={len(items)} db={len(db_rows)}"
-            )
+            _fail("W1D_API_READ_LIST_VIEW_COUNT: " + f"api={len(items)} db={len(db_rows)}")
         for item in items:
             _assert_contract_response_shape(item, label="READ_LIST_VIEW_ITEM")
         # R24: DB-side normalizer only; no API int/date/default=str coercion.
         expected_items = [
-            _normalize_db_contract_row_for_api(row, label="READ_LIST_DB")
-            for row in db_rows
+            _normalize_db_contract_row_for_api(row, label="READ_LIST_DB") for row in db_rows
         ]
         expected_response = {"items": expected_items}
         if list_body != expected_response:
@@ -7131,9 +6987,10 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
                 v_audit,
                 label="W1D_API_READ_LIST_VIEW",
             )
-            row = connection.execute(
-                text(
-                    """
+            row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT c.id, c.recipient_id, st.code AS service_type_code,
                            sg.code AS service_group_code,
                            c.start_date, c.end_date, c.service_start_date,
@@ -7145,9 +7002,12 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
                     LEFT JOIN erp.service_group sg ON sg.id = st.service_group_id
                     WHERE c.recipient_id = :rid AND c.id = :id
                     """
-                ),
-                {"rid": admin.recipient_id, "id": cid},
-            ).mappings().one()
+                    ),
+                    {"rid": admin.recipient_id, "id": cid},
+                )
+                .mappings()
+                .one()
+            )
         _assert_contract_response_matches_row(list_item, row, label="READ_LIST_VIEW")
 
         with database_engine.connect() as connection:
@@ -7167,9 +7027,10 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
                 vi_audit,
                 label="W1D_API_READ_ITEM_VIEW",
             )
-            row2 = connection.execute(
-                text(
-                    """
+            row2 = (
+                connection.execute(
+                    text(
+                        """
                     SELECT c.id, c.recipient_id, st.code AS service_type_code,
                            sg.code AS service_group_code,
                            c.start_date, c.end_date, c.service_start_date,
@@ -7181,9 +7042,12 @@ def test_w1d_pg_15_list_get_read_acl_and_purity(
                     LEFT JOIN erp.service_group sg ON sg.id = st.service_group_id
                     WHERE c.recipient_id = :rid AND c.id = :id
                     """
-                ),
-                {"rid": admin.recipient_id, "id": cid},
-            ).mappings().one()
+                    ),
+                    {"rid": admin.recipient_id, "id": cid},
+                )
+                .mappings()
+                .one()
+            )
         _assert_contract_response_matches_row(got_body, row2, label="READ_ITEM_VIEW")
 
         # 4) VIEW missing recipient: write-zero scoped to the missing recipient id.
@@ -7360,12 +7224,8 @@ def test_w1d_pg_16_http_apply_success_correlation_audit(
             seed_recipient_no, label="W1D_HTTP_APPLY_SEED_RECIPIENT_NO"
         )
 
-    preview_path = (
-        f"/api/v1/recipients/{case.recipient_id}/certification-transitions/preview"
-    )
-    apply_path = (
-        f"/api/v1/recipients/{case.recipient_id}/certification-transitions/apply"
-    )
+    preview_path = f"/api/v1/recipients/{case.recipient_id}/certification-transitions/preview"
+    apply_path = f"/api/v1/recipients/{case.recipient_id}/certification-transitions/apply"
 
     with TestClient(app) as client:
         login = client.post("/api/auth/login", json={"pin": case.pin})
@@ -7396,8 +7256,7 @@ def test_w1d_pg_16_http_apply_success_correlation_audit(
         audit_after = _all_audit_rows(connection)
         if len(audit_after) != before_n + 1:
             _fail(
-                "W1D_HTTP_APPLY_AUDIT_CARDINALITY: "
-                + f"before={before_n} after={len(audit_after)}"
+                "W1D_HTTP_APPLY_AUDIT_CARDINALITY: " + f"before={before_n} after={len(audit_after)}"
             )
         if _canonical_audit_rows_json(audit_before) != _canonical_audit_rows_json(
             audit_after[:before_n]
@@ -7490,33 +7349,41 @@ def test_w1d_pg_16_http_apply_success_correlation_audit(
         if delta_canon is None or delta_canon != audit_corr_canon:
             _fail("W1D_HTTP_APPLY_AUDIT_DELTA_REQUEST_ID")
         # Exact newly created row properties / parent / service projection.
-        cert_row = connection.execute(
-            text(
-                """
+        cert_row = (
+            connection.execute(
+                text(
+                    """
                 SELECT id, start_date, end_date, recipient_id
                 FROM erp.recipient_certification_period
                 WHERE id = :id AND recipient_id = :rid
                 """
-            ),
-            {"id": ncert, "rid": case.recipient_id},
-        ).mappings().one_or_none()
+                ),
+                {"id": ncert, "rid": case.recipient_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
         if cert_row is None:
             _fail("W1D_HTTP_APPLY_NEW_CERT_ROW_MISSING")
         if _canonical_date(cert_row["start_date"]) != new_start.isoformat():
             _fail("W1D_HTTP_APPLY_NEW_CERT_START")
         if _canonical_date(cert_row["end_date"]) != new_end.isoformat():
             _fail("W1D_HTTP_APPLY_NEW_CERT_END")
-        grade_row = connection.execute(
-            text(
-                """
+        grade_row = (
+            connection.execute(
+                text(
+                    """
                 SELECT id, certification_period_id, grade_code, start_date, end_date,
                        recipient_id
                 FROM erp.recipient_grade_period
                 WHERE id = :id AND recipient_id = :rid
                 """
-            ),
-            {"id": ngrade, "rid": case.recipient_id},
-        ).mappings().one_or_none()
+                ),
+                {"id": ngrade, "rid": case.recipient_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
         if grade_row is None:
             _fail("W1D_HTTP_APPLY_NEW_GRADE_ROW_MISSING")
         if grade_row["certification_period_id"] != ncert:
@@ -7541,17 +7408,21 @@ def test_w1d_pg_16_http_apply_success_correlation_audit(
             _fail("W1D_HTTP_APPLY_OLD_CERT_MISSING")
         expected_services = [SERVICE_HOME_CARE, SERVICE_HOME_BATH]
         for cid, exp_svc in zip(ncids, expected_services, strict=True):
-            crow = connection.execute(
-                text(
-                    """
+            crow = (
+                connection.execute(
+                    text(
+                        """
                     SELECT c.id, c.start_date, c.end_date, st.code AS service_type_code
                     FROM erp.recipient_contract c
                     JOIN erp.service_type st ON st.id = c.service_type_id
                     WHERE c.id = :id AND c.recipient_id = :rid
                     """
-                ),
-                {"id": cid, "rid": case.recipient_id},
-            ).mappings().one_or_none()
+                    ),
+                    {"id": cid, "rid": case.recipient_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
             if crow is None:
                 _fail("W1D_HTTP_APPLY_NEW_CONTRACT_ROW_MISSING")
             if crow["service_type_code"] != exp_svc:
@@ -7572,6 +7443,7 @@ def test_w1d_pg_16_http_apply_success_correlation_audit(
         db_rno = _assert_recipient_no_exact(db_rno, label="W1D_HTTP_APPLY_DB_RECIPIENT_NO")
         if db_rno != seed_recipient_no or http_body.get("recipient_no") != db_rno:
             _fail("W1D_HTTP_APPLY_RECIPIENT_NO_CHAIN")
+
 
 def test_w1d_pg_17_preview_hash_canonical_state_drift(
     session_factory: sessionmaker[Session],
@@ -7650,14 +7522,13 @@ def test_w1d_pg_17_preview_hash_canonical_state_drift(
         contract_id, contract_b_id = contract.id, contract_b.id
 
     def _preview_and_token() -> tuple[Any, list[Any]]:
-        replacements = (
-            _replacement_items(schemas, contract_id, date(2031, 1, 1))
-            + _replacement_items(
-                schemas,
-                contract_b_id,
-                date(2031, 1, 1),
-                service_type_code=SERVICE_HOME_BATH,
-            )
+        replacements = _replacement_items(
+            schemas, contract_id, date(2031, 1, 1)
+        ) + _replacement_items(
+            schemas,
+            contract_b_id,
+            date(2031, 1, 1),
+            service_type_code=SERVICE_HOME_BATH,
         )
         preview_request = schemas.CertificationTransitionPreviewRequest(
             new_start_date=date(2031, 1, 1),
@@ -7863,9 +7734,7 @@ def test_w1d_pg_18_repeat_transition_preserves_ended_history(
 
     first_start = date(2031, 1, 1)
     first_end = date(2032, 12, 31)
-    first_replacements = _replacement_items(
-        schemas, original_contract_id, first_start
-    )
+    first_replacements = _replacement_items(schemas, original_contract_id, first_start)
     first_request = schemas.CertificationTransitionPreviewRequest(
         new_start_date=first_start,
         new_end_date=first_end,
@@ -7913,9 +7782,7 @@ def test_w1d_pg_18_repeat_transition_preserves_ended_history(
     second_start = date(2032, 1, 1)
     second_end = date(2034, 12, 31)
     second_proposed_end = date(2031, 12, 31)
-    second_replacements = _replacement_items(
-        schemas, first_contract_id, second_start
-    )
+    second_replacements = _replacement_items(schemas, first_contract_id, second_start)
     second_request = schemas.CertificationTransitionPreviewRequest(
         new_start_date=second_start,
         new_end_date=second_end,
@@ -7981,20 +7848,14 @@ def test_w1d_pg_18_repeat_transition_preserves_ended_history(
     _assert_rows_exact_equal(
         after_first["identity"], after_second["identity"], label="PG18_IDENTITY"
     )
-    _assert_rows_exact_equal(
-        after_first["counter"], after_second["counter"], label="PG18_COUNTER"
-    )
+    _assert_rows_exact_equal(after_first["counter"], after_second["counter"], label="PG18_COUNTER")
 
     before_cert = _index_rows_by_id(after_first["cert"], label="PG18_CERT_BEFORE")
     after_cert = _index_rows_by_id(after_second["cert"], label="PG18_CERT_AFTER")
     before_grade = _index_rows_by_id(after_first["grade"], label="PG18_GRADE_BEFORE")
     after_grade = _index_rows_by_id(after_second["grade"], label="PG18_GRADE_AFTER")
-    before_contract = _index_rows_by_id(
-        after_first["contract"], label="PG18_CONTRACT_BEFORE"
-    )
-    after_contract = _index_rows_by_id(
-        after_second["contract"], label="PG18_CONTRACT_AFTER"
-    )
+    before_contract = _index_rows_by_id(after_first["contract"], label="PG18_CONTRACT_BEFORE")
+    after_contract = _index_rows_by_id(after_second["contract"], label="PG18_CONTRACT_AFTER")
     if set(after_cert) != set(before_cert) | {second_cert_id}:
         _fail("W1D_PG18_SECOND_CERT_ID_SET")
     if set(after_grade) != set(before_grade) | {second_grade_id}:
@@ -8014,9 +7875,7 @@ def test_w1d_pg_18_repeat_transition_preserves_ended_history(
     after_audit = after_second["audit"]
     if len(after_audit) != len(before_audit) + 1:
         _fail("W1D_PG18_AUDIT_DELTA")
-    if _canonical_audit_rows_json(before_audit) != _canonical_audit_rows_json(
-        after_audit[:-1]
-    ):
+    if _canonical_audit_rows_json(before_audit) != _canonical_audit_rows_json(after_audit[:-1]):
         _fail("W1D_PG18_AUDIT_PREFIX_MUTATED")
     appended_audit = after_audit[-1]
     if appended_audit.get("action_code") != "CERTIFICATION_TRANSITION_APPLY":
@@ -8024,15 +7883,11 @@ def test_w1d_pg_18_repeat_transition_preserves_ended_history(
     if appended_audit.get("entity_type") != "RECIPIENT":
         _fail("W1D_PG18_AUDIT_ENTITY_TYPE")
     if (
-        _strict_nonbool_int(
-            appended_audit.get("entity_pk"), label="W1D_PG18_AUDIT_ENTITY_PK"
-        )
+        _strict_nonbool_int(appended_audit.get("entity_pk"), label="W1D_PG18_AUDIT_ENTITY_PK")
         != case.recipient_id
     ):
         _fail("W1D_PG18_AUDIT_ENTITY_PK")
-    if str(appended_audit.get("request_id")) != str(
-        second_applied.audit_correlation_id
-    ):
+    if str(appended_audit.get("request_id")) != str(second_applied.audit_correlation_id):
         _fail("W1D_PG18_AUDIT_CORRELATION")
     sealed_apply_ts = _normalize_utc_timestamp(
         appended_audit.get("occurred_at_utc"), label="W1D_PG18_APPLY_TS"

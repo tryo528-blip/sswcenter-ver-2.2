@@ -2746,24 +2746,74 @@ _ConstraintSnapshot = tuple[
 
 _RECIPIENT_PLAN_NOTIFICATION_CONSTRAINTS: dict[str, _ConstraintSnapshot] = {
     "pk_recipient_plan_notification": (
-        "p", "PRIMARY KEY (id)", ("id",), None, None, (), None,
-        None, None, False, False, True,
+        "p",
+        "PRIMARY KEY (id)",
+        ("id",),
+        None,
+        None,
+        (),
+        None,
+        None,
+        None,
+        False,
+        False,
+        True,
     ),
     "ck_recipient_plan_notification_row_version_positive": (
-        "c", "CHECK (row_version > 0)", ("row_version",), None, None, (), None,
-        None, None, False, False, True,
+        "c",
+        "CHECK (row_version > 0)",
+        ("row_version",),
+        None,
+        None,
+        (),
+        None,
+        None,
+        None,
+        False,
+        False,
+        True,
     ),
     "fk_recipient_plan_notification_created_by_account": (
-        "f", None, ("created_by_account_id",), "erp", "user_account", ("id",), "r",
-        "a", "s", False, False, True,
+        "f",
+        None,
+        ("created_by_account_id",),
+        "erp",
+        "user_account",
+        ("id",),
+        "r",
+        "a",
+        "s",
+        False,
+        False,
+        True,
     ),
     "fk_recipient_plan_notification_recipient": (
-        "f", None, ("recipient_id",), "erp", "recipient", ("id",), "r",
-        "a", "s", False, False, True,
+        "f",
+        None,
+        ("recipient_id",),
+        "erp",
+        "recipient",
+        ("id",),
+        "r",
+        "a",
+        "s",
+        False,
+        False,
+        True,
     ),
     "fk_recipient_plan_notification_updated_by_account": (
-        "f", None, ("updated_by_account_id",), "erp", "user_account", ("id",), "r",
-        "a", "s", False, False, True,
+        "f",
+        None,
+        ("updated_by_account_id",),
+        "erp",
+        "user_account",
+        ("id",),
+        "r",
+        "a",
+        "s",
+        False,
+        False,
+        True,
     ),
 }
 
@@ -2775,8 +2825,10 @@ _RECIPIENT_PLAN_NOTIFICATION_INDEXES: dict[str, tuple[bool, bool, bool, bool, st
         True,
         True,
         True,
-        ("CREATE UNIQUE INDEX pk_recipient_plan_notification "
-         "ON erp.recipient_plan_notification USING btree (id)"),
+        (
+            "CREATE UNIQUE INDEX pk_recipient_plan_notification "
+            "ON erp.recipient_plan_notification USING btree (id)"
+        ),
         None,
     ),
     "ix_recipient_plan_notification_notified_date": (
@@ -2784,8 +2836,10 @@ _RECIPIENT_PLAN_NOTIFICATION_INDEXES: dict[str, tuple[bool, bool, bool, bool, st
         False,
         True,
         True,
-        ("CREATE INDEX ix_recipient_plan_notification_notified_date "
-         "ON erp.recipient_plan_notification USING btree (notified_date)"),
+        (
+            "CREATE INDEX ix_recipient_plan_notification_notified_date "
+            "ON erp.recipient_plan_notification USING btree (notified_date)"
+        ),
         None,
     ),
     "ix_recipient_plan_notification_recipient_id": (
@@ -2793,8 +2847,10 @@ _RECIPIENT_PLAN_NOTIFICATION_INDEXES: dict[str, tuple[bool, bool, bool, bool, st
         False,
         True,
         True,
-        ("CREATE INDEX ix_recipient_plan_notification_recipient_id "
-         "ON erp.recipient_plan_notification USING btree (recipient_id)"),
+        (
+            "CREATE INDEX ix_recipient_plan_notification_recipient_id "
+            "ON erp.recipient_plan_notification USING btree (recipient_id)"
+        ),
         None,
     ),
 }
@@ -2865,8 +2921,7 @@ def _verify_recipient_plan_notification_catalog_snapshot(
         missing = sorted(set(_RECIPIENT_PLAN_NOTIFICATION_CONSTRAINTS) - set(constraints))
         extra = sorted(set(constraints) - set(_RECIPIENT_PLAN_NOTIFICATION_CONSTRAINTS))
         raise SystemExit(
-            "recipient-plan-notification constraint set mismatch: "
-            f"missing={missing}, extra={extra}"
+            f"recipient-plan-notification constraint set mismatch: missing={missing}, extra={extra}"
         )
 
     for name, expected_tuple in _RECIPIENT_PLAN_NOTIFICATION_CONSTRAINTS.items():
@@ -2966,8 +3021,7 @@ def _verify_recipient_plan_notification_catalog_snapshot(
         missing = sorted(set(_RECIPIENT_PLAN_NOTIFICATION_INDEXES) - set(indexes))
         extra = sorted(set(indexes) - set(_RECIPIENT_PLAN_NOTIFICATION_INDEXES))
         raise SystemExit(
-            "recipient-plan-notification index set mismatch: "
-            f"missing={missing}, extra={extra}"
+            f"recipient-plan-notification index set mismatch: missing={missing}, extra={extra}"
         )
 
     for name, expected_idx_tuple in _RECIPIENT_PLAN_NOTIFICATION_INDEXES.items():
@@ -3043,17 +3097,21 @@ def _verify_recipient_status_tag_contract(connection: Connection) -> None:
     {ACTIVE, ENDED, WAITING}, and the constraint is convalidated.
     Marker RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK remains the restore-drill success signal.
     """
-    col = connection.execute(
-        text(
-            """
+    col = (
+        connection.execute(
+            text(
+                """
             SELECT is_nullable, column_default
               FROM information_schema.columns
              WHERE table_schema = 'erp'
                AND table_name = 'recipient'
                AND column_name = 'recipient_status'
             """
+            )
         )
-    ).mappings().one_or_none()
+        .mappings()
+        .one_or_none()
+    )
     if col is None:
         raise SystemExit("recipient_status column missing on erp.recipient")
     if col["is_nullable"] != "NO":
@@ -3068,23 +3126,25 @@ def _verify_recipient_status_tag_contract(connection: Connection) -> None:
             "recipient_status server default must be exactly ACTIVE "
             f"(canonical complete expression); got {default_raw!r}"
         )
-    check_row = connection.execute(
-        text(
-            """
+    check_row = (
+        connection.execute(
+            text(
+                """
             SELECT pg_get_constraintdef(oid, true) AS definition, convalidated
               FROM pg_constraint
              WHERE conrelid = 'erp.recipient'::regclass
                AND contype = 'c'
                AND conname = 'ck_recipient_recipient_status'
             """
+            )
         )
-    ).mappings().one_or_none()
+        .mappings()
+        .one_or_none()
+    )
     if check_row is None:
         raise SystemExit("ck_recipient_recipient_status check constraint missing")
     if check_row["convalidated"] is not True:
-        raise SystemExit(
-            "ck_recipient_recipient_status must be validated/convalidated"
-        )
+        raise SystemExit("ck_recipient_recipient_status must be validated/convalidated")
     definition = str(check_row["definition"])
     definition_norm = _normalize_recipient_status_sql(definition)
     if definition_norm not in _RECIPIENT_STATUS_CANONICAL_CHECK_DEFS:
@@ -3218,14 +3278,10 @@ def _verify_recipient_plan_notification_contract(connection: Connection) -> None
         conname = str(row.conname)
         contype = str(row.contype)
         definition = _normalize_recipient_plan_catalog_sql(row.definition)
-        local_columns: tuple[str, ...] = tuple(
-            str(col) for col in (row.local_columns or [])
-        )
+        local_columns: tuple[str, ...] = tuple(str(col) for col in (row.local_columns or []))
         ref_schema: str | None = str(row.ref_schema) if row.ref_schema else None
         ref_table: str | None = str(row.ref_table) if row.ref_table else None
-        ref_columns: tuple[str, ...] = tuple(
-            str(col) for col in (row.ref_columns or [])
-        )
+        ref_columns: tuple[str, ...] = tuple(str(col) for col in (row.ref_columns or []))
         confdeltype: str | None = (
             str(row.confdeltype) if contype == "f" and row.confdeltype else None
         )
@@ -3297,16 +3353,20 @@ def _verify_recipient_plan_notification_contract(connection: Connection) -> None
 
     _verify_recipient_plan_notification_catalog_snapshot(ownership, columns, constraints, indexes)
 
-    user_triggers = connection.execute(
-        text(
-            """
+    user_triggers = (
+        connection.execute(
+            text(
+                """
             SELECT tgname
             FROM pg_trigger
             WHERE tgrelid = 'erp.recipient_plan_notification'::regclass
               AND NOT tgisinternal
             """
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if user_triggers:
         raise SystemExit(
             f"recipient-plan-notification must have no user triggers: {list(user_triggers)}"

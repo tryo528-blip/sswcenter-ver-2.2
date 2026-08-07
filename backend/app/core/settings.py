@@ -394,15 +394,10 @@ class Settings(BaseSettings):
             for rn_name in ("resident_number_key_v1", "resident_number_lookup_key"):
                 rn_field = getattr(self, rn_name)
                 if rn_field is not None:
-                    rn_bytes = _validate_resident_number_key(
-                        rn_field.get_secret_value(), rn_name
-                    )
+                    rn_bytes = _validate_resident_number_key(rn_field.get_secret_value(), rn_name)
                     rn_decoded[rn_name] = rn_bytes
             if len(rn_decoded) == 2:
-                if (
-                    rn_decoded["resident_number_key_v1"]
-                    == rn_decoded["resident_number_lookup_key"]
-                ):
+                if rn_decoded["resident_number_key_v1"] == rn_decoded["resident_number_lookup_key"]:
                     raise ValueError(
                         "resident_number_key_v1 and resident_number_lookup_key "
                         "must not decode to the same bytes"
@@ -421,13 +416,10 @@ class Settings(BaseSettings):
             # Production database password must survive conservative checks.
             db_password = url.password
             if db_password is None or db_password.strip() == "":
-                raise ValueError(
-                    "production database URL must include a non-empty password"
-                )
+                raise ValueError("production database URL must include a non-empty password")
             if db_password != db_password.strip():
                 raise ValueError(
-                    "production database password must not have "
-                    "leading or trailing whitespace"
+                    "production database password must not have leading or trailing whitespace"
                 )
             if _is_placeholder_secret(db_password):
                 raise ValueError(
@@ -441,31 +433,18 @@ class Settings(BaseSettings):
                     f"minimum length is {_MIN_DATABASE_PASSWORD_LENGTH}"
                 )
             if _has_raw_weak_marker(db_password):
-                raise ValueError(
-                    "production database password contains a weak marker"
-                )
+                raise ValueError("production database password contains a weak marker")
             if _has_low_char_diversity(db_password):
-                raise ValueError(
-                    "production database password has low character diversity"
-                )
+                raise ValueError("production database password has low character diversity")
             if _has_repeated_short_units(db_password):
-                raise ValueError(
-                    "production database password contains repeated short units"
-                )
+                raise ValueError("production database password contains repeated short units")
             if _is_full_ascending(db_password):
-                raise ValueError(
-                    "production database password appears to be "
-                    "an ascending sequence"
-                )
+                raise ValueError("production database password appears to be an ascending sequence")
             if _is_full_descending(db_password):
-                raise ValueError(
-                    "production database password appears to be "
-                    "a descending sequence"
-                )
+                raise ValueError("production database password appears to be a descending sequence")
             if db_password in seen:
                 raise ValueError(
-                    "production database password must not reuse "
-                    "an application secret value"
+                    "production database password must not reuse an application secret value"
                 )
 
         # Non-production: explicit fallback when unset (tests/dev only).

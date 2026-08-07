@@ -36,7 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = REPO_ROOT / "backend"
 ALEMBIC_ROOT = BACKEND_ROOT / "alembic"
 MIGRATIONS_ROOT = ALEMBIC_ROOT / "versions"
-BASIS_SHA = "e204023a7277e486018f3057653fe8aebf7b7fcf"
+BASIS_SHA = "1314b4ce41de5dd55f4996b409a52ed7e24bfbca"
 
 EXISTING_REVISIONS: tuple[tuple[str, str | None], ...] = (
     ("20260724_0001", None),

@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = REPO_ROOT / "backend"
 ALEMBIC_ROOT = BACKEND_ROOT / "alembic"
 MIGRATIONS_ROOT = ALEMBIC_ROOT / "versions"
-BASIS_SHA = "a86567fe5c3b88bc9148c04b97f3626e0972ed75"
+BASIS_SHA = "1314b4ce41de5dd55f4996b409a52ed7e24bfbca"
 W1C_HEAD = "20260730_0010_w1c_certification_ledgers"
 W1D_REVISION = "20260730_0011_w1d_recipient_contract"
 W1D_MIGRATION_FILE = "20260730_0011_w1d_recipient_contract.py"
@@ -204,9 +204,7 @@ def _require_w1d_revision() -> Any:
     # head plus every ancestor, so the tested revision appears iff the head is it
     # or descends from it. A head outside that chain is rejected.
     try:
-        head_ancestry = {
-            str(r.revision) for r in script.iterate_revisions(heads[0], "base")
-        }
+        head_ancestry = {str(r.revision) for r in script.iterate_revisions(heads[0], "base")}
     except Exception:
         _fail("W1D_HARNESS_MIGRATION_GRAPH_MISSING: head ancestry could not be resolved")
     if W1D_REVISION not in head_ancestry:

@@ -687,39 +687,46 @@ def test_contract_period_does_not_change_manual_tag(
         assert items[0].services == []
 
 
-
 def test_recipient_status_column_constraints_and_default(
     session_factory: sessionmaker[Session],
     seeded_case: SeededCase,
 ) -> None:
     """Live harness: column NOT NULL, default ACTIVE, check constraint present."""
     with session_factory() as session:
-        col = session.execute(
-            text(
-                """
+        col = (
+            session.execute(
+                text(
+                    """
                 SELECT is_nullable, column_default
                   FROM information_schema.columns
                  WHERE table_schema = 'erp'
                    AND table_name = 'recipient'
                    AND column_name = 'recipient_status'
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert col["is_nullable"] == "NO"
         assert col["column_default"] is not None
         assert "ACTIVE" in str(col["column_default"])
 
-        check = session.execute(
-            text(
-                """
+        check = (
+            session.execute(
+                text(
+                    """
                 SELECT conname, pg_get_constraintdef(oid, true) AS definition
                   FROM pg_constraint
                  WHERE conrelid = 'erp.recipient'::regclass
                    AND contype = 'c'
                    AND conname = 'ck_recipient_recipient_status'
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert check["conname"] == "ck_recipient_recipient_status"
         definition = str(check["definition"])
         assert "ACTIVE" in definition
@@ -771,8 +778,7 @@ def test_list_total_matches_status_predicate_sql_count(
                 ).scalar_one()
             assert response.total == int(sql_total)
             assert (
-                len(response.items) == int(sql_total)
-                or len(response.items) <= response.page_size
+                len(response.items) == int(sql_total) or len(response.items) <= response.page_size
             )
             if response.total <= response.page_size:
                 assert len(response.items) == response.total
@@ -822,9 +828,7 @@ def test_migration_0015_present_in_alembic_version_when_column_exists(
             text("SELECT to_regclass('public.alembic_version') IS NOT NULL")
         ).scalar()
         if has_erp:
-            revision = session.execute(
-                text("SELECT version_num FROM erp.alembic_version")
-            ).scalar()
+            revision = session.execute(text("SELECT version_num FROM erp.alembic_version")).scalar()
         elif has_public:
             revision = session.execute(
                 text("SELECT version_num FROM public.alembic_version")
@@ -869,5 +873,3 @@ def test_postcheck_0015_source_marker_contract_present() -> None:
         not in postcheck_mod._RECIPIENT_STATUS_CANONICAL_CHECK_DEFS
     )
     assert normalize("'ACTIVE'::text") in postcheck_mod._RECIPIENT_STATUS_CANONICAL_DEFAULTS
-
-

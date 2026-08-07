@@ -37,7 +37,7 @@ BACKEND_ROOT = REPO_ROOT / "backend"
 ALEMBIC_ROOT = BACKEND_ROOT / "alembic"
 MIGRATIONS_ROOT = ALEMBIC_ROOT / "versions"
 
-BASIS_SHA = "122f428f088a739abca4abe6a388049739de8cb8"
+BASIS_SHA = "1314b4ce41de5dd55f4996b409a52ed7e24bfbca"
 W1D_HEAD = "20260730_0011_w1d_recipient_contract"
 W1E_REVISION = "20260801_0012_w1e_care_assignment"
 W1E_MIGRATION_FILE = "20260801_0012_w1e_care_assignment.py"
@@ -116,6 +116,7 @@ EXISTING_CHAIN: tuple[tuple[str, str | None], ...] = (
     (W1D_HEAD, "20260730_0010_w1c_certification_ledgers"),
 )
 
+
 def _fail(marker: str) -> NoReturn:
     pytest.fail(marker, pytrace=False)
 
@@ -172,11 +173,7 @@ def _basis_bytes(relative_path: str) -> bytes:
 
 def _sql_quoted_span(sql: str, index: int) -> tuple[str, int | None] | None:
     """Return (quote kind, exclusive stop), including PostgreSQL E strings."""
-    if (
-        sql[index] in ("e", "E")
-        and index + 1 < len(sql)
-        and sql[index + 1] == "'"
-    ):
+    if sql[index] in ("e", "E") and index + 1 < len(sql) and sql[index + 1] == "'":
         kind = "escape_string"
         quote = "'"
         cursor = index + 2
@@ -482,10 +479,7 @@ def _top_level_clauses(body: str) -> tuple[str, ...]:
 
 def _offline_w1e_section(sql: str) -> str:
     marker = re.search(
-        r"running\s+upgrade\s+"
-        + re.escape(W1D_HEAD)
-        + r"\s*[-=]>\s*"
-        + re.escape(W1E_REVISION),
+        r"running\s+upgrade\s+" + re.escape(W1D_HEAD) + r"\s*[-=]>\s*" + re.escape(W1E_REVISION),
         sql,
         flags=re.IGNORECASE,
     )
@@ -578,9 +572,7 @@ def _require_w1e_revision() -> tuple[ScriptDirectory, Any, Path]:
     # head plus every ancestor, so the tested revision appears iff the head is it
     # or descends from it. A head outside that chain is rejected.
     try:
-        head_ancestry = {
-            str(item.revision) for item in script.iterate_revisions(heads[0], "base")
-        }
+        head_ancestry = {str(item.revision) for item in script.iterate_revisions(heads[0], "base")}
     except (CommandError, KeyError, OSError) as exc:
         _fail("W1E_HARNESS_MIGRATION_GRAPH_MISSING: head ancestry " + type(exc).__name__)
     if W1E_REVISION not in head_ancestry:
@@ -643,9 +635,7 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
     )
     statement_spans = _top_level_sql_statement_spans(ddl_scan)
     top_level_statements = _top_level_sql_statements(ddl_scan)
-    raw_top_level_statements = tuple(
-        section[start:stop].strip() for start, stop in statement_spans
-    )
+    raw_top_level_statements = tuple(section[start:stop].strip() for start, stop in statement_spans)
     unexpected_statements = [
         re.sub(r"\s+", " ", statement)[:120]
         for statement in top_level_statements
@@ -681,9 +671,7 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
         + re.escape(W1D_HEAD)
         + r"'\s*;"
     )
-    if expected_version_update.fullmatch(
-        raw_top_level_statements[version_indexes[0]]
-    ) is None:
+    if expected_version_update.fullmatch(raw_top_level_statements[version_indexes[0]]) is None:
         _fail("W1E_ALEMBIC_VERSION_STATEMENT_MISMATCH")
     commit_indexes = tuple(
         index
@@ -693,10 +681,7 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
     if (
         len(commit_indexes) != 1
         or normalized_statements[commit_indexes[0]] != "commit"
-        or re.fullmatch(
-            r"commit\s*;", raw_top_level_statements[commit_indexes[0]]
-        )
-        is None
+        or re.fullmatch(r"commit\s*;", raw_top_level_statements[commit_indexes[0]]) is None
     ):
         _fail(
             "W1E_ALEMBIC_COMMIT_STATEMENT_SET: "
@@ -720,8 +705,7 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
         match = function_pattern.fullmatch(raw_top_level_statements[index])
         if match is None:
             _fail(
-                "W1E_ALEMBIC_FUNCTION_BODY_BINDING_MISMATCH: "
-                + normalized_statements[index][:120]
+                "W1E_ALEMBIC_FUNCTION_BODY_BINDING_MISMATCH: " + normalized_statements[index][:120]
             )
         signature = re.sub(
             r"\s+", " ", (match.group("header") + " " + match.group("trailer")).strip()
@@ -761,9 +745,7 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
     )
     if permission_block is None:
         _fail("W1E_ALEMBIC_PERMISSION_BLOCK_BINDING_MISMATCH")
-    permission_body = re.sub(
-        r"\s+", "", permission_block.group("body").lower()
-    ).removesuffix(";")
+    permission_body = re.sub(r"\s+", "", permission_block.group("body").lower()).removesuffix(";")
     expected_permission_body = (
         "begin"
         "ifexists(select1frompg_roleswhererolname='erp_app')then"
@@ -864,8 +846,7 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
             "constraintck_care_assignment_kindcheck(assignment_kindin('general','family'))"
         ),
         "ck_care_assignment_date_order": (
-            "constraintck_care_assignment_date_ordercheck("
-            "end_dateisnullorstart_date<=end_date)"
+            "constraintck_care_assignment_date_ordercheck(end_dateisnullorstart_date<=end_date)"
         ),
         "ck_care_assignment_row_version_positive": (
             "constraintck_care_assignment_row_version_positivecheck(row_version>0)"
@@ -907,23 +888,14 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
         "invalidated_at_utc": {"invalidated_at_utctimestampwithtimezone"},
         "replacement_assignment_id": {"replacement_assignment_idbigint"},
         "created_by_account_id": {"created_by_account_idbigintnotnull"},
-        "created_at_utc": {
-            "created_at_utctimestampwithtimezonedefaultnow()notnull"
-        },
+        "created_at_utc": {"created_at_utctimestampwithtimezonedefaultnow()notnull"},
         "updated_by_account_id": {"updated_by_account_idbigintnotnull"},
-        "updated_at_utc": {
-            "updated_at_utctimestampwithtimezonedefaultnow()notnull"
-        },
+        "updated_at_utc": {"updated_at_utctimestampwithtimezonedefaultnow()notnull"},
         "row_version": {"row_versionintegerdefault1notnull"},
     }
     for name, expected in expected_column_clauses.items():
         if compact_columns[name] not in expected:
-            _fail(
-                "W1E_ALEMBIC_COLUMN_CLAUSE_MISMATCH: "
-                + name
-                + ":"
-                + repr(compact_columns[name])
-            )
+            _fail("W1E_ALEMBIC_COLUMN_CLAUSE_MISMATCH: " + name + ":" + repr(compact_columns[name]))
 
     function_targets = re.findall(
         r"\bcreate\s+(?:or\s+replace\s+)?function\s+([a-z_][a-z0-9_.]*)\s*\(",
@@ -976,10 +948,8 @@ def test_w1e_02_offline_sql_declares_only_the_assignment_contract() -> None:
         "ondeleterestrict",
         "foreignkey(replacement_assignment_id)referenceserp.care_assignment(id)"
         "ondeleterestrictdeferrableinitiallydeferred",
-        "foreignkey(created_by_account_id)referenceserp.user_account(id)"
-        "ondeleterestrict",
-        "foreignkey(updated_by_account_id)referenceserp.user_account(id)"
-        "ondeleterestrict",
+        "foreignkey(created_by_account_id)referenceserp.user_account(id)ondeleterestrict",
+        "foreignkey(updated_by_account_id)referenceserp.user_account(id)ondeleterestrict",
         "check(assignment_kindin('general','family'))",
         "check(end_dateisnullorstart_date<=end_date)",
         "check(row_version>0)",
@@ -1215,9 +1185,7 @@ def test_w1e_03_orm_care_assignment_contract_is_exact() -> None:
     exclusion = constraints["ex_care_assignment_same_contract_staff_period"]
     if not isinstance(exclusion, ExcludeConstraint):
         _fail("W1E_ORM_EXCLUSION_KIND_MISMATCH")
-    render_expressions = tuple(
-        (str(item[1]), str(item[2])) for item in exclusion._render_exprs
-    )
+    render_expressions = tuple((str(item[1]), str(item[2])) for item in exclusion._render_exprs)
     if render_expressions != (
         ("recipient_contract_id", "="),
         ("staff_id", "="),
@@ -1372,9 +1340,7 @@ def _parse_statements(
         body, cursor = _parse_statements(text, tokens, cursor + 1, scan, tokens[then_index][2])
         branches.append(
             (
-                _controlling_condition(
-                    text, condition_start, tokens[then_index][1], "if"
-                ),
+                _controlling_condition(text, condition_start, tokens[then_index][1], "if"),
                 body,
             )
         )
@@ -1387,9 +1353,7 @@ def _parse_statements(
             body, cursor = _parse_statements(text, tokens, cursor + 1, scan, tokens[then_index][2])
             branches.append(
                 (
-                    _controlling_condition(
-                        text, condition_start, tokens[then_index][1], "elsif"
-                    ),
+                    _controlling_condition(text, condition_start, tokens[then_index][1], "elsif"),
                     body,
                 )
             )
@@ -1428,9 +1392,7 @@ def _parse_guard_body(body: str) -> tuple[Any, ...]:
         raise _UnsupportedPlpgsql("unsupported control flow")
     tokens = _control_tokens(scan)
 
-    begin_indexes = tuple(
-        index for index, token in enumerate(tokens) if token[0] == "begin"
-    )
+    begin_indexes = tuple(index for index, token in enumerate(tokens) if token[0] == "begin")
     if len(begin_indexes) != 1:
         raise _UnsupportedPlpgsql("missing outer begin wrapper")
     begin_index = begin_indexes[0]
@@ -1438,9 +1400,7 @@ def _parse_guard_body(body: str) -> tuple[Any, ...]:
     if begin_index != 0 or scan[: begin_token[1]].strip():
         raise _UnsupportedPlpgsql("missing outer begin wrapper")
 
-    end_indexes = tuple(
-        index for index, token in enumerate(tokens) if token[0] == "end"
-    )
+    end_indexes = tuple(index for index, token in enumerate(tokens) if token[0] == "end")
     if len(end_indexes) != 1:
         raise _UnsupportedPlpgsql("missing outer end wrapper")
     outer_end_index = end_indexes[0]
@@ -1450,9 +1410,7 @@ def _parse_guard_body(body: str) -> tuple[Any, ...]:
     if re.fullmatch(r"\s*;?\s*", scan[outer_end_token[2] :]) is None:
         raise _UnsupportedPlpgsql("executable text after outer end")
 
-    statements, index = _parse_statements(
-        text, tokens, begin_index + 1, scan, begin_token[2]
-    )
+    statements, index = _parse_statements(text, tokens, begin_index + 1, scan, begin_token[2])
     if index != outer_end_index:
         raise _UnsupportedPlpgsql("dangling " + tokens[index][0])
     return statements
@@ -1768,9 +1726,7 @@ def _collect_block_target_raises(
             if not prior_branch_possible:
                 break
             if condition is None:
-                _collect_block_target_raises(
-                    body, message, ancestry, path_reachable, found
-                )
+                _collect_block_target_raises(body, message, ancestry, path_reachable, found)
                 prior_branch_possible = False
                 break
             value = _constant_boolean_value(condition)
@@ -1796,13 +1752,10 @@ def _collect_target_raises(
 
 
 def _conditions_reference(conditions: tuple[str, ...], tokens: tuple[str, ...]) -> bool:
-    joined = " ".join(
-        _mask_plpgsql_code(condition).lower() for condition in conditions
-    )
+    joined = " ".join(_mask_plpgsql_code(condition).lower() for condition in conditions)
     collapsed = re.sub(r"\s*\.\s*", ".", joined)
     return all(
-        re.search(r"(?<![a-z0-9_])" + re.escape(token) + r"(?![a-z0-9_])", collapsed)
-        is not None
+        re.search(r"(?<![a-z0-9_])" + re.escape(token) + r"(?![a-z0-9_])", collapsed) is not None
         for token in tokens
     )
 
@@ -1813,8 +1766,7 @@ def _rejection_binds_tokens(body: str, message: str, tokens: tuple[str, ...]) ->
     found: list[tuple[tuple[str, ...], bool]] = []
     _collect_target_raises(_parse_guard_body(body), message, (), True, found)
     return any(
-        reachable and _conditions_reference(conditions, tokens)
-        for conditions, reachable in found
+        reachable and _conditions_reference(conditions, tokens) for conditions, reachable in found
     )
 
 
@@ -1836,14 +1788,9 @@ _RAISE = "raise exception using errcode = '23514', message = '{message}';"
 _BACKSLASH = chr(92)
 
 
-def _malformed_lexical_corpus(
-    *, message: str, bound: str
-) -> tuple[tuple[str, str], ...]:
+def _malformed_lexical_corpus(*, message: str, bound: str) -> tuple[tuple[str, str], ...]:
     """Malformed suffixes that must fail closed before semantic approval."""
-    valid = (
-        f"begin if {bound} then {_RAISE.format(message=message)}"
-        " end if; return new; end"
-    )
+    valid = f"begin if {bound} then {_RAISE.format(message=message)} end if; return new; end"
     return (
         ("trailing_unclosed_single_quote", valid + " perform 'unterminated"),
         ("trailing_unclosed_escape_string", valid + " perform E'unterminated"),
@@ -1853,9 +1800,7 @@ def _malformed_lexical_corpus(
     )
 
 
-def _malformed_delimiter_corpus(
-    *, message: str, bound: str
-) -> tuple[tuple[str, str], ...]:
+def _malformed_delimiter_corpus(*, message: str, bound: str) -> tuple[tuple[str, str], ...]:
     """Unmatched executable ()/[] delimiters that must fail closed.
 
     Covers the four malformed forms found by the strict-blind matrix -- an
@@ -1901,23 +1846,19 @@ def _malformed_delimiter_corpus(
         ),
         (
             "statement_unmatched_opening_parenthesis_after_guard",
-            f"begin if {bound} then {target} end if; perform lower( ;"
-            f" return new; end",
+            f"begin if {bound} then {target} end if; perform lower( ; return new; end",
         ),
         (
             "statement_unmatched_closing_parenthesis_before_guard",
-            f"begin perform lower); if {bound} then {target} end if;"
-            f" return new; end",
+            f"begin perform lower); if {bound} then {target} end if; return new; end",
         ),
         (
             "statement_unmatched_opening_bracket_before_guard",
-            f"begin perform tags[1; if {bound} then {target} end if;"
-            f" return new; end",
+            f"begin perform tags[1; if {bound} then {target} end if; return new; end",
         ),
         (
             "statement_unmatched_closing_bracket_after_guard",
-            f"begin if {bound} then {target} end if; perform tags1];"
-            f" return new; end",
+            f"begin if {bound} then {target} end if; perform tags1]; return new; end",
         ),
         (
             "if_condition_mismatched_delimiter_pairing",
@@ -1950,8 +1891,7 @@ def _malformed_statement_boundary_corpus(
         ),
         (
             "ordinary_text_between_end_if_and_semicolon",
-            f"begin if {bound} then {target} end if perform lower(1);"
-            " return new; end",
+            f"begin if {bound} then {target} end if perform lower(1); return new; end",
         ),
         (
             "string_between_end_if_and_semicolon",
@@ -1963,8 +1903,7 @@ def _malformed_statement_boundary_corpus(
         ),
         (
             "dollar_literal_between_end_if_and_semicolon",
-            f"begin if {bound} then {target} end if $opaque$text$opaque$;"
-            " return new; end",
+            f"begin if {bound} then {target} end if $opaque$text$opaque$; return new; end",
         ),
         (
             "missing_semicolon_before_elsif",
@@ -2007,28 +1946,23 @@ def _negative_corpus(
         ),
         (
             "cast_false_and_bound_condition",
-            f"begin if false::boolean and ({bound}) then {target} end if;"
-            f" return new; end",
+            f"begin if false::boolean and ({bound}) then {target} end if; return new; end",
         ),
         (
             "numeric_false_and_bound_condition",
-            f"begin if 2 < 1 and ({bound}) then {target} end if;"
-            f" return new; end",
+            f"begin if 2 < 1 and ({bound}) then {target} end if; return new; end",
         ),
         (
             "boolean_or_false_and_bound_condition",
-            f"begin if (false or false) and ({bound}) then {target} end if;"
-            f" return new; end",
+            f"begin if (false or false) and ({bound}) then {target} end if; return new; end",
         ),
         (
             "not_parenthesized_true_and_bound_condition",
-            f"begin if not(true) and ({bound}) then {target} end if;"
-            f" return new; end",
+            f"begin if not(true) and ({bound}) then {target} end if; return new; end",
         ),
         (
             "bound_raise_nested_under_false_outer",
-            f"begin if false then if {bound} then {target} end if;"
-            f" end if; return new; end",
+            f"begin if false then if {bound} then {target} end if; end if; return new; end",
         ),
         (
             "target_message_in_notice",
@@ -2075,8 +2009,7 @@ def _negative_corpus(
         ),
         (
             "elsif_after_unconditional_true",
-            f"begin if true then return new; elsif {bound} then {target}"
-            f" end if; return new; end",
+            f"begin if true then return new; elsif {bound} then {target} end if; return new; end",
         ),
         (
             "else_after_unconditional_true",
@@ -2085,8 +2018,7 @@ def _negative_corpus(
         ),
         (
             "target_raise_after_return",
-            f"begin if {bound} then return new; {target} end if;"
-            f" return new; end",
+            f"begin if {bound} then return new; {target} end if; return new; end",
         ),
         (
             "target_raise_after_unconditional_non_target_raise",
@@ -2100,13 +2032,11 @@ def _negative_corpus(
         ),
         (
             "target_raise_after_level_omitted_format_raise",
-            f"begin if {bound} then raise 'other'; {target} end if;"
-            f" return new; end",
+            f"begin if {bound} then raise 'other'; {target} end if; return new; end",
         ),
         (
             "target_raise_after_sqlstate_raise",
-            f"begin if {bound} then raise sqlstate 'P0001'; {target} end if;"
-            f" return new; end",
+            f"begin if {bound} then raise sqlstate 'P0001'; {target} end if; return new; end",
         ),
         (
             "target_raise_after_bare_rethrow",
@@ -2114,8 +2044,7 @@ def _negative_corpus(
         ),
         (
             "target_message_in_level_omitted_raise",
-            f"begin if {bound} then raise using message = '{message}';"
-            f" end if; return new; end",
+            f"begin if {bound} then raise using message = '{message}'; end if; return new; end",
         ),
         (
             "target_message_in_sqlstate_raise",
@@ -2124,8 +2053,7 @@ def _negative_corpus(
         ),
         (
             "dollar_quoted_fake_control_flow",
-            f"begin perform $fake$ if {bound} then {target} end if; $fake$;"
-            f" return new; end",
+            f"begin perform $fake$ if {bound} then {target} end if; $fake$; return new; end",
         ),
         (
             "escape_string_fake_control_flow",
@@ -2154,12 +2082,11 @@ def _positive_corpus(*, message: str, bound: str, unbound: str) -> tuple[tuple[s
         ),
         (
             "double_quoted_single_quote_before_guard",
-            f"begin perform \"guard'identifier\"; if {bound} then {target}"
-            f" end if; return new; end",
+            f'begin perform "guard\'identifier"; if {bound} then {target} end if; return new; end',
         ),
         (
             "doubled_quotes_before_guard",
-            f"begin perform 'it''s \"safe\"'; perform \"guard\"\"'identifier\";"
+            f'begin perform \'it\'\'s "safe"\'; perform "guard""\'identifier";'
             f" if {bound} then {target} end if; return new; end",
         ),
         (
@@ -2185,13 +2112,11 @@ def _positive_corpus(*, message: str, bound: str, unbound: str) -> tuple[tuple[s
         ),
         (
             "block_comment_between_end_if_and_semicolon",
-            f"begin if {bound} then {target} end if /* opaque */;"
-            " return new; end",
+            f"begin if {bound} then {target} end if /* opaque */; return new; end",
         ),
         (
             "line_comment_between_end_if_and_semicolon",
-            f"begin if {bound} then {target} end if -- opaque\n;"
-            " return new; end",
+            f"begin if {bound} then {target} end if -- opaque\n; return new; end",
         ),
         (
             "bound_outer_condition_with_reachable_inner_branch",
@@ -2216,8 +2141,7 @@ def _positive_corpus(*, message: str, bound: str, unbound: str) -> tuple[tuple[s
         ),
         (
             "balanced_array_subscript_guard",
-            f"begin if ({bound}) and (array[1, 2])[1] = 1 then {target}"
-            f" end if; return new; end",
+            f"begin if ({bound}) and (array[1, 2])[1] = 1 then {target} end if; return new; end",
         ),
         (
             "opaque_delimiter_decoys_before_guard",
@@ -2250,8 +2174,7 @@ def _positive_corpus(*, message: str, bound: str, unbound: str) -> tuple[tuple[s
         ),
         (
             "terminated_ordinary_with_trailing_comment",
-            f"begin if {bound} then {target} end if; return new; perform 1;"
-            " end; -- trailing",
+            f"begin if {bound} then {target} end if; return new; perform 1; end; -- trailing",
         ),
     )
 
@@ -2543,8 +2466,6 @@ def test_w1e_06_contract_service_transition_rechecks_qualification() -> None:
         harness_prefix=harness_prefix,
         **_CONTRACT_FIXTURE,
     )
-    body = _reverse_guard_body(
-        "erp.fn_recipient_contract_assignment_reverse_guard", harness_prefix
-    )
+    body = _reverse_guard_body("erp.fn_recipient_contract_assignment_reverse_guard", harness_prefix)
     if not _binds_or_harness_fail(body, _CONTRACT_MESSAGE, _CONTRACT_TOKENS, harness_prefix):
         _fail("W1E_REVERSE_CONTRACT_SERVICE_TYPE_UNSEALED")

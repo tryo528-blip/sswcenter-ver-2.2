@@ -113,9 +113,10 @@ def _assert_error_envelope(response, *, status: int, code: str) -> dict[str, obj
 
 def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: Engine) -> None:
     with owner_engine.connect() as connection:
-        identity = connection.execute(
-            text(
-                """
+        identity = (
+            connection.execute(
+                text(
+                    """
                 SELECT current_user AS current_user,
                        current_database() AS current_database,
                        (SELECT pg_get_userbyid(datdba)
@@ -123,8 +124,11 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
                          WHERE datname = current_database()) AS database_owner,
                        (SELECT version_num FROM erp.alembic_version) AS revision
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert identity["current_user"] == "erp_owner"
         assert identity["database_owner"] == "erp_owner"
         assert str(identity["current_database"]).endswith(("_test", "_review"))
@@ -172,9 +176,10 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
         ).scalar_one()
         assert sequence_owner == "erp_owner"
 
-        columns = connection.execute(
-            text(
-                """
+        columns = (
+            connection.execute(
+                text(
+                    """
                 SELECT column_name, is_nullable, is_identity, identity_generation,
                        column_default
                   FROM information_schema.columns
@@ -182,8 +187,11 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
                    AND table_name = 'recipient_plan_notification'
                  ORDER BY ordinal_position
                 """
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         assert [row["column_name"] for row in columns] == [
             "id",
             "recipient_id",
@@ -206,9 +214,10 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
         )
         assert "1" in str(by_column["row_version"]["column_default"])
 
-        constraint_rows = connection.execute(
-            text(
-                """
+        constraint_rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT conname, contype, pg_get_constraintdef(oid, true) AS definition,
                        confdeltype, confupdtype, confmatchtype,
                        condeferrable, condeferred, convalidated
@@ -216,8 +225,11 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
                  WHERE conrelid = 'erp.recipient_plan_notification'::regclass
                  ORDER BY conname
                 """
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         constraints = {
             row["conname"]: {
                 "contype": row["contype"],
@@ -239,9 +251,10 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
             "pk_recipient_plan_notification",
         }
         assert constraints["ck_recipient_plan_notification_row_version_positive"]["contype"] == "c"
-        assert "row_version > 0" in constraints[
-            "ck_recipient_plan_notification_row_version_positive"
-        ]["definition"]
+        assert (
+            "row_version > 0"
+            in constraints["ck_recipient_plan_notification_row_version_positive"]["definition"]
+        )
         assert constraints["pk_recipient_plan_notification"]["contype"] == "p"
         for name in (
             "fk_recipient_plan_notification_created_by_account",
@@ -277,22 +290,27 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
             "pk_recipient_plan_notification",
         }
 
-        user_triggers = connection.execute(
-            text(
-                """
+        user_triggers = (
+            connection.execute(
+                text(
+                    """
                 SELECT tgname
                   FROM pg_trigger
                  WHERE tgrelid = 'erp.recipient_plan_notification'::regclass
                    AND NOT tgisinternal
                  ORDER BY tgname
                 """
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert user_triggers == []
 
-        privileges = connection.execute(
-            text(
-                """
+        privileges = (
+            connection.execute(
+                text(
+                    """
                 SELECT
                     has_schema_privilege('erp_app', 'erp', 'USAGE') AS app_schema_usage,
                     has_table_privilege('erp_app', :table_name, 'SELECT') AS app_select,
@@ -321,9 +339,12 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
                         'erp_backup', 'erp.recipient_plan_notification_id_seq', 'SELECT'
                     ) AS backup_sequence_select
                 """
-            ),
-            {"table_name": EXPECTED_TABLE},
-        ).mappings().one()
+                ),
+                {"table_name": EXPECTED_TABLE},
+            )
+            .mappings()
+            .one()
+        )
         assert dict(privileges) == {
             "app_schema_usage": True,
             "app_select": True,
@@ -352,9 +373,12 @@ def test_0014_catalog_roles_acl_constraints_and_trigger_contract(owner_engine: E
     try:
         with app_engine.connect() as connection:
             assert connection.execute(text("SELECT current_user")).scalar_one() == "erp_app"
-            assert connection.execute(
-                text("SELECT count(*) FROM erp.recipient_plan_notification")
-            ).scalar_one() == 0
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM erp.recipient_plan_notification")
+                ).scalar_one()
+                == 0
+            )
     finally:
         app_engine.dispose()
 
@@ -649,9 +673,7 @@ def test_0014_recipient_fk_drift_detection(
                     "DROP CONSTRAINT fk_recipient_plan_notification_recipient"
                 )
             )
-            connection.execute(
-                text(_FK_RECIPIENT_DDL + alter_suffix)
-            )
+            connection.execute(text(_FK_RECIPIENT_DDL + alter_suffix))
             with pytest.raises(SystemExit, match=expected_message):
                 _verify_recipient_plan_notification_contract(connection)
         finally:

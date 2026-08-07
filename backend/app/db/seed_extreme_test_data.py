@@ -99,9 +99,7 @@ def _pseudonym(index: int) -> str:
     if index == 0:
         return "홍길동"
     zero_based = index - 1
-    return FAMILY_NAMES[zero_based // len(GIVEN_NAMES)] + GIVEN_NAMES[
-        zero_based % len(GIVEN_NAMES)
-    ]
+    return FAMILY_NAMES[zero_based // len(GIVEN_NAMES)] + GIVEN_NAMES[zero_based % len(GIVEN_NAMES)]
 
 
 def _birth_date(index: int, *, staff: bool) -> date:

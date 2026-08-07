@@ -1265,9 +1265,7 @@ class Recipient(Base):
     name: Mapped[str] = mapped_column(Text)
     birth_date: Mapped[date] = mapped_column(Date)
     sex_code: Mapped[str] = mapped_column(Text)
-    recipient_status: Mapped[str] = mapped_column(
-        Text, server_default=text("'ACTIVE'")
-    )
+    recipient_status: Mapped[str] = mapped_column(Text, server_default=text("'ACTIVE'"))
     recipient_no: Mapped[str | None] = mapped_column(Text)
     memo: Mapped[str | None] = mapped_column(Text)
     postal_code: Mapped[str | None] = mapped_column(Text)
@@ -2125,9 +2123,7 @@ class CareAssignment(Base):
         DATERANGE,
         Computed("daterange(start_date, end_date + 1, '[)')", persisted=True),
     )
-    invalidated_at_utc: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    invalidated_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     replacement_assignment_id: Mapped[int | None] = mapped_column(BigInteger)
     created_by_account_id: Mapped[int] = mapped_column(BigInteger)
     created_at_utc: Mapped[datetime] = mapped_column(

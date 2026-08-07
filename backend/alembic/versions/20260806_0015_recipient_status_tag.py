@@ -29,11 +29,7 @@ def upgrade() -> None:
         schema="erp",
     )
     # 2) Backfill every existing row to ACTIVE (manual tag default).
-    op.execute(
-        sa.text(
-            f"UPDATE erp.{_TABLE} SET {_COLUMN} = 'ACTIVE' WHERE {_COLUMN} IS NULL"
-        )
-    )
+    op.execute(sa.text(f"UPDATE erp.{_TABLE} SET {_COLUMN} = 'ACTIVE' WHERE {_COLUMN} IS NULL"))
     # 3) Enforce non-null + server default for new inserts.
     op.alter_column(
         _TABLE,
@@ -70,8 +66,7 @@ def downgrade() -> None:
     # Fail-closed guard: only allow downgrade when every recipient_status is ACTIVE.
     non_active = conn.execute(
         sa.text(
-            f"SELECT 1 FROM erp.{_TABLE} "
-            f"WHERE {_COLUMN} IS NULL OR {_COLUMN} != 'ACTIVE' LIMIT 1"
+            f"SELECT 1 FROM erp.{_TABLE} WHERE {_COLUMN} IS NULL OR {_COLUMN} != 'ACTIVE' LIMIT 1"
         )
     ).scalar()
     if non_active is not None:

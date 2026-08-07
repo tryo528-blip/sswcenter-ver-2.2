@@ -146,9 +146,7 @@ def test_test_profiles_are_explicit_and_truthful() -> None:
     assert "run test:supported" in ps1
     assert "run test:historical" in ps1
     assert "run test:e2e:smoke" in ps1
-    assert "historical" in ps1.lower() and (
-        "fail" in ps1.lower() or "error" in ps1.lower()
-    )
+    assert "historical" in ps1.lower() and ("fail" in ps1.lower() or "error" in ps1.lower())
     assert (
         "SSWCENTER_TEST_PROFILE" in ps1
         and "backend" in ps1
@@ -158,10 +156,7 @@ def test_test_profiles_are_explicit_and_truthful() -> None:
         and "historical" in ps1
     )
     # The orchestrator must never invoke the broad "test:e2e" command directly.
-    assert not any(
-        line.strip() == "& $NpmExe run test:e2e"
-        for line in ps1.splitlines()
-    )
+    assert not any(line.strip() == "& $NpmExe run test:e2e" for line in ps1.splitlines())
 
 
 def test_recipient_plan_postcheck_rejects_exact_catalog_mutations() -> None:
@@ -191,24 +186,74 @@ def test_recipient_plan_postcheck_rejects_exact_catalog_mutations() -> None:
         ],
     ] = {
         "pk_recipient_plan_notification": (
-            "p", "PRIMARY KEY (id)", ("id",), None, None, (), None,
-            None, None, False, False, True,
+            "p",
+            "PRIMARY KEY (id)",
+            ("id",),
+            None,
+            None,
+            (),
+            None,
+            None,
+            None,
+            False,
+            False,
+            True,
         ),
         "ck_recipient_plan_notification_row_version_positive": (
-            "c", "CHECK (row_version > 0)", ("row_version",), None, None, (), None,
-            None, None, False, False, True,
+            "c",
+            "CHECK (row_version > 0)",
+            ("row_version",),
+            None,
+            None,
+            (),
+            None,
+            None,
+            None,
+            False,
+            False,
+            True,
         ),
         "fk_recipient_plan_notification_created_by_account": (
-            "f", None, ("created_by_account_id",), "erp", "user_account", ("id",), "r",
-            "a", "s", False, False, True,
+            "f",
+            None,
+            ("created_by_account_id",),
+            "erp",
+            "user_account",
+            ("id",),
+            "r",
+            "a",
+            "s",
+            False,
+            False,
+            True,
         ),
         "fk_recipient_plan_notification_recipient": (
-            "f", None, ("recipient_id",), "erp", "recipient", ("id",), "r",
-            "a", "s", False, False, True,
+            "f",
+            None,
+            ("recipient_id",),
+            "erp",
+            "recipient",
+            ("id",),
+            "r",
+            "a",
+            "s",
+            False,
+            False,
+            True,
         ),
         "fk_recipient_plan_notification_updated_by_account": (
-            "f", None, ("updated_by_account_id",), "erp", "user_account", ("id",), "r",
-            "a", "s", False, False, True,
+            "f",
+            None,
+            ("updated_by_account_id",),
+            "erp",
+            "user_account",
+            ("id",),
+            "r",
+            "a",
+            "s",
+            False,
+            False,
+            True,
         ),
     }
     assert postcheck_w1a_vs1._RECIPIENT_PLAN_NOTIFICATION_CONSTRAINTS == expected_constraints
