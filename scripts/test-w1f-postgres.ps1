@@ -22,6 +22,9 @@ $GitExe = $GitCommand.Source
 $W1cHead = "20260730_0010_w1c_certification_ledgers"
 $W1dHead = "20260730_0011_w1d_recipient_contract"
 $W1eHead = "20260801_0012_w1e_care_assignment"
+$ContinuingEducationHead = "20260802_0013_staff_continuing_education"
+$RecipientPlanNotificationHead = "20260803_0014_recipient_plan_notification"
+$CurrentHead = "20260806_0015_recipient_status_tag"
 
 function Write-W1fHarnessFailure {
     param([string]$Marker, [string]$Detail = "")
@@ -765,10 +768,18 @@ BEGIN
     VALUES (care_staff_id, employment_id, 'NEW_HIRE_ORIENTATION', TRUE,
             account_id, account_id, 1);
 
-    INSERT INTO erp.recipient
-        (name, birth_date, sex_code,
+    -- 0013 continuing-education fact (catalog course is migration-seeded).
+    INSERT INTO erp.staff_periodic_training_status
+        (staff_id, course_code, period_key, completed,
          created_by_account_id, updated_by_account_id, row_version)
-    VALUES ('W1F RECIPIENT', DATE '1950-01-01', 'TEST',
+    VALUES (care_staff_id, 'CONTINUING_EDUCATION', '2026', TRUE,
+            account_id, account_id, 1);
+
+    -- recipient_status is the 0015 manual tag; full-row to_jsonb includes it.
+    INSERT INTO erp.recipient
+        (name, birth_date, sex_code, recipient_status,
+         created_by_account_id, updated_by_account_id, row_version)
+    VALUES ('W1F RECIPIENT', DATE '1950-01-01', 'TEST', 'ACTIVE',
             account_id, account_id, 1)
     RETURNING id INTO recipient_id;
 
@@ -788,6 +799,13 @@ BEGIN
          updated_by_account_id, row_version)
     VALUES (contract_id, care_staff_id, employment_id, 'GENERAL', NULL,
             DATE '2030-01-01', DATE '2030-12-31', NULL, NULL,
+            account_id, account_id, 1);
+
+    -- 0014 recipient plan-notification fact.
+    INSERT INTO erp.recipient_plan_notification
+        (recipient_id, notified_date,
+         created_by_account_id, updated_by_account_id, row_version)
+    VALUES (recipient_id, DATE '2026-06-01',
             account_id, account_id, 1);
 END $$;
 '@
@@ -818,6 +836,9 @@ WITH rows AS (
     SELECT 'staff_onboarding_training:' || to_jsonb(sot)::text AS line
     FROM erp.staff_onboarding_training AS sot
     UNION ALL
+    SELECT 'staff_periodic_training_status:' || to_jsonb(spts)::text AS line
+    FROM erp.staff_periodic_training_status AS spts
+    UNION ALL
     SELECT 'recipient:' || to_jsonb(r)::text AS line
     FROM erp.recipient AS r
     UNION ALL
@@ -826,6 +847,9 @@ WITH rows AS (
     UNION ALL
     SELECT 'care_assignment:' || to_jsonb(ca)::text AS line
     FROM erp.care_assignment AS ca
+    UNION ALL
+    SELECT 'recipient_plan_notification:' || to_jsonb(rpn)::text AS line
+    FROM erp.recipient_plan_notification AS rpn
 )
 SELECT count(*)::text || '|' ||
        md5(COALESCE(string_agg(line, chr(10) ORDER BY line), '<EMPTY>'))
@@ -939,13 +963,13 @@ try {
     $env:PYTHONDONTWRITEBYTECODE = "1"
     $env:PYTEST_ADDOPTS = ""
 
-    # Fresh base -> head upgrade of the primary review database.
-    [void](Invoke-W1fAlembic -AlembicArgs @("upgrade", $W1eHead) -Marker "W1F_HARNESS_BASE_UPGRADE_FAILED")
+    # Fresh base -> current head (0015) upgrade of the primary review database.
+    [void](Invoke-W1fAlembic -AlembicArgs @("upgrade", $CurrentHead) -Marker "W1F_HARNESS_BASE_UPGRADE_FAILED")
     $HeadRevision = Get-W1fRevision -Database $DatabaseName
     Write-Output ("W1F_STAGE_HEAD_REVISION={0}" -f $HeadRevision)
-    if ($HeadRevision -ne $W1eHead) {
+    if ($HeadRevision -ne $CurrentHead) {
         Write-W1fHarnessFailure "W1F_HARNESS_HEAD_REVISION_MISMATCH" (
-            "expected={0};actual={1}" -f $W1eHead, $HeadRevision
+            "expected={0};actual={1}" -f $CurrentHead, $HeadRevision
         )
     }
 
@@ -982,12 +1006,12 @@ try {
     }
     Write-Output "W1F_STAGE_DOWNGRADE=ok"
 
-    # Re-upgrade back to head.
-    [void](Invoke-W1fAlembic -AlembicArgs @("upgrade", $W1eHead) -Marker "W1F_HARNESS_REUPGRADE_FAILED")
+    # Re-upgrade back to current head (0015).
+    [void](Invoke-W1fAlembic -AlembicArgs @("upgrade", $CurrentHead) -Marker "W1F_HARNESS_REUPGRADE_FAILED")
     $ReupgradeRevision = Get-W1fRevision -Database $DatabaseName
-    if ($ReupgradeRevision -ne $W1eHead) {
+    if ($ReupgradeRevision -ne $CurrentHead) {
         Write-W1fProductFailure "W1F_MIGRATION_REUPGRADE_REVISION_MISMATCH" (
-            "expected={0};actual={1}" -f $W1eHead, $ReupgradeRevision
+            "expected={0};actual={1}" -f $CurrentHead, $ReupgradeRevision
         )
     }
     Write-Output "W1F_STAGE_REUPGRADE=ok"
@@ -1018,14 +1042,14 @@ try {
         Write-W1fHarnessFailure "W1F_HARNESS_OFFLINE_APPLY_FAILED"
     }
     $OfflineRevision = Get-W1fRevision -Database $OfflineDatabaseName
-    if ($OfflineRevision -ne $W1eHead) {
+    if ($OfflineRevision -ne $CurrentHead) {
         Write-W1fProductFailure "W1F_OFFLINE_REVISION_MISMATCH" (
-            "expected={0};actual={1}" -f $W1eHead, $OfflineRevision
+            "expected={0};actual={1}" -f $CurrentHead, $OfflineRevision
         )
     }
     Write-Output "W1F_STAGE_OFFLINE=ok"
 
-    # Seed synthetic W1A..W1E business rows into the primary review database.
+    # Seed synthetic W1A..0015 business rows into the primary review database.
     [System.IO.File]::WriteAllText(
         $SeedSqlFile,
         $SeedSql,
@@ -1095,7 +1119,7 @@ try {
     ).FullName
 
     # Restore into a fresh review database and data root; restore-drill.ps1
-    # enforces the W1E postcheck marker internally.
+    # enforces the 0015 recipient-status-tag postcheck marker fail-closed.
     $RestoreRun = Invoke-W1fTimedCommand `
         -FilePath $PowerShellExe `
         -TimeoutSec 300 `
@@ -1118,8 +1142,8 @@ try {
             "exit={0}" -f $RestoreRun.ExitCode
         )
     }
-    if (([string]$RestoreRun.Stdout) -notmatch "W1E_DB_POSTCHECK_OK") {
-        Write-W1fProductFailure "W1F_W1E_POSTCHECK_MARKER_MISSING"
+    if (([string]$RestoreRun.Stdout) -notmatch "RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK") {
+        Write-W1fProductFailure "W1F_0015_POSTCHECK_MARKER_MISSING"
     }
     Write-Output "W1F_STAGE_RESTORE=ok"
 
