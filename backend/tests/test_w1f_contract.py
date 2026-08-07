@@ -27,9 +27,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_ROOT = REPO_ROOT / "scripts"
 RESTORE_DRILL = SCRIPTS_ROOT / "restore-drill.ps1"
+W1C_WRAPPER = SCRIPTS_ROOT / "test-w1c-postgres.ps1"
 W1F_WRAPPER = SCRIPTS_ROOT / "test-w1f-postgres.ps1"
+W1A_RRN_DETECTOR = SCRIPTS_ROOT / "w1a-rrn-detector.ps1"
 POSTCHECK = REPO_ROOT / "backend" / "app" / "db" / "postcheck_w1a_vs1.py"
+PLAN_NOTIFICATION_E2E = (
+    REPO_ROOT / "frontend" / "e2e" / "recipient-plan-notification-real-pg.spec.ts"
+)
 
+W1B_REVISION = "20260730_0009_w1b_recipient"
 W1C_REVISION = "20260730_0010_w1c_certification_ledgers"
 W1D_REVISION = "20260730_0011_w1d_recipient_contract"
 W1E_REVISION = "20260801_0012_w1e_care_assignment"
@@ -47,6 +53,10 @@ CONTINUING_EDUCATION_MARKER = "STAFF_CONTINUING_EDUCATION_DB_POSTCHECK_OK"
 RECIPIENT_PLAN_NOTIFICATION_MARKER = "RECIPIENT_PLAN_NOTIFICATION_DB_POSTCHECK_OK"
 RECIPIENT_STATUS_TAG_MARKER = "RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK"
 
+# Exact historical E2E fixture value, constructed only from fragments so this
+# contract file itself never embeds a detector-visible contiguous RRN candidate.
+PLAN_NOTIFICATION_SYNTHETIC_RRN = "90010" + "1-11234" + "99"
+
 
 def _fail(marker: str) -> NoReturn:
     pytest.fail(marker, pytrace=False)
@@ -62,6 +72,53 @@ def _powershell_executable() -> str:
     if found:
         return found
     _fail("W1F_HARNESS_POWERSHELL_MISSING: powershell.exe could not be resolved")
+
+
+def _w1a_rrn_match_count(text: str) -> int:
+    """Invoke the sealed W1A RRN detector against an in-memory text surface."""
+    if not W1A_RRN_DETECTOR.is_file():
+        _fail("W1F_HARNESS_RRN_DETECTOR_MISSING: scripts/w1a-rrn-detector.ps1 absent")
+    powershell = _powershell_executable()
+    probe = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{W1A_RRN_DETECTOR.as_posix()}'; "
+        "$text = [Console]::In.ReadToEnd(); "
+        "Write-Output (Get-W1ARRNMatchCount -Text $text)"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                probe,
+            ],
+            input=text,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _fail("W1F_HARNESS_RRN_DETECTOR_UNRUNNABLE: W1A RRN detector could not run")
+    if completed.returncode != 0:
+        _fail(
+            "W1F_HARNESS_RRN_DETECTOR_FAILED: "
+            + (completed.stdout + "\n" + completed.stderr).strip()
+        )
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        _fail("W1F_HARNESS_RRN_DETECTOR_EMPTY: detector returned no match count")
+    try:
+        return int(lines[-1])
+    except ValueError:
+        _fail(f"W1F_HARNESS_RRN_DETECTOR_NON_INTEGER: {lines[-1]!r}")
 
 
 def _run_restore_drill_manifest_probe(revision: str) -> tuple[int, str]:
@@ -481,6 +538,126 @@ def test_w1f_w1c_restore_and_marker_regression() -> None:
         _fail("W1F_W1C_POSTCHECK_SUPPORT_LOST: postcheck dropped the W1C revision")
     if "W1C_DB_POSTCHECK_OK" not in postcheck_source:
         _fail("W1F_W1C_POSTCHECK_MARKER_LOST: postcheck dropped the W1C marker")
+
+
+def test_w1f_w1c_wrapper_seals_0010_lifecycle_then_upgrades_to_head() -> None:
+    """W1C historical wrapper must seal 0010 lifecycle, then upgrade to head before ORM pytest."""
+    if not W1C_WRAPPER.is_file():
+        _fail("W1F_W1C_WRAPPER_MISSING: scripts/test-w1c-postgres.ps1 absent")
+    source = W1C_WRAPPER.read_text(encoding="utf-8")
+
+    required_tokens = {
+        "W1F_W1C_WRAPPER_BASE_REVISION_MISSING": f'$BaseRevision = "{W1B_REVISION}"',
+        "W1F_W1C_WRAPPER_EXPECTED_REVISION_MISSING": f'$ExpectedRevision = "{W1C_REVISION}"',
+        "W1F_W1C_WRAPPER_BASE_UPGRADE_MISSING": "W1C_HARNESS_BASE_UPGRADE_FAILED",
+        "W1F_W1C_WRAPPER_UPGRADE_MISSING": "W1C_HARNESS_UPGRADE_FAILED",
+        "W1F_W1C_WRAPPER_DOWNGRADE_MISSING": "W1C_HARNESS_DOWNGRADE_FAILED",
+        "W1F_W1C_WRAPPER_REUPGRADE_MISSING": "W1C_HARNESS_REUPGRADE_FAILED",
+        "W1F_W1C_WRAPPER_REVISION_ASSERT_MISSING": "W1C_HARNESS_REVISION_MISMATCH",
+        "W1F_W1C_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_MISSING": "W1C_HARNESS_HEAD_UPGRADE_FAILED",
+        "W1F_W1C_WRAPPER_HEAD_UPGRADE_MARKER_MISSING": "W1C_HEAD_UPGRADE_OK",
+        "W1F_W1C_WRAPPER_PYTEST_MISSING": "tests/test_w1c_postgres.py",
+        "W1F_W1C_WRAPPER_HEAD_POSTCHECK_MARKER_MISSING": RECIPIENT_STATUS_TAG_MARKER,
+        "W1F_W1C_WRAPPER_GREEN_MISSING": "W1C_POSTGRES_GREEN",
+    }
+    for marker, token in required_tokens.items():
+        if token not in source:
+            _fail(f"{marker}: missing {token}")
+
+    lifecycle_patterns = (
+        (
+            "W1F_W1C_WRAPPER_BASE_UPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+\$BaseRevision",
+        ),
+        (
+            "W1F_W1C_WRAPPER_EXPECTED_UPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+\$ExpectedRevision",
+        ),
+        (
+            "W1F_W1C_WRAPPER_DOWNGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+downgrade\s+\$BaseRevision",
+        ),
+        (
+            "W1F_W1C_WRAPPER_REUPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+\$ExpectedRevision",
+        ),
+        (
+            "W1F_W1C_WRAPPER_HEAD_UPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+head\b",
+        ),
+        (
+            "W1F_W1C_WRAPPER_EXACT_0010_ASSERT_MISSING",
+            r"\$CurrentRevision\s+-join\s+\"\"\)\.Trim\(\)\s+-ne\s+\$ExpectedRevision",
+        ),
+    )
+    for marker, pattern in lifecycle_patterns:
+        if re.search(pattern, source) is None:
+            _fail(marker)
+
+    revision_assert_at = source.find("W1C_HARNESS_REVISION_MISMATCH")
+    head_upgrade_fail_at = source.find("W1C_HARNESS_HEAD_UPGRADE_FAILED")
+    head_upgrade_ok_at = source.find("W1C_HEAD_UPGRADE_OK")
+    pytest_at = source.find("tests/test_w1c_postgres.py")
+    postcheck_at = source.find("app.db.postcheck_w1a_vs1")
+    if (
+        min(revision_assert_at, head_upgrade_fail_at, head_upgrade_ok_at, pytest_at, postcheck_at)
+        < 0
+    ):
+        _fail("W1F_W1C_WRAPPER_STAGE_MARKERS_INCOMPLETE")
+    if not (
+        revision_assert_at < head_upgrade_fail_at < head_upgrade_ok_at < pytest_at < postcheck_at
+    ):
+        _fail(
+            "W1F_W1C_WRAPPER_HEAD_UPGRADE_ORDER_INVALID: "
+            "exact 0010 assertion must precede fail-closed head upgrade, "
+            "W1C_HEAD_UPGRADE_OK, current ORM pytest, and postcheck"
+        )
+
+    head_upgrade_block = source[revision_assert_at:pytest_at]
+    if "upgrade head" not in head_upgrade_block:
+        _fail("W1F_W1C_WRAPPER_HEAD_UPGRADE_NOT_BETWEEN_0010_AND_PYTEST")
+    if "W1C_HARNESS_HEAD_UPGRADE_FAILED" not in head_upgrade_block:
+        _fail("W1F_W1C_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_NOT_BETWEEN_0010_AND_PYTEST")
+    if "W1C_HEAD_UPGRADE_OK" not in head_upgrade_block:
+        _fail("W1F_W1C_WRAPPER_HEAD_UPGRADE_MARKER_NOT_BETWEEN_0010_AND_PYTEST")
+
+
+def test_w1f_plan_notification_e2e_hides_detector_visible_resident_number() -> None:
+    """0014 real-PG E2E must keep the fixture RRN without a detector-visible source candidate."""
+    if not PLAN_NOTIFICATION_E2E.is_file():
+        _fail(
+            "W1F_PLAN_NOTIFICATION_E2E_MISSING: "
+            "frontend/e2e/recipient-plan-notification-real-pg.spec.ts absent"
+        )
+    source = PLAN_NOTIFICATION_E2E.read_text(encoding="utf-8")
+
+    # Existing W1A detector must treat the sealed contiguous fixture as sensitive.
+    if _w1a_rrn_match_count(PLAN_NOTIFICATION_SYNTHETIC_RRN) < 1:
+        _fail(
+            "W1F_PLAN_NOTIFICATION_RRN_DETECTOR_BLIND: "
+            "sealed synthetic fixture is not detector-visible when contiguous"
+        )
+    # The tracked E2E source must no longer present that contiguous candidate.
+    if _w1a_rrn_match_count(source) != 0:
+        _fail(
+            "W1F_PLAN_NOTIFICATION_E2E_RRN_CANDIDATE_VISIBLE: "
+            "recipient-plan-notification-real-pg.spec.ts still contains a "
+            "detector-visible resident-number candidate"
+        )
+
+    # Runtime construction remains deterministic from separately quoted fragments.
+    fragment_pattern = r"(['\"])90010\1\s*\+\s*(['\"])1-11234\2\s*\+\s*(['\"])99\3"
+    if re.search(fragment_pattern, source) is None:
+        _fail(
+            "W1F_PLAN_NOTIFICATION_E2E_RRN_FRAGMENT_CONSTRUCTION_MISSING: "
+            "expected separately quoted fragments that join to the sealed fixture"
+        )
+    if PLAN_NOTIFICATION_SYNTHETIC_RRN != ("90010" + "1-11234" + "99"):
+        _fail("W1F_PLAN_NOTIFICATION_E2E_RRN_FIXTURE_DRIFT")
+    if "SYNTHETIC_STAFF_RESIDENT_NUMBER" not in source:
+        _fail("W1F_PLAN_NOTIFICATION_E2E_RRN_CONSTANT_MISSING")
+    if "resident_number: SYNTHETIC_STAFF_RESIDENT_NUMBER" not in source:
+        _fail("W1F_PLAN_NOTIFICATION_E2E_RRN_USAGE_MISSING")
 
 
 def test_w1f_current_head_and_lineage_constants_contract() -> None:

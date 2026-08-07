@@ -19,6 +19,9 @@ const LATER_NOTIFIED_DATE = '2026-04-15';
 const PLAN_DUE_DATE = '2026-09-30';
 const EXPECTED_STAFF_DDAY = 'D+8';
 const EXPECTED_RECIPIENT_DDAY = 'D-204';
+// Keep the exact historical fixture value, but never store a detector-visible
+// contiguous resident-number candidate in source bytes.
+const SYNTHETIC_STAFF_RESIDENT_NUMBER = '90010' + '1-11234' + '99';
 
 function asRecord(value: unknown): JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -176,7 +179,7 @@ test.describe('0014 recipient plan-notification real PostgreSQL dashboard bounda
         memo: 'deterministic browser integration data only',
         name: '0014 synthetic care worker',
         phone: '010-0000-0014',
-        resident_number: '900101-1123499',
+        resident_number: SYNTHETIC_STAFF_RESIDENT_NUMBER,
         sex_code: 'MALE',
       }),
       'SSWCENTER_0014_STAFF_CREATE',

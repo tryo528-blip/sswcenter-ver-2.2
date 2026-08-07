@@ -213,6 +213,14 @@ CREATE ROLE erp_backup LOGIN;
         }
         Write-Output "W1C_APP_ROLE_OK"
 
+        # Historical 0010 lifecycle is sealed above. Current ORM/tests/postcheck
+        # require the live Alembic head (includes 0015 recipient_status).
+        & $PythonExe -m alembic -c alembic.ini upgrade head
+        if ($LASTEXITCODE -ne 0) {
+            throw "W1C_HARNESS_HEAD_UPGRADE_FAILED"
+        }
+        Write-Output "W1C_HEAD_UPGRADE_OK"
+
         $env:SSWCENTER_DATABASE_URL = $AppDatabaseUrl
         & $PythonExe -m pytest -q tests/test_w1c_postgres.py
         if ($LASTEXITCODE -ne 0) {
@@ -223,7 +231,7 @@ CREATE ROLE erp_backup LOGIN;
         $PostcheckOutput | Write-Output
         if (
             $LASTEXITCODE -ne 0 -or
-            $PostcheckOutput -notcontains "W1C_DB_POSTCHECK_OK"
+            $PostcheckOutput -notcontains "RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK"
         ) {
             throw "W1C_HARNESS_POSTCHECK_FAILED"
         }
