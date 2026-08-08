@@ -209,12 +209,12 @@ class RecipientService:
             raise _domain_error("UNEXPECTED_SERVER_ERROR", 500) from None
 
     @staticmethod
-    def _require_version(actual: int, expected: int) -> None:
+    def _require_version(actual: int, expected: int, *, entity: str) -> None:
         if actual != expected:
             raise _domain_error(
                 "ROW_VERSION_CONFLICT",
                 409,
-                details={"current_row_version": actual},
+                details={"current_row_version": actual, "entity": entity},
             )
 
     def _require_recipient(
@@ -264,7 +264,10 @@ class RecipientService:
                 raise _domain_error(
                     "ROW_VERSION_CONFLICT",
                     409,
-                    details={"current_row_version": historical.row_version},
+                    details={
+                        "current_row_version": historical.row_version,
+                        "entity": "primary_guardian_period",
+                    },
                 )
             raise _domain_error("PRIMARY_GUARDIAN_PERIOD_NOT_FOUND", 404)
         return period
@@ -289,7 +292,10 @@ class RecipientService:
                 raise _domain_error(
                     "ROW_VERSION_CONFLICT",
                     409,
-                    details={"current_row_version": historical.row_version},
+                    details={
+                        "current_row_version": historical.row_version,
+                        "entity": "payer_snapshot",
+                    },
                 )
             raise _domain_error("PAYER_SNAPSHOT_NOT_FOUND", 404)
         return snapshot
@@ -535,7 +541,11 @@ class RecipientService:
         current_account: CurrentAccount,
     ) -> RecipientResponse:
         recipient = self._require_recipient(recipient_id, for_update=True)
-        self._require_version(recipient.row_version, payload.expected_row_version)
+        self._require_version(
+            recipient.row_version,
+            payload.expected_row_version,
+            entity="recipient",
+        )
         before_version = recipient.row_version
         before_payer_guardian_id = recipient.payer_guardian_id
         fields_set = payload.model_fields_set
@@ -651,7 +661,11 @@ class RecipientService:
         current_account: CurrentAccount,
     ) -> GuardianResponse:
         guardian = self._require_guardian(recipient_id, guardian_id, for_update=True)
-        self._require_version(guardian.row_version, payload.expected_row_version)
+        self._require_version(
+            guardian.row_version,
+            payload.expected_row_version,
+            entity="guardian",
+        )
         before_version = guardian.row_version
         fields_set = payload.model_fields_set
         if "name" in fields_set:
@@ -753,7 +767,11 @@ class RecipientService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(period.row_version, payload.expected_row_version)
+        self._require_version(
+            period.row_version,
+            payload.expected_row_version,
+            entity="primary_guardian_period",
+        )
         before_version = period.row_version
         now = _now()
         period.invalidated_at_utc = now
@@ -788,7 +806,11 @@ class RecipientService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(old.row_version, payload.expected_row_version)
+        self._require_version(
+            old.row_version,
+            payload.expected_row_version,
+            entity="primary_guardian_period",
+        )
         self._require_guardian(recipient_id, payload.guardian_id)
         try:
             validate_period(payload.start_date, payload.end_date)
@@ -922,7 +944,11 @@ class RecipientService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(snapshot.row_version, payload.expected_row_version)
+        self._require_version(
+            snapshot.row_version,
+            payload.expected_row_version,
+            entity="payer_snapshot",
+        )
         before_version = snapshot.row_version
         now = _now()
         snapshot.invalidated_at_utc = now
@@ -957,7 +983,11 @@ class RecipientService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(old.row_version, payload.expected_row_version)
+        self._require_version(
+            old.row_version,
+            payload.expected_row_version,
+            entity="payer_snapshot",
+        )
         try:
             name = clean_required_text(payload.name)
             validate_period(payload.start_date, payload.end_date)
@@ -1046,7 +1076,10 @@ class RecipientService:
                 raise _domain_error(
                     "ROW_VERSION_CONFLICT",
                     409,
-                    details={"current_row_version": historical.row_version},
+                    details={
+                        "current_row_version": historical.row_version,
+                        "entity": "plan_notification",
+                    },
                 )
             raise _domain_error("RECIPIENT_PLAN_NOTIFICATION_NOT_FOUND", 404)
         return notification
@@ -1121,7 +1154,11 @@ class RecipientService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(notification.row_version, payload.expected_row_version)
+        self._require_version(
+            notification.row_version,
+            payload.expected_row_version,
+            entity="plan_notification",
+        )
         before_version = notification.row_version
         now = _now()
         notification.invalidated_at_utc = now

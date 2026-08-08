@@ -1932,18 +1932,33 @@ export const RecipientsPage = () => {
       setBasicEditOpen(false);
       setDetailMessage('수급자·보호자·본인부담금을 저장했습니다.');
       setListReload((current) => current + 1);
-      setWorkspaceReload((current) => current + 1);
+      // Do not bump workspaceReload here: the batch response already has the latest
+      // recipient/guardians/payer. A full workspace reload would clear detailMessage and
+      // wipe the just-applied state (and leave empty guardians if the follow-up GET fails).
+      // Benefit periods are not returned by basic-batch; refresh that baseline only.
+      void listBenefitPeriods(activeId)
+        .then((items) => {
+          setActiveCopayPeriod(effectiveCopayPeriod(items, currentDateText()));
+        })
+        .catch(() => {
+          // Keep previous copay baseline; list projection still refreshes via listReload.
+        });
     } catch (error: unknown) {
       if (isAbortError(error)) {
         return;
       }
       if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
-        // Recipient field edits: preserve draft via stale panel. Guardian-only conflicts
-        // reload guardian slots so the next atomic save uses fresh row versions.
-        const hadRecipientChanges = recipientHasDraftChanges(baselineRecipient, draftAtSave);
-        if (hadRecipientChanges) {
-          await captureRecipientStaleConflict(baselineRecipient, draftAtSave);
-        } else {
+        // Prefer server-provided details.entity so basic-batch can distinguish
+        // recipient vs guardian conflicts. Fall back to draft inference when
+        // entity is absent (older servers) or an unexpected value.
+        const conflictEntity =
+          error instanceof ApiError && typeof error.details?.entity === 'string'
+            ? error.details.entity
+            : (error as { details?: { entity?: unknown } }).details?.entity;
+        const entity =
+          typeof conflictEntity === 'string' ? conflictEntity : undefined;
+
+        const reloadGuardiansAfterConflict = async () => {
           try {
             const response = await listGuardians(activeId);
             const items = response.items ?? [];
@@ -1963,6 +1978,22 @@ export const RecipientsPage = () => {
                 '보호자 충돌 후 최신 정보를 불러오지 못했습니다. 입력은 유지됩니다.',
               ),
             );
+          }
+        };
+
+        if (entity === 'recipient') {
+          await captureRecipientStaleConflict(baselineRecipient, draftAtSave);
+        } else if (entity === 'guardian') {
+          await reloadGuardiansAfterConflict();
+        } else {
+          const hadRecipientChanges = recipientHasDraftChanges(
+            baselineRecipient,
+            draftAtSave,
+          );
+          if (hadRecipientChanges) {
+            await captureRecipientStaleConflict(baselineRecipient, draftAtSave);
+          } else {
+            await reloadGuardiansAfterConflict();
           }
         }
         return;

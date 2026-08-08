@@ -82,15 +82,29 @@ function staleRequestError(): Error {
   return error;
 }
 
+/** Optional structured error details from the API error envelope. */
+export type ApiErrorDetails = {
+  current_row_version?: number;
+  entity?: string;
+  [key: string]: unknown;
+};
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
+  readonly details?: ApiErrorDetails;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    details?: ApiErrorDetails,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -140,6 +154,7 @@ export async function apiRequest<T>(
   if (!response.ok) {
     let errorDetail = '오류가 발생했습니다.';
     let errorCode: string | undefined;
+    let errorDetails: ApiErrorDetails | undefined;
     try {
       const errorData = await response.json();
       if (errorData?.error?.code) {
@@ -150,6 +165,9 @@ export async function apiRequest<T>(
       } else if (errorData?.detail?.code) {
         errorCode = errorData.detail.code;
         errorDetail = errorData.detail.code;
+      }
+      if (errorData?.details && typeof errorData.details === 'object') {
+        errorDetails = errorData.details as ApiErrorDetails;
       }
     } catch {
       // ignore json parse error
@@ -169,7 +187,7 @@ export async function apiRequest<T>(
       beginAuthTransition();
       window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT));
     }
-    throw new ApiError(errorDetail, response.status, errorCode);
+    throw new ApiError(errorDetail, response.status, errorCode, errorDetails);
   }
 
   if (options.signal?.aborted || requestGeneration !== authGeneration) {

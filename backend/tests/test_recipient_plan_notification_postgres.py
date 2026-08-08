@@ -474,7 +474,10 @@ def test_0014_real_api_deadlines_cumulative_history_and_row_version(
     invalidate_path = f"{notification_path}/{latest_body['id']}/invalidate"
     stale = _post(admin_client, invalidate_path, {"expected_row_version": 99})
     stale_body = _assert_error_envelope(stale, status=409, code="ROW_VERSION_CONFLICT")
-    assert stale_body["details"] == {"current_row_version": 1}
+    assert stale_body["details"] == {
+        "current_row_version": 1,
+        "entity": "plan_notification",
+    }
 
     invalidated = _post(admin_client, invalidate_path, {"expected_row_version": 1})
     assert invalidated.status_code == 200, invalidated.text
@@ -483,7 +486,10 @@ def test_0014_real_api_deadlines_cumulative_history_and_row_version(
 
     repeated = _post(admin_client, invalidate_path, {"expected_row_version": 1})
     repeated_body = _assert_error_envelope(repeated, status=409, code="ROW_VERSION_CONFLICT")
-    assert repeated_body["details"] == {"current_row_version": 2}
+    assert repeated_body["details"] == {
+        "current_row_version": 2,
+        "entity": "plan_notification",
+    }
 
     history = admin_client.get(notification_path)
     assert history.status_code == 200, history.text

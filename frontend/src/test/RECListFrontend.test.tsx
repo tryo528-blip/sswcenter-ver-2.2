@@ -1528,6 +1528,25 @@ describe('REC-LIST frontend contract', () => {
       if (isBasicCreateBatch(url, method)) {
         const body = parseJsonBody(init);
         postBodies.push(body);
+        // Mirror backend RecipientBasicCreateBatchRequest.require_benefit_periods:
+        // empty benefit_periods is a validation error (422), not a successful create.
+        const benefitPeriods = body.benefit_periods;
+        if (!Array.isArray(benefitPeriods) || benefitPeriods.length === 0) {
+          return jsonResponse(
+            {
+              error: { code: 'VALIDATION_ERROR', message: '입력값을 확인하세요.' },
+              field_errors: [
+                {
+                  field: 'benefit_periods',
+                  message: 'at least one benefit period is required',
+                },
+              ],
+              details: {},
+              request_id: 't-create-benefit-required',
+            },
+            422,
+          );
+        }
         const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
         const recipient = {
           id: 99,
@@ -1544,7 +1563,17 @@ describe('REC-LIST frontend contract', () => {
           payer_guardian_id: null,
           row_version: 1,
         };
-        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] }, 201);
+        // Match backend create_basic saved_sections order.
+        const saved_sections = ['recipient'];
+        const guardiansBody = body.guardians;
+        if (Array.isArray(guardiansBody) && guardiansBody.length > 0) {
+          saved_sections.push('guardians');
+        }
+        if (body.payer_guardian_slot !== null && body.payer_guardian_slot !== undefined) {
+          saved_sections.push('payer');
+        }
+        saved_sections.push('benefit_periods');
+        return jsonResponse({ recipient, guardians: [], saved_sections }, 201);
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
         if (url.pathname.endsWith('/guardians')) return jsonResponse({ items: [] });
@@ -1606,6 +1635,17 @@ describe('REC-LIST frontend contract', () => {
     expect(recipientBody.name).toBe('생성수급');
     expect(recipientBody.mobile_phone).toBe('010-1000-0002');
     expect(body).toHaveProperty('benefit_periods');
+    expect(Array.isArray(body.benefit_periods)).toBe(true);
+    expect((body.benefit_periods as unknown[]).length).toBeGreaterThan(0);
+    const firstBenefit = (body.benefit_periods as Array<Record<string, unknown>>)[0];
+    expect(firstBenefit).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          benefit_code: expect.any(String),
+          start_date: expect.any(String),
+        }),
+      }),
+    );
     expect(body).toHaveProperty('guardians');
   });
 
