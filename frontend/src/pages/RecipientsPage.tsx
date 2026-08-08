@@ -280,7 +280,9 @@ function formatBenefitCode(value: string | null | undefined): string {
 }
 
 function formatCopaymentRate(value: number | null | undefined): string {
-  if (value == null || Number.isNaN(value) || value === 15) return '일반';
+  if (value == null || Number.isNaN(value)) return '미지정';
+  // 15% is the standard general copay rate; list projection maps it to the same label as GENERAL.
+  if (value === 15) return '일반';
   return `${value}%`;
 }
 
@@ -822,6 +824,16 @@ export const RecipientsPage = () => {
   const [planNotificationMessage, setPlanNotificationMessage] = useState<string | null>(null);
   const [planNotificationError, setPlanNotificationError] = useState<string | null>(null);
 
+  // Derive URL query state before any effect/callback that reads activeId so the
+  // binding is not referenced in the temporal dead zone (tsc block-scoped error).
+  const query = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const search = query.get('search') ?? '';
+  // URL may keep a display key (`filter`); server query must be `status`.
+  const statusFilter = parseStatusFilter(query.get('status') ?? query.get('filter'));
+  const selectedId = query.get('selected');
+  const detailId = query.get('detail');
+  const activeId = detailId ?? selectedId;
+
   const persistCopayBenefit = useCallback(
     async (recipientId: string, draft: PendingCopaySave) => {
       const numericRecipientId = Number(recipientId);
@@ -834,8 +846,8 @@ export const RecipientsPage = () => {
 
       setCopaySaving(true);
       try {
-        const response = await listBenefitPeriods(recipientId);
-        const items = (response.items ?? []) as CopayPeriodSnapshot[];
+        // listBenefitPeriods already unwraps the list response to BenefitPeriod[].
+        const items = await listBenefitPeriods(recipientId);
         const existing = effectiveCopayPeriod(items, draft.startDate);
         if (!existing && draft.code === 'GENERAL') return;
         if (
@@ -880,11 +892,9 @@ export const RecipientsPage = () => {
     }
     let cancelled = false;
     void listBenefitPeriods(activeId)
-      .then((response) => {
+      .then((items) => {
         if (cancelled) return;
-        setActiveCopayPeriod(
-          effectiveCopayPeriod((response.items ?? []) as CopayPeriodSnapshot[], currentDateText()),
-        );
+        setActiveCopayPeriod(effectiveCopayPeriod(items, currentDateText()));
       })
       .catch(() => {
         if (!cancelled) setActiveCopayPeriod(null);
@@ -1045,14 +1055,6 @@ export const RecipientsPage = () => {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
-
-  const query = useMemo(() => new URLSearchParams(location.search), [location.search]);
-  const search = query.get('search') ?? '';
-  // URL may keep a display key (`filter`); server query must be `status`.
-  const statusFilter = parseStatusFilter(query.get('status') ?? query.get('filter'));
-  const selectedId = query.get('selected');
-  const detailId = query.get('detail');
-  const activeId = detailId ?? selectedId;
 
   const cancelCreate = useCallback(() => {
     if (createSaving) return;
@@ -1746,7 +1748,7 @@ export const RecipientsPage = () => {
       }
 
       setDetailBatchSaving(true);
-      await saveRecipientDetailBatch(activeId, payload);
+      await saveRecipientDetailBatch(Number(activeId), payload);
       setDetailBatchEditing(false);
       setDetailBatchRevision((current) => current + 1);
       setPlanNotificationDirty(false);
@@ -1890,12 +1892,14 @@ export const RecipientsPage = () => {
     setBasicSaving(true);
     setDetailSaving(true);
     setCopaySaving(true);
+    const baselineRecipient = detailRecipient;
+    const draftAtSave = detailForm;
     try {
       const result = await updateRecipientBasicBatch(Number(activeId), {
         recipient: recipientChangedFieldsPayload(
-          detailRecipient,
-          detailForm,
-          detailRecipient.row_version,
+          baselineRecipient,
+          draftAtSave,
+          baselineRecipient.row_version,
         ),
         guardians: guardianMutations,
         payer_guardian_slot: payerGuardianSlot === 'unlisted' ? null : payerGuardianSlot,
@@ -1910,11 +1914,59 @@ export const RecipientsPage = () => {
         setDetailRecipient(updated);
         setDetailForm(recipientFormFromRecipient(updated));
       }
+      const nextGuardians = result.guardians ?? [];
+      const nextGuardianIds: [string | null, string | null] = [
+        nextGuardians[0] ? normalizeId(nextGuardians[0].id) : null,
+        nextGuardians[1] ? normalizeId(nextGuardians[1].id) : null,
+      ];
+      setGuardians(nextGuardians);
+      setGuardianForms(guardianFormsFromGuardians(nextGuardians));
+      setGuardianEditSnapshots(guardianFormsFromGuardians(nextGuardians));
+      setEditingGuardianIds(nextGuardianIds);
+      const nextPayer = payerSlotFromRecipient(updated, nextGuardianIds);
+      setPayerGuardianSlot(nextPayer);
+      setPayerGuardianSlotSnapshot(nextPayer);
+      setDetailStaleConflict(null);
+      setGuardianError(null);
+      setGuardianMessage(null);
       setBasicEditOpen(false);
       setDetailMessage('수급자·보호자·본인부담금을 저장했습니다.');
       setListReload((current) => current + 1);
       setWorkspaceReload((current) => current + 1);
     } catch (error: unknown) {
+      if (isAbortError(error)) {
+        return;
+      }
+      if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
+        // Recipient field edits: preserve draft via stale panel. Guardian-only conflicts
+        // reload guardian slots so the next atomic save uses fresh row versions.
+        const hadRecipientChanges = recipientHasDraftChanges(baselineRecipient, draftAtSave);
+        if (hadRecipientChanges) {
+          await captureRecipientStaleConflict(baselineRecipient, draftAtSave);
+        } else {
+          try {
+            const response = await listGuardians(activeId);
+            const items = response.items ?? [];
+            const nextGuardianIds: [string | null, string | null] = [
+              items[0] ? normalizeId(items[0].id) : null,
+              items[1] ? normalizeId(items[1].id) : null,
+            ];
+            setGuardians(items);
+            setGuardianForms(guardianFormsFromGuardians(items));
+            setGuardianEditSnapshots(guardianFormsFromGuardians(items));
+            setEditingGuardianIds(nextGuardianIds);
+            setGuardianError('보호자 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.');
+          } catch (reloadError: unknown) {
+            setGuardianError(
+              safeErrorMessage(
+                reloadError,
+                '보호자 충돌 후 최신 정보를 불러오지 못했습니다. 입력은 유지됩니다.',
+              ),
+            );
+          }
+        }
+        return;
+      }
       const message = safeErrorMessage(error, '수급자·보호자 정보를 저장하지 못했습니다.');
       setDetailError(message);
       window.alert(message);
@@ -2578,6 +2630,9 @@ export const RecipientsPage = () => {
               </div>
             ) : null}
             {createOpen && createMessage ? <div className="recipient-inline-note">{createMessage}</div> : null}
+            {!createOpen && detailMessage ? (
+              <div className="recipient-inline-note">{detailMessage}</div>
+            ) : null}
           </section>
           <span className="visually-hidden" data-testid="recipient-detail-home-phone">
             {formatNullable(detailViewRecipient?.home_phone)}
@@ -2632,6 +2687,20 @@ export const RecipientsPage = () => {
             </div>
           ) : null}
 
+          <div className="recipient-payer-section">
+            <span data-testid="recipient-payer-current-label">{payerCurrentLabel}</span>
+            {basicEditOpen && payerGuardianSlot === 'unlisted' ? (
+              <button
+                className="recipient-secondary-button"
+                type="button"
+                data-testid="recipient-payer-self-button"
+                onClick={() => setPayerGuardianSlot(null)}
+                disabled={inputsLocked}
+              >
+                {payerSelfLabel}
+              </button>
+            ) : null}
+          </div>
           <div className="recipient-detail-columns recipient-guardian-cards">
             {([0, 1] as GuardianSlot[]).map((guardianIndex) => {
               const form = guardianForms[guardianIndex];

@@ -341,8 +341,69 @@ describe('W1D RED: contract and certification transition UI', () => {
   });
 
   test('submits minimal contract without contract_no and optional blanks', async () => {
+    let lastDetailBatch: Record<string, unknown> | null = null;
+    fetchSpy.mockImplementation(async (input, init) => {
+      const rawUrl = typeof input === 'string' ? input : (input as Request).url;
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const base = '/api/v1/recipients/42';
+
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse({ items: [syntheticRecipient], total: 1, page: 1, page_size: 100 });
+      }
+      if (url.pathname === base && method === 'GET') {
+        return jsonResponse(syntheticRecipient);
+      }
+      if (url.pathname === `${base}/contracts` && method === 'GET') {
+        return jsonResponse({ items: [] });
+      }
+      if (url.pathname === `${base}/detail-batch` && method === 'POST') {
+        lastDetailBatch = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        return jsonResponse({
+          recipient_id: 42,
+          saved_sections: ['contract'],
+        });
+      }
+      if (
+        method === 'GET' &&
+        [
+          `${base}/guardians`,
+          `${base}/primary-guardian-periods`,
+          `${base}/payer-snapshots`,
+          `${base}/certification-identity`,
+          `${base}/certification-periods`,
+          `${base}/grade-periods`,
+          `${base}/benefit-periods`,
+          `${base}/approval-amount-periods`,
+        ].some((path) => url.pathname === path || url.pathname.startsWith(path))
+      ) {
+        if (url.pathname.endsWith('certification-identity')) {
+          return jsonResponse(
+            {
+              error: {
+                code: 'CERTIFICATION_IDENTITY_NOT_FOUND',
+                message: '없음',
+              },
+              field_errors: [],
+              details: {},
+              request_id: '00000000-0000-4000-8000-000000000002',
+            },
+            404,
+          );
+        }
+        return jsonResponse({ items: [] });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    });
+
     await openRecipientDetail();
     await expandDetailExtras();
+    // Detail extras use batch-managed editing: enter 수정, then batch 저장.
+    fireEvent.click(screen.getByTestId('recipient-basic-edit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('recipient-detail-batch-toolbar')).toBeInTheDocument();
+    });
+
     const form = screen.queryByTestId('contract-create-form');
     expect(form, 'W1D_UI_CONTRACT_CREATE_FORM_MISSING').toBeInTheDocument();
     if (!form) return;
@@ -351,19 +412,23 @@ describe('W1D RED: contract and certification transition UI', () => {
     const startDate = within(form).getByTestId('contract-start-date-input');
     fireEvent.change(serviceType, { target: { value: 'HOME_CARE' } });
     fireEvent.change(startDate, { target: { value: '2026-07-01' } });
-    fireEvent.submit(form);
+    // Native form submit is intercepted; contract is collected by detail-batch save.
+    fireEvent.click(within(screen.getByTestId('recipient-detail-batch-toolbar')).getByRole('button', { name: '저장' }));
 
     await waitFor(() => {
-      expect(lastContractPost, 'W1D_UI_CONTRACT_POST_MISSING').not.toBeNull();
+      expect(lastDetailBatch, 'W1D_UI_CONTRACT_POST_MISSING').not.toBeNull();
     });
-    expect(lastContractPost, 'W1D_UI_CONTRACT_POST_MISSING').not.toBeNull();
-    if (!lastContractPost) return;
+    expect(lastDetailBatch, 'W1D_UI_CONTRACT_POST_MISSING').not.toBeNull();
+    if (!lastDetailBatch) return;
+    const contract = lastDetailBatch.contract as Record<string, unknown> | undefined;
+    expect(contract, 'W1D_UI_CONTRACT_POST_MISSING').toBeTruthy();
+    if (!contract) return;
     expect(
-      Object.prototype.hasOwnProperty.call(lastContractPost, 'contract_no'),
+      Object.prototype.hasOwnProperty.call(contract, 'contract_no'),
       'W1D_ABS08_UI_POST_CONTRACT_NO_KEY',
     ).toBe(false);
-    expect(lastContractPost.service_type_code, 'W1D_CON01_UI_POST_SERVICE_DRIFT').toBe('HOME_CARE');
-    expect(lastContractPost.start_date, 'W1D_CON01_UI_POST_START_DRIFT').toBe('2026-07-01');
+    expect(contract.service_type_code, 'W1D_CON01_UI_POST_SERVICE_DRIFT').toBe('HOME_CARE');
+    expect(contract.start_date, 'W1D_CON01_UI_POST_START_DRIFT').toBe('2026-07-01');
   });
 
   test('transition preview gates apply until explicit confirmation', async () => {

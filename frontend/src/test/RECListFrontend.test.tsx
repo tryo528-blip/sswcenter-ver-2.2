@@ -79,6 +79,20 @@ function parseListQuery(url: URL): ListQuery {
   };
 }
 
+/** Atomic basic-create batch: POST /api/v1/recipients/basic-batch */
+function isBasicCreateBatch(url: URL, method: string): boolean {
+  return method === 'POST' && url.pathname === '/api/v1/recipients/basic-batch';
+}
+
+/** Atomic basic-update batch: POST /api/v1/recipients/{id}/basic-batch */
+function isBasicUpdateBatch(url: URL, method: string): boolean {
+  return method === 'POST' && /^\/api\/v1\/recipients\/\d+\/basic-batch$/.test(url.pathname);
+}
+
+function parseJsonBody(init?: RequestInit): Record<string, unknown> {
+  return JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+}
+
 /** Exact recipient name via row strong text (avoids accessible-name clashes e.g. 이용중행 vs 이용중행2). */
 function hasRecipientRowWithExactName(name: string): boolean {
   return screen
@@ -137,11 +151,6 @@ function installRecipientListFetch(
 function enterBasicEdit() {
   const edit = screen.queryByTestId('recipient-basic-edit');
   if (edit) fireEvent.click(edit);
-}
-
-function clickBasicSave() {
-  enterBasicEdit();
-  fireEvent.click(screen.getByTestId('recipient-basic-save'));
 }
 
 function scrollListNearBottom() {
@@ -242,11 +251,11 @@ describe('REC-LIST frontend contract', () => {
     expect(within(row).queryByText('대기중')).toBeNull();
   });
 
-  test('detail status select saves recipient_status through PATCH and shows success/error', async () => {
-    const patchBodies: unknown[] = [];
-    let detailStatus: 'ACTIVE' | 'WAITING' | 'ENDED' = 'ACTIVE';
+  test('detail name save goes through basic-batch and shows success/error', async () => {
+    const batchBodies: Array<Record<string, unknown>> = [];
+    let detailName = '상태저장';
     let detailRowVersion = 1;
-    let forcePatchError = false;
+    let forceBatchError = false;
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -255,12 +264,12 @@ describe('REC-LIST frontend contract', () => {
       const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
 
       if (url.pathname === '/api/v1/recipients' && method === 'GET') {
-        return jsonResponse(listResponse([listItem({ id: 21, name: '상태저장' })]));
+        return jsonResponse(listResponse([listItem({ id: 21, name: detailName })]));
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}'));
-        patchBodies.push(body);
-        if (forcePatchError) {
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        if (forceBatchError) {
           return jsonResponse(
             {
               error: { code: 'VALIDATION_ERROR', message: '상태 오류' },
@@ -271,46 +280,38 @@ describe('REC-LIST frontend contract', () => {
             422,
           );
         }
-        if (body.recipient_status === 'WAITING' || body.recipient_status === 'ENDED' || body.recipient_status === 'ACTIVE') {
-          detailStatus = body.recipient_status;
-          detailRowVersion = Number(body.expected_row_version) + 1;
-          return jsonResponse({
-            id: 21,
-            name: '상태저장',
-            birth_date: '1950-03-15',
-            sex_code: 'FEMALE',
-            recipient_status: detailStatus,
-            recipient_no: 'R-001',
-            postal_code: '06236',
-            address: '서울시 강남구',
-            home_phone: '02-111-2222',
-            mobile_phone: '010-1111-2222',
-            memo: null,
-            payer_guardian_id: null,
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        if (typeof recipientBody.name === 'string') detailName = recipientBody.name;
+        detailRowVersion = Number(recipientBody.expected_row_version ?? detailRowVersion) + 1;
+        const recipient = {
+          id: 21,
+          name: detailName,
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE' as const,
+          recipient_no: 'R-001',
+          postal_code: '06236',
+          address: '서울시 강남구',
+          home_phone: '02-111-2222',
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
           row_version: detailRowVersion,
-          });
-        }
-        return jsonResponse(
-          {
-            error: { code: 'VALIDATION_ERROR', message: '상태 오류' },
-            field_errors: [],
-            details: {},
-            request_id: 't',
-          },
-          422,
-        );
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] });
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
         if (url.pathname.endsWith('/guardians')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         return jsonResponse({
           id: 21,
-          name: '상태저장',
+          name: detailName,
           birth_date: '1950-03-15',
           sex_code: 'FEMALE',
-          recipient_status: detailStatus,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-001',
           postal_code: '06236',
           address: '서울시 강남구',
@@ -327,52 +328,54 @@ describe('REC-LIST frontend contract', () => {
     render(<RecipientsPage />);
     fireEvent.click(await screen.findByRole('button', { name: /상태저장/ }));
 
-    const statusSelect = await screen.findByTestId('recipient-detail-status-select');
-    expect(statusSelect).toHaveValue('ACTIVE');
-    expect(within(statusSelect).getAllByRole('option').map((n) => n.textContent)).toEqual([
-      '이용중',
-      '계약종료',
-      '대기중',
-    ]);
+    // Basic form has no recipient_status control (status is list-filter only).
+    expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('상태저장'),
+    );
 
-    fireEvent.change(statusSelect, { target: { value: 'WAITING' } });
     enterBasicEdit();
-    clickBasicSave();
+    fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
+      target: { value: '상태저장수정' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
-    await waitFor(() => expect(patchBodies.length).toBeGreaterThan(0));
-    expect(patchBodies[0]).toEqual(
+    await waitFor(() => expect(batchBodies.length).toBeGreaterThan(0));
+    expect(batchBodies[0].recipient).toEqual(
       expect.objectContaining({
-        recipient_status: 'WAITING',
+        name: '상태저장수정',
         expected_row_version: 1,
       }),
     );
     await waitFor(() =>
-      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
+      expect(screen.getByText('수급자·보호자·본인부담금을 저장했습니다.')).toBeInTheDocument(),
     );
-    expect(statusSelect).toHaveValue('WAITING');
 
-    // Error path must execute: force 422 and assert role=alert error (draft preserved).
-    forcePatchError = true;
-    fireEvent.change(statusSelect, { target: { value: 'ENDED' } });
-    expect(statusSelect).toHaveValue('ENDED');
+    // Error path: force 422 and assert role=alert error (draft preserved).
+    forceBatchError = true;
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).not.toBeDisabled());
     enterBasicEdit();
-    clickBasicSave();
+    fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
+      target: { value: '오류이름' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
     const errorAlert = await screen.findByRole('alert');
     expect(errorAlert).toHaveClass('recipient-inline-error');
     expect(errorAlert.textContent).toMatch(/상태 오류|저장하지 못했습니다/);
-    // User draft status remains ENDED after failed save.
-    expect(statusSelect).toHaveValue('ENDED');
+    expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('오류이름');
 
     // Create form has no status selector.
     fireEvent.click(screen.getByTestId('recipient-create-toggle'));
-    expect(document.querySelector('#recipient-create-form [data-testid="recipient-detail-status-select"]')).toBeNull();
+    expect(
+      document.querySelector('#recipient-create-form [data-testid="recipient-detail-status-select"]'),
+    ).toBeNull();
     expect(document.querySelector('#recipient-create-form select[name="recipient_status"]')).toBeNull();
   });
 
   test('delayed detail GET: status/save not usable until GET resolves with real server tag', async () => {
     type PendingDetail = { resolve: (response: Response) => void };
     const pendingDetail: PendingDetail[] = [];
-    const patchBodies: unknown[] = [];
+    const batchBodies: Array<Record<string, unknown>> = [];
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -383,15 +386,16 @@ describe('REC-LIST frontend contract', () => {
       if (url.pathname === '/api/v1/recipients' && method === 'GET') {
         return jsonResponse(listResponse([listItem({ id: 41, name: '지연상세' })]));
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}'));
-        patchBodies.push(body);
-        return jsonResponse({
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        const recipient = {
           id: 41,
-          name: '지연상세',
+          name: typeof recipientBody.name === 'string' ? recipientBody.name : '지연상세',
           birth_date: '1950-03-15',
           sex_code: 'FEMALE',
-          recipient_status: body.recipient_status ?? 'ENDED',
+          recipient_status: 'ENDED' as const,
           recipient_no: 'R-041',
           postal_code: null,
           address: null,
@@ -399,14 +403,16 @@ describe('REC-LIST frontend contract', () => {
           mobile_phone: '010-1111-2222',
           memo: null,
           payer_guardian_id: null,
-          row_version: Number(body.expected_row_version ?? 1) + 1,
-        });
+          row_version: Number(recipientBody.expected_row_version ?? 7) + 1,
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] });
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
         if (url.pathname.endsWith('/guardians')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         // Primary detail GET is deferred (not related collection GETs).
         if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname)) {
           return new Promise<Response>((resolve) => {
@@ -420,14 +426,13 @@ describe('REC-LIST frontend contract', () => {
     render(<RecipientsPage />);
     fireEvent.click(await screen.findByRole('button', { name: /지연상세/ }));
 
-    // While detail GET is pending: loading note, no editable status/save (list cannot invent ACTIVE).
+    // While detail GET is pending: loading note, no save, edit locked (list cannot invent baseline).
     await waitFor(() => {
       expect(screen.getByText('상세 정보를 불러오는 중입니다.')).toBeInTheDocument();
     });
-    expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
     expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
-    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
-    expect(patchBodies).toHaveLength(0);
+    expect(screen.getByTestId('recipient-basic-edit')).toBeDisabled();
+    expect(batchBodies).toHaveLength(0);
 
     expect(pendingDetail.length).toBeGreaterThan(0);
     pendingDetail[pendingDetail.length - 1].resolve(
@@ -444,24 +449,27 @@ describe('REC-LIST frontend contract', () => {
         mobile_phone: '010-1111-2222',
         memo: null,
         payer_guardian_id: null,
-          row_version: 7,
+        row_version: 7,
       }),
     );
 
-    const statusSelect = await screen.findByTestId('recipient-detail-status-select');
-    expect(statusSelect).toHaveValue('ENDED');
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('지연상세'),
+    );
     enterBasicEdit();
     const saveButton = screen.getByTestId('recipient-basic-save');
     // no-op: successful detail GET with no user edits → Save stays disabled (baseline === draft).
     expect(saveButton).toBeDisabled();
 
-    fireEvent.change(statusSelect, { target: { value: 'WAITING' } });
+    fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
+      target: { value: '지연상세수정' },
+    });
     expect(saveButton).not.toBeDisabled();
     fireEvent.click(saveButton);
-    await waitFor(() => expect(patchBodies.length).toBe(1));
-    expect(patchBodies[0]).toEqual(
+    await waitFor(() => expect(batchBodies.length).toBe(1));
+    expect(batchBodies[0].recipient).toEqual(
       expect.objectContaining({
-        recipient_status: 'WAITING',
+        name: '지연상세수정',
         expected_row_version: 7,
       }),
     );
@@ -515,12 +523,13 @@ describe('REC-LIST frontend contract', () => {
   });
 
   test('ROW_VERSION_CONFLICT reloads latest detail, preserves draft, reapplies with latest row_version', async () => {
-    // Different-field conflict: user changes status only; concurrent server changes name only.
-    const patchBodies: Array<Record<string, unknown>> = [];
+    // Different-field conflict: user changes mobile only; concurrent server changes name only.
+    const batchBodies: Array<Record<string, unknown>> = [];
+    const reapplyBodies: Array<Record<string, unknown>> = [];
     let detailGets = 0;
     let serverRowVersion = 1;
     let serverName = '충돌원본';
-    let serverStatus: 'ACTIVE' | 'ENDED' | 'WAITING' = 'ACTIVE';
+    let serverMobile = '010-1111-2222';
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -533,10 +542,11 @@ describe('REC-LIST frontend contract', () => {
           listResponse([listItem({ id: 31, name: serverName, row_version: serverRowVersion })]),
         );
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
-        if (Number(body.expected_row_version) !== serverRowVersion) {
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        if (Number(recipientBody.expected_row_version) !== serverRowVersion) {
           return jsonResponse(
             {
               error: {
@@ -550,22 +560,43 @@ describe('REC-LIST frontend contract', () => {
             409,
           );
         }
+        if (typeof recipientBody.name === 'string') serverName = recipientBody.name;
+        if (typeof recipientBody.mobile_phone === 'string') serverMobile = recipientBody.mobile_phone;
+        serverRowVersion = Number(recipientBody.expected_row_version) + 1;
+        const recipient = {
+          id: 31,
+          name: serverName,
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE' as const,
+          recipient_no: 'R-031',
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: serverMobile,
+          memo: null,
+          payer_guardian_id: null,
+          row_version: serverRowVersion,
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] });
+      }
+      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
+        const body = parseJsonBody(init);
+        reapplyBodies.push(body);
         if (typeof body.name === 'string') serverName = body.name;
-        if (typeof body.recipient_status === 'string') {
-          serverStatus = body.recipient_status as 'ACTIVE' | 'ENDED' | 'WAITING';
-        }
+        if (typeof body.mobile_phone === 'string') serverMobile = body.mobile_phone;
         serverRowVersion = Number(body.expected_row_version) + 1;
         return jsonResponse({
           id: 31,
           name: serverName,
           birth_date: '1950-03-15',
           sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-031',
           postal_code: null,
           address: null,
           home_phone: null,
-          mobile_phone: '010-1111-2222',
+          mobile_phone: serverMobile,
           memo: null,
           payer_guardian_id: null,
           row_version: serverRowVersion,
@@ -576,18 +607,19 @@ describe('REC-LIST frontend contract', () => {
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         detailGets += 1;
         return jsonResponse({
           id: 31,
           name: serverName,
           birth_date: '1950-03-15',
           sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-031',
           postal_code: null,
           address: null,
           home_phone: null,
-          mobile_phone: '010-1111-2222',
+          mobile_phone: serverMobile,
           memo: null,
           payer_guardian_id: null,
           row_version: serverRowVersion,
@@ -600,15 +632,15 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.click(await screen.findByRole('button', { name: /충돌원본/ }));
     await waitFor(() => expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('충돌원본'));
 
-    // Concurrent server changes name only (different field from user's status edit).
+    // Concurrent server changes name only (different field from user's mobile edit).
     serverRowVersion = 5;
     serverName = '서버최신이름';
 
-    fireEvent.change(screen.getByTestId('recipient-detail-status-select'), {
-      target: { value: 'WAITING' },
-    });
     enterBasicEdit();
-    clickBasicSave();
+    fireEvent.change(screen.getByTestId('recipient-detail-mobile-phone-input'), {
+      target: { value: '010-9999-8888' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
     const conflictAlerts = await screen.findAllByRole('alert');
     expect(conflictAlerts).toHaveLength(1);
@@ -616,37 +648,39 @@ describe('REC-LIST frontend contract', () => {
       '다른 사용자가 먼저 변경했습니다. 최신 서버값을 확인하고 필요한 변경만 다시 적용해주세요.',
     );
     await waitFor(() => expect(screen.getByTestId('recipient-stale-latest-value')).toHaveTextContent('서버최신이름'));
-    // User status draft preserved; server name shown on reapply panel (outside alert).
-    expect(screen.getByTestId('recipient-detail-status-select')).toHaveValue('WAITING');
+    // User mobile draft preserved; server name applied onto the form baseline.
+    expect(screen.getByTestId('recipient-detail-mobile-phone-input')).toHaveValue('010-9999-8888');
     expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('서버최신이름');
     expect(detailGets).toBeGreaterThan(1);
 
-    // Post-conflict re-edit: change status again before reapply; PATCH must carry new value.
-    fireEvent.change(screen.getByTestId('recipient-detail-status-select'), {
-      target: { value: 'ENDED' },
+    // Post-conflict re-edit: change mobile again before reapply; PATCH must carry new value.
+    fireEvent.change(screen.getByTestId('recipient-detail-mobile-phone-input'), {
+      target: { value: '010-7777-6666' },
     });
     fireEvent.click(screen.getByTestId('recipient-stale-reapply'));
     await waitFor(() =>
-      expect(patchBodies.some((body) => body.expected_row_version === 5)).toBe(true),
+      expect(reapplyBodies.some((body) => body.expected_row_version === 5)).toBe(true),
     );
-    const reapplyBody = patchBodies.find((body) => body.expected_row_version === 5);
+    const reapplyBody = reapplyBodies.find((body) => body.expected_row_version === 5);
     expect(reapplyBody).toEqual({
       expected_row_version: 5,
-      recipient_status: 'ENDED',
+      mobile_phone: '010-7777-6666',
     });
     expect(reapplyBody).not.toHaveProperty('name');
     await waitFor(() =>
       expect(screen.getByText('최신 버전에 변경 내용을 다시 적용했습니다.')).toBeInTheDocument(),
     );
     expect(screen.queryByTestId('recipient-stale-reapply')).toBeNull();
+    expect(batchBodies).toHaveLength(1);
   });
 
-  test('ROW_VERSION_CONFLICT reapply omits untouched recipient_status so concurrent ENDED is preserved', async () => {
-    // User edits only name; concurrent server sets status ENDED only (different field).
-    const patchBodies: Array<Record<string, unknown>> = [];
+  test('ROW_VERSION_CONFLICT reapply omits untouched sex_code so concurrent sex change is preserved', async () => {
+    // User edits only name; concurrent server sets sex MALE only (different field).
+    const batchBodies: Array<Record<string, unknown>> = [];
+    const reapplyBodies: Array<Record<string, unknown>> = [];
     let serverRowVersion = 1;
     let serverName = '상태충돌원본';
-    let serverStatus: 'ACTIVE' | 'ENDED' | 'WAITING' = 'ACTIVE';
+    let serverSex: 'MALE' | 'FEMALE' = 'FEMALE';
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -659,10 +693,11 @@ describe('REC-LIST frontend contract', () => {
           listResponse([listItem({ id: 32, name: serverName, row_version: serverRowVersion })]),
         );
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
-        if (Number(body.expected_row_version) !== serverRowVersion) {
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        if (Number(recipientBody.expected_row_version) !== serverRowVersion) {
           return jsonResponse(
             {
               error: {
@@ -676,17 +711,40 @@ describe('REC-LIST frontend contract', () => {
             409,
           );
         }
-        if (typeof body.name === 'string') serverName = body.name;
-        if (typeof body.recipient_status === 'string') {
-          serverStatus = body.recipient_status as 'ACTIVE' | 'ENDED' | 'WAITING';
+        if (typeof recipientBody.name === 'string') serverName = recipientBody.name;
+        if (recipientBody.sex_code === 'MALE' || recipientBody.sex_code === 'FEMALE') {
+          serverSex = recipientBody.sex_code;
         }
+        serverRowVersion = Number(recipientBody.expected_row_version) + 1;
+        const recipient = {
+          id: 32,
+          name: serverName,
+          birth_date: '1950-03-15',
+          sex_code: serverSex,
+          recipient_status: 'ACTIVE' as const,
+          recipient_no: 'R-032',
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: serverRowVersion,
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] });
+      }
+      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
+        const body = parseJsonBody(init);
+        reapplyBodies.push(body);
+        if (typeof body.name === 'string') serverName = body.name;
+        if (body.sex_code === 'MALE' || body.sex_code === 'FEMALE') serverSex = body.sex_code;
         serverRowVersion = Number(body.expected_row_version) + 1;
         return jsonResponse({
           id: 32,
           name: serverName,
           birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          sex_code: serverSex,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-032',
           postal_code: null,
           address: null,
@@ -702,12 +760,13 @@ describe('REC-LIST frontend contract', () => {
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         return jsonResponse({
           id: 32,
           name: serverName,
           birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          sex_code: serverSex,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-032',
           postal_code: null,
           address: null,
@@ -724,18 +783,18 @@ describe('REC-LIST frontend contract', () => {
     render(<RecipientsPage />);
     fireEvent.click(await screen.findByRole('button', { name: /상태충돌원본/ }));
     await waitFor(() => expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('상태충돌원본'));
-    expect(screen.getByTestId('recipient-detail-status-select')).toHaveValue('ACTIVE');
+    expect(screen.getByTestId('recipient-detail-sex-code-select')).toHaveValue('FEMALE');
 
-    // Concurrent server: status ENDED only; name unchanged so no same-field collision on name.
+    // Concurrent server: sex MALE only; name unchanged so no same-field collision on name.
     serverRowVersion = 5;
-    serverStatus = 'ENDED';
+    serverSex = 'MALE';
 
+    enterBasicEdit();
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '이름만수정' },
     });
-    expect(screen.getByTestId('recipient-detail-status-select')).toHaveValue('ACTIVE');
-    enterBasicEdit();
-    clickBasicSave();
+    expect(screen.getByTestId('recipient-detail-sex-code-select')).toHaveValue('FEMALE');
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
     const conflictAlerts = await screen.findAllByRole('alert');
     expect(conflictAlerts).toHaveLength(1);
@@ -745,9 +804,9 @@ describe('REC-LIST frontend contract', () => {
     await waitFor(() =>
       expect(screen.getByTestId('recipient-stale-latest-value')).toHaveTextContent('상태충돌원본'),
     );
-    // User name preserved; form shows server ENDED for status (merged baseline).
+    // User name preserved; form shows server MALE for sex (merged baseline).
     expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('이름만수정');
-    expect(screen.getByTestId('recipient-detail-status-select')).toHaveValue('ENDED');
+    expect(screen.getByTestId('recipient-detail-sex-code-select')).toHaveValue('MALE');
 
     // Re-edit name after conflict; reapply must send re-edited value, not the pre-conflict draft alone.
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
@@ -755,28 +814,28 @@ describe('REC-LIST frontend contract', () => {
     });
     fireEvent.click(screen.getByTestId('recipient-stale-reapply'));
     await waitFor(() =>
-      expect(patchBodies.some((body) => body.expected_row_version === 5)).toBe(true),
+      expect(reapplyBodies.some((body) => body.expected_row_version === 5)).toBe(true),
     );
-    const reapplyBody = patchBodies.find((body) => body.expected_row_version === 5);
+    const reapplyBody = reapplyBodies.find((body) => body.expected_row_version === 5);
     expect(reapplyBody).toEqual({
       expected_row_version: 5,
       name: '재편집이름',
     });
-    expect(reapplyBody).not.toHaveProperty('recipient_status');
+    expect(reapplyBody).not.toHaveProperty('sex_code');
 
     await waitFor(() =>
       expect(screen.getByText('최신 버전에 변경 내용을 다시 적용했습니다.')).toBeInTheDocument(),
     );
-    expect(screen.getByTestId('recipient-detail-status-select')).toHaveValue('ENDED');
+    expect(screen.getByTestId('recipient-detail-sex-code-select')).toHaveValue('MALE');
     expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('재편집이름');
-    expect(serverStatus).toBe('ENDED');
+    expect(serverSex).toBe('MALE');
+    expect(batchBodies).toHaveLength(1);
   });
 
   test('same-field ROW_VERSION_CONFLICT shows exact alert, separate conflict log, no reapply', async () => {
-    const patchBodies: Array<Record<string, unknown>> = [];
+    const batchBodies: Array<Record<string, unknown>> = [];
     let serverRowVersion = 1;
     let serverName = '동일필드충돌';
-    let serverStatus: 'ACTIVE' | 'ENDED' | 'WAITING' = 'ACTIVE';
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -789,10 +848,11 @@ describe('REC-LIST frontend contract', () => {
           listResponse([listItem({ id: 33, name: serverName, row_version: serverRowVersion })]),
         );
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
-        if (Number(body.expected_row_version) !== serverRowVersion) {
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        if (Number(recipientBody.expected_row_version) !== serverRowVersion) {
           return jsonResponse(
             {
               error: {
@@ -806,17 +866,14 @@ describe('REC-LIST frontend contract', () => {
             409,
           );
         }
-        if (typeof body.name === 'string') serverName = body.name;
-        if (typeof body.recipient_status === 'string') {
-          serverStatus = body.recipient_status as 'ACTIVE' | 'ENDED' | 'WAITING';
-        }
-        serverRowVersion = Number(body.expected_row_version) + 1;
-        return jsonResponse({
+        if (typeof recipientBody.name === 'string') serverName = recipientBody.name;
+        serverRowVersion = Number(recipientBody.expected_row_version) + 1;
+        const recipient = {
           id: 33,
           name: serverName,
           birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          sex_code: 'FEMALE' as const,
+          recipient_status: 'ACTIVE' as const,
           recipient_no: 'R-033',
           postal_code: null,
           address: null,
@@ -825,19 +882,21 @@ describe('REC-LIST frontend contract', () => {
           memo: null,
           payer_guardian_id: null,
           row_version: serverRowVersion,
-        });
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] });
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
         if (url.pathname.endsWith('/guardians')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         return jsonResponse({
           id: 33,
           name: serverName,
           birth_date: '1950-03-15',
           sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-033',
           postal_code: null,
           address: null,
@@ -859,11 +918,11 @@ describe('REC-LIST frontend contract', () => {
     serverRowVersion = 5;
     serverName = '서버이름';
 
+    enterBasicEdit();
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '사용자이름' },
     });
-    enterBasicEdit();
-    clickBasicSave();
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
     const alerts = await screen.findAllByRole('alert');
     expect(alerts).toHaveLength(1);
@@ -881,28 +940,28 @@ describe('REC-LIST frontend contract', () => {
     // Form field set to server latest; no automatic reapply.
     expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('서버이름');
     expect(screen.queryByTestId('recipient-stale-reapply')).toBeNull();
-    // Only the initial failing PATCH; no auto reapply PATCH.
-    expect(patchBodies).toHaveLength(1);
+    // Only the initial failing basic-batch; no auto reapply.
+    expect(batchBodies).toHaveLength(1);
 
     // User must re-edit the latest baseline before saving the conflicting field.
+    enterBasicEdit();
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '재편집후이름' },
     });
-    enterBasicEdit();
-    clickBasicSave();
-    await waitFor(() => expect(patchBodies.length).toBe(2));
-    expect(patchBodies[1]).toEqual({
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(batchBodies.length).toBe(2));
+    expect(batchBodies[1].recipient).toEqual({
       expected_row_version: 5,
       name: '재편집후이름',
     });
   });
 
   test('mixed same-field + disjoint ROW_VERSION_CONFLICT preserves non-conflicting user edit', async () => {
-    // User changes name + status; server changes only name → name→server, status preserved.
-    const patchBodies: Array<Record<string, unknown>> = [];
+    // User changes name + mobile; server changes only name → name→server, mobile preserved.
+    const batchBodies: Array<Record<string, unknown>> = [];
     let serverRowVersion = 1;
     let serverName = '혼합충돌원본';
-    let serverStatus: 'ACTIVE' | 'ENDED' | 'WAITING' = 'ACTIVE';
+    let serverMobile = '010-1111-2222';
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -915,10 +974,11 @@ describe('REC-LIST frontend contract', () => {
           listResponse([listItem({ id: 36, name: serverName, row_version: serverRowVersion })]),
         );
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
-        if (Number(body.expected_row_version) !== serverRowVersion) {
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        if (Number(recipientBody.expected_row_version) !== serverRowVersion) {
           return jsonResponse(
             {
               error: {
@@ -932,43 +992,43 @@ describe('REC-LIST frontend contract', () => {
             409,
           );
         }
-        if (typeof body.name === 'string') serverName = body.name;
-        if (typeof body.recipient_status === 'string') {
-          serverStatus = body.recipient_status as 'ACTIVE' | 'ENDED' | 'WAITING';
-        }
-        serverRowVersion = Number(body.expected_row_version) + 1;
-        return jsonResponse({
+        if (typeof recipientBody.name === 'string') serverName = recipientBody.name;
+        if (typeof recipientBody.mobile_phone === 'string') serverMobile = recipientBody.mobile_phone;
+        serverRowVersion = Number(recipientBody.expected_row_version) + 1;
+        const recipient = {
           id: 36,
           name: serverName,
           birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          sex_code: 'FEMALE' as const,
+          recipient_status: 'ACTIVE' as const,
           recipient_no: 'R-036',
           postal_code: null,
           address: null,
           home_phone: null,
-          mobile_phone: '010-1111-2222',
+          mobile_phone: serverMobile,
           memo: null,
           payer_guardian_id: null,
           row_version: serverRowVersion,
-        });
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] });
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
         if (url.pathname.endsWith('/guardians')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         return jsonResponse({
           id: 36,
           name: serverName,
           birth_date: '1950-03-15',
           sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-036',
           postal_code: null,
           address: null,
           home_phone: null,
-          mobile_phone: '010-1111-2222',
+          mobile_phone: serverMobile,
           memo: null,
           payer_guardian_id: null,
           row_version: serverRowVersion,
@@ -984,43 +1044,42 @@ describe('REC-LIST frontend contract', () => {
     serverRowVersion = 7;
     serverName = '서버혼합이름';
 
+    enterBasicEdit();
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '사용자혼합이름' },
     });
-    fireEvent.change(screen.getByTestId('recipient-detail-status-select'), {
-      target: { value: 'WAITING' },
+    fireEvent.change(screen.getByTestId('recipient-detail-mobile-phone-input'), {
+      target: { value: '010-3333-4444' },
     });
-    enterBasicEdit();
-    clickBasicSave();
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
     const alerts = await screen.findAllByRole('alert');
     expect(alerts).toHaveLength(1);
     expect(alerts[0].textContent).toBe('이미 수정되었습니다');
     expect(screen.getByTestId('recipient-conflict-field-name')).toHaveTextContent('사용자혼합이름');
     expect(screen.getByTestId('recipient-conflict-field-name')).toHaveTextContent('서버혼합이름');
-    // Same-field name → server; disjoint status → preserved.
+    // Same-field name → server; disjoint mobile → preserved.
     expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('서버혼합이름');
-    expect(screen.getByTestId('recipient-detail-status-select')).toHaveValue('WAITING');
+    expect(screen.getByTestId('recipient-detail-mobile-phone-input')).toHaveValue('010-3333-4444');
     expect(screen.queryByTestId('recipient-stale-reapply')).toBeNull();
-    expect(patchBodies).toHaveLength(1);
+    expect(batchBodies).toHaveLength(1);
 
     // Save remaining disjoint edit against latest row_version (no stale draft resend of name).
     enterBasicEdit();
-    clickBasicSave();
-    await waitFor(() => expect(patchBodies.length).toBe(2));
-    expect(patchBodies[1]).toEqual({
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(batchBodies.length).toBe(2));
+    expect(batchBodies[1].recipient).toEqual({
       expected_row_version: 7,
-      recipient_status: 'WAITING',
+      mobile_phone: '010-3333-4444',
     });
-    expect(patchBodies[1]).not.toHaveProperty('name');
+    expect(batchBodies[1].recipient as Record<string, unknown>).not.toHaveProperty('name');
   });
 
-  test('no-op Save is disabled and sends zero PATCH; exact keys for name/status/both; whitespace/null no-op', async () => {
-    const patchBodies: Array<Record<string, unknown>> = [];
+  test('no-op Save is disabled and sends zero basic-batch; exact keys for name/mobile/both; whitespace no-op', async () => {
+    const batchBodies: Array<Record<string, unknown>> = [];
     let serverName = '변경감지';
-    let serverStatus: 'ACTIVE' | 'ENDED' | 'WAITING' = 'ACTIVE';
+    let serverMobile = '010-1111-2222';
     let serverVersion = 1;
-    let serverMemo: string | null = null;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
         typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
@@ -1030,48 +1089,48 @@ describe('REC-LIST frontend contract', () => {
       if (url.pathname === '/api/v1/recipients' && method === 'GET') {
         return jsonResponse(listResponse([listItem({ id: 34, name: serverName })]));
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
-        if (typeof body.name === 'string') serverName = body.name;
-        if (typeof body.recipient_status === 'string') {
-          serverStatus = body.recipient_status as 'ACTIVE' | 'ENDED' | 'WAITING';
-        }
-        if ('memo' in body) serverMemo = (body.memo as string | null) ?? null;
-        serverVersion = Number(body.expected_row_version) + 1;
-        return jsonResponse({
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        if (typeof recipientBody.name === 'string') serverName = recipientBody.name;
+        if (typeof recipientBody.mobile_phone === 'string') serverMobile = recipientBody.mobile_phone;
+        serverVersion = Number(recipientBody.expected_row_version) + 1;
+        const recipient = {
           id: 34,
           name: serverName,
           birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          sex_code: 'FEMALE' as const,
+          recipient_status: 'ACTIVE' as const,
           recipient_no: 'R-034',
           postal_code: null,
           address: null,
           home_phone: null,
-          mobile_phone: '010-1111-2222',
-          memo: serverMemo,
+          mobile_phone: serverMobile,
+          memo: null,
           payer_guardian_id: null,
           row_version: serverVersion,
-        });
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] });
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
         if (url.pathname.endsWith('/guardians')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         return jsonResponse({
           id: 34,
           name: serverName,
           birth_date: '1950-03-15',
           sex_code: 'FEMALE',
-          recipient_status: serverStatus,
+          recipient_status: 'ACTIVE',
           recipient_no: 'R-034',
           postal_code: null,
           address: null,
           home_phone: null,
-          mobile_phone: '010-1111-2222',
-          memo: serverMemo,
+          mobile_phone: serverMobile,
+          memo: null,
           payer_guardian_id: null,
           row_version: serverVersion,
         });
@@ -1087,85 +1146,83 @@ describe('REC-LIST frontend contract', () => {
     const save = screen.getByTestId('recipient-basic-save');
     expect(save).toBeDisabled();
     fireEvent.click(save);
-    expect(patchBodies).toHaveLength(0);
+    expect(batchBodies).toHaveLength(0);
 
-    // Trailing whitespace on name that trims equal to baseline → no-op (disabled Save, zero PATCH).
+    // Trailing whitespace on name that trims equal to baseline → no-op (disabled Save, zero batch).
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '변경감지   ' },
     });
     expect(save).toBeDisabled();
     fireEvent.click(save);
-    expect(patchBodies).toHaveLength(0);
+    expect(batchBodies).toHaveLength(0);
 
-    // Empty / whitespace-only memo when server memo is null → null equivalence no-op.
-    const detailFormEl = screen.getByTestId('recipient-detail-name-input').closest('form');
-    expect(detailFormEl).not.toBeNull();
-    const memoField = detailFormEl!.querySelector('textarea');
-    expect(memoField).not.toBeNull();
-    fireEvent.change(memoField!, { target: { value: '   ' } });
-    expect(save).toBeDisabled();
-    fireEvent.click(save);
-    expect(patchBodies).toHaveLength(0);
-    fireEvent.change(memoField!, { target: { value: '' } });
-    expect(save).toBeDisabled();
-
-    // Name-only — exact key set
+    // Name-only — exact recipient key set
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '이름변경' },
     });
     expect(save).not.toBeDisabled();
     fireEvent.click(save);
-    await waitFor(() => expect(patchBodies.length).toBe(1));
-    expect(Object.keys(patchBodies[0] as object).sort()).toEqual(
+    await waitFor(() => expect(batchBodies.length).toBe(1));
+    expect(Object.keys(batchBodies[0].recipient as object).sort()).toEqual(
       ['expected_row_version', 'name'].sort(),
     );
-    expect(patchBodies[0]).toEqual({ name: '이름변경', expected_row_version: 1 });
+    expect(batchBodies[0].recipient).toEqual({ name: '이름변경', expected_row_version: 1 });
 
-    // After success form matches server; save disabled again.
-    await waitFor(() => expect(save).toBeDisabled());
+    // After success form matches server; re-enter edit with no changes → save disabled again.
+    await waitFor(() => expect(screen.queryByTestId('recipient-basic-save')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).not.toBeDisabled());
+    enterBasicEdit();
+    expect(screen.getByTestId('recipient-basic-save')).toBeDisabled();
 
-    // Status-only — exact key set
-    fireEvent.change(screen.getByTestId('recipient-detail-status-select'), {
-      target: { value: 'ENDED' },
+    // Mobile-only — exact recipient key set
+    fireEvent.change(screen.getByTestId('recipient-detail-mobile-phone-input'), {
+      target: { value: '010-2222-3333' },
     });
-    expect(save).not.toBeDisabled();
-    fireEvent.click(save);
-    await waitFor(() => expect(patchBodies.length).toBe(2));
-    expect(Object.keys(patchBodies[1] as object).sort()).toEqual(
-      ['expected_row_version', 'recipient_status'].sort(),
+    expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(batchBodies.length).toBe(2));
+    expect(Object.keys(batchBodies[1].recipient as object).sort()).toEqual(
+      ['expected_row_version', 'mobile_phone'].sort(),
     );
-    expect(patchBodies[1]).toEqual({ recipient_status: 'ENDED', expected_row_version: 2 });
-    await waitFor(() => expect(save).toBeDisabled());
+    expect(batchBodies[1].recipient).toEqual({
+      mobile_phone: '010-2222-3333',
+      expected_row_version: 2,
+    });
+    await waitFor(() => expect(screen.queryByTestId('recipient-basic-save')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).not.toBeDisabled());
+    enterBasicEdit();
 
     // Both — exact key set
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '둘다' },
     });
-    fireEvent.change(screen.getByTestId('recipient-detail-status-select'), {
-      target: { value: 'WAITING' },
+    fireEvent.change(screen.getByTestId('recipient-detail-mobile-phone-input'), {
+      target: { value: '010-4444-5555' },
     });
-    fireEvent.click(save);
-    await waitFor(() => expect(patchBodies.length).toBe(3));
-    expect(Object.keys(patchBodies[2] as object).sort()).toEqual(
-      ['expected_row_version', 'name', 'recipient_status'].sort(),
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(batchBodies.length).toBe(3));
+    expect(Object.keys(batchBodies[2].recipient as object).sort()).toEqual(
+      ['expected_row_version', 'mobile_phone', 'name'].sort(),
     );
-    expect(patchBodies[2]).toEqual({
+    expect(batchBodies[2].recipient).toEqual({
       name: '둘다',
-      recipient_status: 'WAITING',
+      mobile_phone: '010-4444-5555',
       expected_row_version: 3,
     });
-    await waitFor(() => expect(save).toBeDisabled());
+    await waitFor(() => expect(screen.queryByTestId('recipient-basic-save')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).not.toBeDisabled());
+    enterBasicEdit();
 
-    // Revert-to-original disables Save without PATCH
+    // Revert-to-original disables Save without batch
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '임시' },
     });
-    expect(save).not.toBeDisabled();
+    expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled();
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '둘다' },
     });
-    expect(save).toBeDisabled();
-    expect(patchBodies).toHaveLength(3);
+    expect(screen.getByTestId('recipient-basic-save')).toBeDisabled();
+    expect(batchBodies).toHaveLength(3);
   });
 
   test('malformed detail (null recipient_status) blocks editor and Save/PATCH', async () => {
@@ -1360,8 +1417,8 @@ describe('REC-LIST frontend contract', () => {
   });
 
   test('detail inputs and Save disabled while save in flight', async () => {
-    const patchBodies: unknown[] = [];
-    let releasePatch: ((value: Response) => void) | null = null;
+    const batchBodies: unknown[] = [];
+    let releaseBatch: ((value: Response) => void) | null = null;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
         typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
@@ -1371,10 +1428,10 @@ describe('REC-LIST frontend contract', () => {
       if (url.pathname === '/api/v1/recipients' && method === 'GET') {
         return jsonResponse(listResponse([listItem({ id: 39, name: '저장중잠금' })]));
       }
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        patchBodies.push(JSON.parse(String(init?.body ?? '{}')));
+      if (isBasicUpdateBatch(url, method)) {
+        batchBodies.push(parseJsonBody(init));
         return new Promise<Response>((resolve) => {
-          releasePatch = resolve;
+          releaseBatch = resolve;
         });
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
@@ -1382,6 +1439,7 @@ describe('REC-LIST frontend contract', () => {
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         return jsonResponse({
           id: 39,
           name: '저장중잠금',
@@ -1405,53 +1463,59 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.click(await screen.findByRole('button', { name: /저장중잠금/ }));
     await waitFor(() => expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('저장중잠금'));
 
+    enterBasicEdit();
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '저장중이름' },
     });
-    enterBasicEdit();
-    clickBasicSave();
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
-    await waitFor(() => expect(patchBodies).toHaveLength(1));
+    await waitFor(() => expect(batchBodies).toHaveLength(1));
     // Every detail input/select and Save must be disabled while save is in flight.
     expect(screen.getByTestId('recipient-detail-name-input')).toBeDisabled();
     expect(screen.getByTestId('recipient-detail-birth-date-input')).toBeDisabled();
     expect(screen.getByTestId('recipient-detail-sex-code-select')).toBeDisabled();
-    expect(screen.getByTestId('recipient-detail-status-select')).toBeDisabled();
+    expect(screen.getByTestId('recipient-detail-mobile-phone-input')).toBeDisabled();
     const detailForm = screen.getByTestId('recipient-detail-name-input').closest('form');
     expect(detailForm).not.toBeNull();
     const pendingInputs = detailForm!.querySelectorAll('input, select, textarea');
-    expect(pendingInputs.length).toBeGreaterThanOrEqual(9);
+    expect(pendingInputs.length).toBeGreaterThanOrEqual(8);
     pendingInputs.forEach((node) => {
       expect(node).toBeDisabled();
     });
-    enterBasicEdit();
     expect(screen.getByTestId('recipient-basic-save')).toBeDisabled();
 
-    releasePatch?.(
+    releaseBatch?.(
       jsonResponse({
-        id: 39,
-        name: '저장중이름',
-        birth_date: '1950-03-15',
-        sex_code: 'FEMALE',
-        recipient_status: 'ACTIVE',
-        recipient_no: 'R-039',
-        postal_code: null,
-        address: null,
-        home_phone: null,
-        mobile_phone: '010-1111-2222',
-        memo: null,
-        payer_guardian_id: null,
+        recipient: {
+          id: 39,
+          name: '저장중이름',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: 'R-039',
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
           row_version: 2,
+        },
+        guardians: [],
+        saved_sections: ['recipient'],
       }),
     );
-    await waitFor(() => expect(screen.getByTestId('recipient-detail-name-input')).not.toBeDisabled());
-    expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('저장중이름');
+    await waitFor(() => expect(screen.queryByTestId('recipient-basic-save')).toBeNull());
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('저장중이름'),
+    );
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).not.toBeDisabled());
     enterBasicEdit();
     expect(screen.getByTestId('recipient-basic-save')).toBeDisabled();
   });
 
-  test('create POST payload has no recipient_status field', async () => {
-    const postBodies: unknown[] = [];
+  test('create basic-batch payload has no recipient_status field', async () => {
+    const postBodies: Array<Record<string, unknown>> = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
         typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
@@ -1461,30 +1525,33 @@ describe('REC-LIST frontend contract', () => {
       if (url.pathname === '/api/v1/recipients' && method === 'GET') {
         return jsonResponse(listResponse([]));
       }
-      if (url.pathname === '/api/v1/recipients' && method === 'POST') {
-        const body = JSON.parse(String(init?.body ?? '{}'));
+      if (isBasicCreateBatch(url, method)) {
+        const body = parseJsonBody(init);
         postBodies.push(body);
-        return jsonResponse({
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        const recipient = {
           id: 99,
-          name: body.name,
-          birth_date: body.birth_date,
-          sex_code: body.sex_code,
+          name: recipientBody.name,
+          birth_date: recipientBody.birth_date,
+          sex_code: recipientBody.sex_code,
           recipient_status: 'ACTIVE',
           recipient_no: null,
-          postal_code: body.postal_code ?? null,
-          address: body.address ?? null,
-          home_phone: body.home_phone ?? null,
-          mobile_phone: body.mobile_phone ?? null,
-          memo: body.memo ?? null,
+          postal_code: recipientBody.postal_code ?? null,
+          address: recipientBody.address ?? null,
+          home_phone: recipientBody.home_phone ?? null,
+          mobile_phone: recipientBody.mobile_phone ?? null,
+          memo: recipientBody.memo ?? null,
           payer_guardian_id: null,
           row_version: 1,
-        }, 201);
+        };
+        return jsonResponse({ recipient, guardians: [], saved_sections: ['recipient'] }, 201);
       }
       if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
         if (url.pathname.endsWith('/guardians')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         return jsonResponse({
           id: 99,
           name: '생성수급',
@@ -1495,7 +1562,7 @@ describe('REC-LIST frontend contract', () => {
           postal_code: null,
           address: null,
           home_phone: null,
-          mobile_phone: '010-1234-5678',
+          mobile_phone: '010-1000-0002',
           memo: null,
           payer_guardian_id: null,
           row_version: 1,
@@ -1508,10 +1575,9 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.click(await screen.findByTestId('recipient-create-toggle'));
     const createForm = document.getElementById('recipient-create-form');
     expect(createForm).toBeTruthy();
-    // Live create form must expose independent home/mobile controls (W1B contract).
-    const homePhoneInput = within(createForm!).getByTestId('recipient-home-phone-input');
+    // Create form focuses on mobile (no separate home-phone field on basic form).
     const mobilePhoneInput = within(createForm!).getByTestId('recipient-mobile-phone-input');
-    expect(homePhoneInput).not.toBe(mobilePhoneInput);
+    expect(within(createForm!).queryByTestId('recipient-home-phone-input')).toBeNull();
 
     // Focusing an empty live mobile input must not inject a 010- prefix (W1B paste/fill race).
     expect(mobilePhoneInput).toHaveValue('');
@@ -1522,8 +1588,6 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.change(screen.getByTestId('recipient-birth-date-input'), {
       target: { value: '1960-01-01' },
     });
-    fireEvent.change(homePhoneInput, { target: { value: '02-123-4567' } });
-    // Full 010 value normalizes via formatMobilePhoneInput and stays independent of home_phone.
     fireEvent.change(mobilePhoneInput, {
       target: { value: '010-1000-0002' },
     });
@@ -1535,13 +1599,14 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.click(submitToggle);
 
     await waitFor(() => expect(postBodies.length).toBe(1));
-    const body = postBodies[0] as Record<string, unknown>;
-    expect(body).not.toHaveProperty('recipient_status');
-    expect(Object.keys(body)).not.toContain('recipient_status');
-    expect(body.name).toBe('생성수급');
-    expect(body.home_phone).toBe('02-123-4567');
-    expect(body.mobile_phone).toBe('010-1000-0002');
-    expect(body.home_phone).not.toBe(body.mobile_phone);
+    const body = postBodies[0];
+    const recipientBody = body.recipient as Record<string, unknown>;
+    expect(recipientBody).not.toHaveProperty('recipient_status');
+    expect(Object.keys(recipientBody)).not.toContain('recipient_status');
+    expect(recipientBody.name).toBe('생성수급');
+    expect(recipientBody.mobile_phone).toBe('010-1000-0002');
+    expect(body).toHaveProperty('benefit_periods');
+    expect(body).toHaveProperty('guardians');
   });
 
   test('renders grade_code, benefit_code, copayment_rate, and multi services from server response', async () => {
@@ -1604,6 +1669,7 @@ describe('REC-LIST frontend contract', () => {
     const row = await screen.findByRole('button', { name: /널표시/ });
     expect(within(row).getByTestId('recipient-list-grade')).toHaveTextContent('미지정');
     expect(within(row).getByTestId('recipient-list-benefit')).toHaveTextContent('없음');
+    // null copayment_rate must not invent 일반/0% — honest empty label.
     expect(within(row).getByTestId('recipient-list-copay-rate')).toHaveTextContent('미지정');
     expect(within(row).getByTestId('recipient-list-services')).toHaveTextContent('없음');
   });
@@ -2139,6 +2205,7 @@ describe('REC-LIST frontend contract', () => {
           id: 15,
           name: '등급본인부담',
           grade_code: '3',
+          benefit_code: 'BASIC_LIVELIHOOD',
           copayment_rate: 15,
         }),
       ]),
@@ -2148,18 +2215,18 @@ describe('REC-LIST frontend contract', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /등급본인부담/ }));
 
-    // Detail GET (RecipientResponse) has no grade_code/copayment_rate; list projection supplies them.
+    // Grade still comes from list projection; copay control is benefit-code select (일반/기초/6%/9%).
     const grade = await screen.findByTestId('recipient-detail-grade');
     const copay = screen.getByTestId('recipient-detail-copay');
     expect(grade).toHaveTextContent('3등급');
-    expect(copay).toHaveTextContent('15%');
-    // List row stays consistent with the same formatters.
+    expect(copay).toHaveValue('BASIC_LIVELIHOOD');
+    // List row: 15% general rate maps to 일반 label.
     const row = screen.getByRole('button', { name: /등급본인부담/ });
     expect(within(row).getByTestId('recipient-list-grade')).toHaveTextContent('3등급');
-    expect(within(row).getByTestId('recipient-list-copay-rate')).toHaveTextContent('15%');
+    expect(within(row).getByTestId('recipient-list-copay-rate')).toHaveTextContent('일반');
   });
 
-  test('detail grade/copay use 미지정 when active detail id is not in the current list page', async () => {
+  test('detail grade/copay use 미지정/GENERAL when active detail id is not in the current list page', async () => {
     installRecipientListFetch(() =>
       listResponse([listItem({ id: 1, name: '현재페이지수급', grade_code: '2', copayment_rate: 20 })]),
     );
@@ -2171,10 +2238,11 @@ describe('REC-LIST frontend contract', () => {
     const grade = await screen.findByTestId('recipient-detail-grade');
     const copay = screen.getByTestId('recipient-detail-copay');
     expect(grade).toHaveTextContent('미지정');
-    expect(copay).toHaveTextContent('미지정');
-    // Must not invent values from the unrelated list row or recipient_no.
+    // Without list projection / active period, benefit select defaults to GENERAL (not list row values).
+    expect(copay).toHaveValue('GENERAL');
+    // Must not invent values from the unrelated list row.
     expect(grade).not.toHaveTextContent('2등급');
-    expect(copay).not.toHaveTextContent('20%');
+    expect(copay).not.toHaveValue('REDUCTION_6');
   });
 
   test('detail grade/copay do not mis-attribute first list row when deep-link targets another id (MAJ-3)', async () => {
@@ -2182,8 +2250,20 @@ describe('REC-LIST frontend contract', () => {
     // B is detail deep-link target with different grade/copay.
     installRecipientListFetch(() =>
       listResponse([
-        listItem({ id: 1, name: 'A수급', grade_code: '1', copayment_rate: 20 }),
-        listItem({ id: 2, name: 'B수급', grade_code: '5', copayment_rate: 7.5 }),
+        listItem({
+          id: 1,
+          name: 'A수급',
+          grade_code: '1',
+          benefit_code: 'GENERAL',
+          copayment_rate: 20,
+        }),
+        listItem({
+          id: 2,
+          name: 'B수급',
+          grade_code: '5',
+          benefit_code: 'REDUCTION_6',
+          copayment_rate: 7.5,
+        }),
       ]),
     );
 
@@ -2195,23 +2275,30 @@ describe('REC-LIST frontend contract', () => {
     const copay = screen.getByTestId('recipient-detail-copay');
     // Must show B's list projection, never A's (old selectedRecipient bug).
     expect(grade).toHaveTextContent('5등급');
-    expect(copay).toHaveTextContent('7.5%');
+    expect(copay).toHaveValue('REDUCTION_6');
     expect(grade).not.toHaveTextContent('1등급');
-    expect(copay).not.toHaveTextContent('20%');
+    expect(copay).not.toHaveValue('GENERAL');
   });
 
-  test('create form does not offer savable grade/copay inputs (MAJ-4)', async () => {
+  test('create form grade is read-only 미지정; copay is benefit-code select defaulting to 일반 (MAJ-4)', async () => {
     installRecipientListFetch(() => listResponse([listItem({ id: 1, name: '김수급' })]));
     render(<RecipientsPage />);
 
     fireEvent.click(await screen.findByTestId('recipient-create-toggle'));
 
-    // RecipientCreateRequest has no grade/copay — no editable select may remain.
+    // Grade remains non-savable read-only (not on RecipientCreateRequest as free text).
     expect(screen.queryByTestId('recipient-grade-select')).toBeNull();
-    expect(screen.queryByTestId('recipient-copay-select')).toBeNull();
-    // Contract-honest read-only 미지정 display (same pattern as 인정번호).
     expect(await screen.findByTestId('recipient-create-grade')).toHaveTextContent('미지정');
-    expect(screen.getByTestId('recipient-create-copay')).toHaveTextContent('미지정');
+    // Copay is intentionally savable as 일반/기초/6%/9% with default 일반.
+    const createCopay = screen.getByTestId('recipient-create-copay');
+    expect(createCopay.tagName).toBe('SELECT');
+    expect(createCopay).toHaveValue('GENERAL');
+    expect(within(createCopay).getAllByRole('option').map((n) => n.textContent)).toEqual([
+      '일반',
+      '기초',
+      '6%',
+      '9%',
+    ]);
   });
 
   test('idle CSS does not hide create actions or all heading buttons (MAJ-A static CSS)', () => {
@@ -2263,9 +2350,10 @@ describe('REC-LIST frontend contract', () => {
     expect(idleCreatingRule!.selector).toMatch(/recipient-basic-section/);
   });
 
-  test('empty list: create toggle opens form; createError can surface as role=alert (MAJ-A DOM)', async () => {
+  test('empty list: create toggle opens form; empty mobile uses popup alert not inline role=alert (MAJ-A DOM)', async () => {
     // DOM contract only — does not assert computed CSS visibility/layout in jsdom.
     installRecipientListFetch(() => listResponse([], 0));
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
 
     render(<RecipientsPage />);
 
@@ -2286,22 +2374,19 @@ describe('REC-LIST frontend contract', () => {
     expect(workspace.className).toMatch(/\bis-creating\b/);
     expect(workspace.className).toMatch(/\bis-idle\b/);
 
-    // Invalid submit (empty mobile) surfaces createError as role=alert inside the form.
+    // Empty mobile on save uses a small popup alert (not a persistent inline role=alert).
     fireEvent.submit(createForm!);
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveClass('recipient-inline-error');
-    expect(alert.textContent).toBeTruthy();
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+    expect(String(alertSpy.mock.calls[0]?.[0] ?? '')).toMatch(/휴대전화/);
+    expect(screen.queryByRole('alert')).toBeNull();
+    alertSpy.mockRestore();
   });
 
-  test('list age uses 만 나이 (international full age) with birthday boundary, not year-diff+1', async () => {
+  test('list age uses 세는나이 (year-diff+1), detail uses 만 나이 with birthday boundary', async () => {
     // Fixed clock at a UTC/KST boundary: 2025-06-15 15:30 UTC is already 2025-06-16 in Asia/Seoul.
-    // Host-local UTC getFullYear/getMonth/getDate would still see 2025-06-15 and under-count a 6/16 birthday.
-    // Result-only asserts are host-dependent: Asia/Seoul hosts can still pass if timeZone is deleted.
     const fixedNow = new Date('2025-06-15T15:30:00.000Z');
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(fixedNow);
-    // Construct-safe spy: vitest's default spy call-through does not preserve `new` for
-    // Intl.DateTimeFormat, so formatToParts would be undefined on the returned value.
     const OriginalDateTimeFormat = Intl.DateTimeFormat;
     const dateTimeFormatSpy = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(
       function MockDateTimeFormat(
@@ -2312,12 +2397,11 @@ describe('REC-LIST frontend contract', () => {
       } as typeof Intl.DateTimeFormat,
     );
     try {
-      // Seoul calendar day 2025-06-16 → 30세 on birthday; UTC-local day 2025-06-15 → would show 29세.
+      // Seoul calendar day 2025-06-16.
       const onSeoulBirthday = '1995-06-16';
-      // One calendar day later than the 30-year anniversary in Seoul → birthday not yet reached.
       const notYetSeoulBirthday = '1995-06-17';
-      // year-diff+1 counting age for a ~30-year-old is 31; list must not show that.
-      const wrongCountingAge = '31세';
+      // 세는나이 is year-diff+1 regardless of birthday → both 31세 on list.
+      const countingAge = '31세';
 
       installRecipientListFetch(() =>
         listResponse([
@@ -2331,13 +2415,12 @@ describe('REC-LIST frontend contract', () => {
       const onBirthdayRow = await screen.findByRole('button', { name: /생일당일/ });
       const beforeBirthdayRow = await screen.findByRole('button', { name: /생일전/ });
 
-      expect(within(onBirthdayRow).getByTestId('recipient-list-age')).toHaveTextContent('30세');
-      expect(within(beforeBirthdayRow).getByTestId('recipient-list-age')).toHaveTextContent('29세');
-      expect(within(onBirthdayRow).getByTestId('recipient-list-age')).not.toHaveTextContent(wrongCountingAge);
-      expect(within(beforeBirthdayRow).getByTestId('recipient-list-age')).not.toHaveTextContent(wrongCountingAge);
-      // Prove UTC-local calendar-day math fails this boundary (would render 29세 for 생일당일).
-      expect(within(onBirthdayRow).getByTestId('recipient-list-age')).not.toHaveTextContent('29세');
-      // Mutation-sensitive / host-independent: production must pass timeZone Asia/Seoul to the formatter.
+      expect(within(onBirthdayRow).getByTestId('recipient-list-age')).toHaveTextContent(countingAge);
+      expect(within(beforeBirthdayRow).getByTestId('recipient-list-age')).toHaveTextContent(countingAge);
+      // List must not use 만 나이 (30/29) — that belongs on the detail panel.
+      expect(within(onBirthdayRow).getByTestId('recipient-list-age')).not.toHaveTextContent('30세');
+      expect(within(beforeBirthdayRow).getByTestId('recipient-list-age')).not.toHaveTextContent('29세');
+      // Production must pass timeZone Asia/Seoul to the formatter for counting age year.
       expect(dateTimeFormatSpy).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ timeZone: 'Asia/Seoul' }),
@@ -2489,24 +2572,29 @@ describe('REC-LIST frontend contract', () => {
         });
       }
 
-      // Detail save bumps listReload (same search/status/page) after a successful PATCH.
-      if (/^\/api\/v1\/recipients\/\d+$/.test(url.pathname) && method === 'PATCH') {
-        const id = Number(url.pathname.split('/').pop());
-        const item = listItem({ id: Number.isFinite(id) ? id : 1, name: '성공목록행' });
+      // Detail save bumps listReload (same search/status/page) after a successful basic-batch.
+      if (isBasicUpdateBatch(url, method)) {
+        const idMatch = url.pathname.match(/\/recipients\/(\d+)\/basic-batch$/);
+        const id = Number(idMatch?.[1] ?? 1);
+        const item = listItem({ id: Number.isFinite(id) ? id : 1, name: '성공목록행수정' });
         return jsonResponse({
-          id: item.id,
-          name: item.name,
-          birth_date: item.birth_date,
-          sex_code: item.sex_code,
-          recipient_status: 'ACTIVE' as const,
-          recipient_no: item.recipient_no,
-          postal_code: item.postal_code,
-          address: item.address,
-          home_phone: item.home_phone,
-          mobile_phone: item.mobile_phone,
-          memo: item.memo,
-          payer_guardian_id: null,
-          row_version: item.row_version + 1,
+          recipient: {
+            id: item.id,
+            name: item.name,
+            birth_date: item.birth_date,
+            sex_code: item.sex_code,
+            recipient_status: 'ACTIVE' as const,
+            recipient_no: item.recipient_no,
+            postal_code: item.postal_code,
+            address: item.address,
+            home_phone: item.home_phone,
+            mobile_phone: item.mobile_phone,
+            memo: item.memo,
+            payer_guardian_id: null,
+            row_version: item.row_version + 1,
+          },
+          guardians: [],
+          saved_sections: ['recipient'],
         });
       }
 
@@ -2515,6 +2603,7 @@ describe('REC-LIST frontend contract', () => {
         if (url.pathname.endsWith('/primary-guardian-periods')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/payer-snapshots')) return jsonResponse({ items: [] });
         if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+        if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
         const id = Number(url.pathname.split('/').pop());
         const item = listItem({ id: Number.isFinite(id) ? id : 1, name: '성공목록행' });
         return jsonResponse({
@@ -2588,14 +2677,34 @@ describe('REC-LIST frontend contract', () => {
     const { requests } = installRecipientListFetch((query) => {
       if (query.search === '다른필터') {
         return listResponse(
-          [listItem({ id: 50, name: '새페이지수급', grade_code: '1', copayment_rate: 20 })],
+          [
+            listItem({
+              id: 50,
+              name: '새페이지수급',
+              grade_code: '1',
+              benefit_code: 'GENERAL',
+              copayment_rate: 20,
+            }),
+          ],
           1,
         );
       }
       return listResponse(
         [
-          listItem({ id: 10, name: '이전선택수급', grade_code: '3', copayment_rate: 15 }),
-          listItem({ id: 11, name: '이전다른수급', grade_code: '4', copayment_rate: 7.5 }),
+          listItem({
+            id: 10,
+            name: '이전선택수급',
+            grade_code: '3',
+            benefit_code: 'BASIC_LIVELIHOOD',
+            copayment_rate: 15,
+          }),
+          listItem({
+            id: 11,
+            name: '이전다른수급',
+            grade_code: '4',
+            benefit_code: 'REDUCTION_6',
+            copayment_rate: 7.5,
+          }),
         ],
         2,
       );
@@ -2606,7 +2715,7 @@ describe('REC-LIST frontend contract', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /이전선택수급/ }));
     expect(await screen.findByTestId('recipient-detail-grade')).toHaveTextContent('3등급');
-    expect(screen.getByTestId('recipient-detail-copay')).toHaveTextContent('15%');
+    expect(screen.getByTestId('recipient-detail-copay')).toHaveValue('BASIC_LIVELIHOOD');
 
     fireEvent.change(screen.getByTestId('recipient-search-input'), {
       target: { value: '다른필터' },
@@ -2627,10 +2736,10 @@ describe('REC-LIST frontend contract', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('recipient-detail-grade')).toHaveTextContent('1등급');
-      expect(screen.getByTestId('recipient-detail-copay')).toHaveTextContent('20%');
+      expect(screen.getByTestId('recipient-detail-copay')).toHaveValue('GENERAL');
     });
     expect(screen.getByTestId('recipient-detail-grade')).not.toHaveTextContent('3등급');
-    expect(screen.getByTestId('recipient-detail-copay')).not.toHaveTextContent('15%');
+    expect(screen.getByTestId('recipient-detail-copay')).not.toHaveValue('BASIC_LIVELIHOOD');
     expect(screen.getByTestId('recipient-selected-name')).toHaveTextContent('새페이지수급');
   });
 });
@@ -2824,9 +2933,8 @@ describe('recipient payer guardian UI contract', () => {
     expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
   });
 
-  test('new guardian id is used for payer PATCH; save locks inputs', async () => {
-    const patchBodies: Array<Record<string, unknown>> = [];
-    let createdGuardianId = 0;
+  test('new guardian id is used for payer slot in basic-batch; save locks inputs', async () => {
+    const batchBodies: Array<Record<string, unknown>> = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
         typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
@@ -2838,23 +2946,8 @@ describe('recipient payer guardian UI contract', () => {
       if (url.pathname.endsWith('/guardians') && method === 'GET') {
         return jsonResponse({ items: [] });
       }
-      if (url.pathname.endsWith('/guardians') && method === 'POST') {
-        createdGuardianId = 77;
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        return jsonResponse(
-          {
-            id: 77,
-            recipient_id: 503,
-            name: body.name,
-            phone: body.phone ?? null,
-            address: body.address ?? null,
-            relationship_text: body.relationship_text ?? null,
-            row_version: 1,
-          },
-          201,
-        );
-      }
       if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
       if (url.pathname === '/api/v1/recipients/503' && method === 'GET') {
         return jsonResponse({
           id: 503,
@@ -2872,23 +2965,38 @@ describe('recipient payer guardian UI contract', () => {
           row_version: 1,
         });
       }
-      if (url.pathname === '/api/v1/recipients/503' && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const guardians = [
+          {
+            id: 77,
+            recipient_id: 503,
+            name: '신규보호자',
+            phone: null,
+            address: null,
+            relationship_text: null,
+            row_version: 1,
+          },
+        ];
         return jsonResponse({
-          id: 503,
-          name: '신규납부',
-          birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: 'ACTIVE',
-          recipient_no: null,
-          postal_code: null,
-          address: null,
-          home_phone: null,
-          mobile_phone: '010-1111-2222',
-          memo: null,
-          payer_guardian_id: body.payer_guardian_id ?? null,
-          row_version: 2,
+          recipient: {
+            id: 503,
+            name: '신규납부',
+            birth_date: '1950-03-15',
+            sex_code: 'FEMALE',
+            recipient_status: 'ACTIVE',
+            recipient_no: null,
+            postal_code: null,
+            address: null,
+            home_phone: null,
+            mobile_phone: '010-1111-2222',
+            memo: null,
+            payer_guardian_id: 77,
+            row_version: 2,
+          },
+          guardians,
+          saved_sections: ['recipient', 'guardians'],
         });
       }
       return jsonResponse({ detail: { code: 'not_found' } }, 404);
@@ -2901,12 +3009,19 @@ describe('recipient payer guardian UI contract', () => {
     fireEvent.change(screen.getByTestId('guardian-1-name-input'), { target: { value: '신규보호자' } });
     fireEvent.click(screen.getByTestId('guardian-1-payer-checkbox'));
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
-    await waitFor(() => expect(patchBodies.length).toBe(1));
-    expect(createdGuardianId).toBe(77);
-    expect(patchBodies[0]).toMatchObject({
-      expected_row_version: 1,
-      payer_guardian_id: 77,
-    });
+    await waitFor(() => expect(batchBodies.length).toBe(1));
+    expect(batchBodies[0].payer_guardian_slot).toBe(0);
+    expect(batchBodies[0].guardians).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slot: 0,
+          payload: expect.objectContaining({ name: '신규보호자' }),
+        }),
+      ]),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent('납부자 · 보호자1'),
+    );
   });
 
   test('detail toggle keeps existing extras component contract', async () => {
@@ -2923,7 +3038,27 @@ describe('recipient payer guardian UI contract', () => {
     let recipientName = '목록외납부자';
     let payerId: number | null = 33;
     let rowVersion = 1;
-    const patchBodies: Array<Record<string, unknown>> = [];
+    const batchBodies: Array<Record<string, unknown>> = [];
+    const listedGuardians = [
+      {
+        id: 11,
+        recipient_id: 505,
+        name: '가드1',
+        phone: null,
+        address: null,
+        relationship_text: null,
+        row_version: 1,
+      },
+      {
+        id: 22,
+        recipient_id: 505,
+        name: '가드2',
+        phone: null,
+        address: null,
+        relationship_text: null,
+        row_version: 1,
+      },
+    ];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
         typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
@@ -2933,30 +3068,10 @@ describe('recipient payer guardian UI contract', () => {
         return jsonResponse(listResponse([listItem({ id: 505, name: recipientName })]));
       }
       if (url.pathname.endsWith('/guardians') && method === 'GET') {
-        return jsonResponse({
-          items: [
-            {
-              id: 11,
-              recipient_id: 505,
-              name: '가드1',
-              phone: null,
-              address: null,
-              relationship_text: null,
-              row_version: 1,
-            },
-            {
-              id: 22,
-              recipient_id: 505,
-              name: '가드2',
-              phone: null,
-              address: null,
-              relationship_text: null,
-              row_version: 1,
-            },
-          ],
-        });
+        return jsonResponse({ items: listedGuardians });
       }
       if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
       if (url.pathname === '/api/v1/recipients/505' && method === 'GET') {
         return jsonResponse({
           id: 505,
@@ -2974,30 +3089,37 @@ describe('recipient payer guardian UI contract', () => {
           row_version: rowVersion,
         });
       }
-      if (url.pathname === '/api/v1/recipients/505' && method === 'PATCH') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
-        if (typeof body.name === 'string') recipientName = body.name;
-        if (Object.prototype.hasOwnProperty.call(body, 'payer_guardian_id')) {
-          payerId = body.payer_guardian_id as number | null;
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        if (typeof recipientBody.name === 'string') recipientName = recipientBody.name;
+        if (body.preserve_payer === true) {
+          // keep payerId
+        } else if (body.payer_guardian_slot === null || body.payer_guardian_slot === undefined) {
+          payerId = null;
         }
-        if (typeof body.expected_row_version === 'number') {
-          rowVersion = body.expected_row_version + 1;
+        if (typeof recipientBody.expected_row_version === 'number') {
+          rowVersion = recipientBody.expected_row_version + 1;
         }
         return jsonResponse({
-          id: 505,
-          name: recipientName,
-          birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: 'ACTIVE',
-          recipient_no: null,
-          postal_code: null,
-          address: null,
-          home_phone: null,
-          mobile_phone: '010-1111-2222',
-          memo: null,
-          payer_guardian_id: payerId,
-          row_version: rowVersion,
+          recipient: {
+            id: 505,
+            name: recipientName,
+            birth_date: '1950-03-15',
+            sex_code: 'FEMALE',
+            recipient_status: 'ACTIVE',
+            recipient_no: null,
+            postal_code: null,
+            address: null,
+            home_phone: null,
+            mobile_phone: '010-1111-2222',
+            memo: null,
+            payer_guardian_id: payerId,
+            row_version: rowVersion,
+          },
+          guardians: listedGuardians,
+          saved_sections: ['recipient'],
         });
       }
       return jsonResponse({ detail: { code: 'not_found' } }, 404);
@@ -3031,37 +3153,36 @@ describe('recipient payer guardian UI contract', () => {
       target: { value: '목록외납부자수정' },
     });
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
-    await waitFor(() => expect(patchBodies.length).toBe(1));
-    expect(patchBodies[0]).toMatchObject({
+    await waitFor(() => expect(batchBodies.length).toBe(1));
+    expect(batchBodies[0].recipient).toMatchObject({
       expected_row_version: 1,
       name: '목록외납부자수정',
     });
-    expect(Object.prototype.hasOwnProperty.call(patchBodies[0], 'payer_guardian_id')).toBe(false);
+    expect(batchBodies[0].preserve_payer).toBe(true);
+    expect(batchBodies[0].payer_guardian_slot).toBeNull();
     await waitFor(() =>
       expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent(
         '납부자 · 목록 외 보호자',
       ),
     );
 
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).not.toBeDisabled());
+    enterBasicEdit();
     expect(screen.getByTestId('recipient-payer-self-button')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('recipient-payer-self-button'));
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
-    await waitFor(() => expect(patchBodies.length).toBe(2));
-    expect(patchBodies[1]).toEqual({
-      expected_row_version: 2,
-      payer_guardian_id: null,
-    });
+    await waitFor(() => expect(batchBodies.length).toBe(2));
+    expect(batchBodies[1].preserve_payer).toBe(false);
+    expect(batchBodies[1].payer_guardian_slot).toBeNull();
     await waitFor(() =>
       expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent('수급자 본인'),
     );
   });
 
-  test('retry after recipient 500 does not re-POST guardian created on first save', async () => {
-    const patchBodies: Array<Record<string, unknown>> = [];
-    let guardianPostCount = 0;
-    let recipientPatchCount = 0;
-    let createdGuardianId = 0;
-    let failRecipientOnce = true;
+  test('atomic basic-batch failure keeps guardian draft; retry resends full guardian payload', async () => {
+    // Atomic save: no partial guardian create. First batch fails entirely; retry sends same create again.
+    const batchBodies: Array<Record<string, unknown>> = [];
+    let failOnce = true;
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -3074,24 +3195,8 @@ describe('recipient payer guardian UI contract', () => {
       if (url.pathname.endsWith('/guardians') && method === 'GET') {
         return jsonResponse({ items: [] });
       }
-      if (url.pathname.endsWith('/guardians') && method === 'POST') {
-        guardianPostCount += 1;
-        createdGuardianId = 88;
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        return jsonResponse(
-          {
-            id: 88,
-            recipient_id: 510,
-            name: body.name,
-            phone: body.phone ?? null,
-            address: body.address ?? null,
-            relationship_text: body.relationship_text ?? null,
-            row_version: 1,
-          },
-          201,
-        );
-      }
       if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
       if (url.pathname === '/api/v1/recipients/510' && method === 'GET') {
         return jsonResponse({
           id: 510,
@@ -3109,31 +3214,44 @@ describe('recipient payer guardian UI contract', () => {
           row_version: 1,
         });
       }
-      if (url.pathname === '/api/v1/recipients/510' && method === 'PATCH') {
-        recipientPatchCount += 1;
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        patchBodies.push(body);
-        if (failRecipientOnce) {
-          failRecipientOnce = false;
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        if (failOnce) {
+          failOnce = false;
           return jsonResponse(
             { error: { code: 'INTERNAL_ERROR', message: '서버 오류' }, field_errors: [] },
             500,
           );
         }
         return jsonResponse({
-          id: 510,
-          name: '재시도신규',
-          birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: 'ACTIVE',
-          recipient_no: null,
-          postal_code: null,
-          address: null,
-          home_phone: null,
-          mobile_phone: '010-1111-2222',
-          memo: null,
-          payer_guardian_id: body.payer_guardian_id ?? null,
-          row_version: 2,
+          recipient: {
+            id: 510,
+            name: '재시도신규',
+            birth_date: '1950-03-15',
+            sex_code: 'FEMALE',
+            recipient_status: 'ACTIVE',
+            recipient_no: null,
+            postal_code: null,
+            address: null,
+            home_phone: null,
+            mobile_phone: '010-1111-2222',
+            memo: null,
+            payer_guardian_id: 88,
+            row_version: 2,
+          },
+          guardians: [
+            {
+              id: 88,
+              recipient_id: 510,
+              name: '신규보호자',
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: 1,
+            },
+          ],
+          saved_sections: ['recipient', 'guardians'],
         });
       }
       return jsonResponse({ detail: { code: 'not_found' } }, 404);
@@ -3147,31 +3265,30 @@ describe('recipient payer guardian UI contract', () => {
     fireEvent.click(screen.getByTestId('guardian-1-payer-checkbox'));
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
-    await waitFor(() => expect(recipientPatchCount).toBe(1));
-    expect(guardianPostCount).toBe(1);
-    expect(createdGuardianId).toBe(88);
+    await waitFor(() => expect(batchBodies.length).toBe(1));
+    // Draft remains dirty after atomic failure.
     await waitFor(() => expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled());
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('신규보호자');
 
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
-    await waitFor(() => expect(recipientPatchCount).toBe(2));
-    expect(guardianPostCount).toBe(1);
-    expect(patchBodies[1]).toMatchObject({
-      expected_row_version: 1,
-      payer_guardian_id: 88,
-    });
+    await waitFor(() => expect(batchBodies.length).toBe(2));
+    // Retry resends create (no guardian_id) because first batch rolled back.
+    expect(batchBodies[0].guardians).toEqual(batchBodies[1].guardians);
+    expect(batchBodies[1].payer_guardian_slot).toBe(0);
+    expect(
+      (batchBodies[1].guardians as Array<Record<string, unknown>>)[0],
+    ).not.toHaveProperty('guardian_id');
     await waitFor(() =>
-      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
+      expect(screen.getByText('수급자·보호자·본인부담금을 저장했습니다.')).toBeInTheDocument(),
     );
     expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent('납부자 · 보호자1');
   });
 
-  test('retry after recipient 500 does not re-PATCH guardian already saved', async () => {
-    const recipientPatchBodies: Array<Record<string, unknown>> = [];
-    let guardianPatchCount = 0;
-    let recipientPatchCount = 0;
-    let failRecipientOnce = true;
-    let guardianRowVersion = 1;
+  test('atomic basic-batch failure keeps recipient+guardian draft; retry resends both', async () => {
+    const batchBodies: Array<Record<string, unknown>> = [];
+    let failOnce = true;
     let guardianName = '기존가드';
+    let guardianRowVersion = 1;
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -3196,22 +3313,8 @@ describe('recipient payer guardian UI contract', () => {
           ],
         });
       }
-      if (url.pathname.endsWith('/guardians/41') && method === 'PATCH') {
-        guardianPatchCount += 1;
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        if (typeof body.name === 'string') guardianName = body.name;
-        guardianRowVersion = Number(body.expected_row_version) + 1;
-        return jsonResponse({
-          id: 41,
-          recipient_id: 511,
-          name: guardianName,
-          phone: body.phone ?? null,
-          address: body.address ?? null,
-          relationship_text: body.relationship_text ?? null,
-          row_version: guardianRowVersion,
-        });
-      }
       if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
       if (url.pathname === '/api/v1/recipients/511' && method === 'GET') {
         return jsonResponse({
           id: 511,
@@ -3229,31 +3332,49 @@ describe('recipient payer guardian UI contract', () => {
           row_version: 1,
         });
       }
-      if (url.pathname === '/api/v1/recipients/511' && method === 'PATCH') {
-        recipientPatchCount += 1;
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        recipientPatchBodies.push(body);
-        if (failRecipientOnce) {
-          failRecipientOnce = false;
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        if (failOnce) {
+          failOnce = false;
           return jsonResponse(
             { error: { code: 'INTERNAL_ERROR', message: '서버 오류' }, field_errors: [] },
             500,
           );
         }
+        const recipientBody = (body.recipient as Record<string, unknown> | undefined) ?? {};
+        const guardians = body.guardians as Array<Record<string, unknown>>;
+        const gPayload = (guardians[0]?.payload as Record<string, unknown> | undefined) ?? {};
+        if (typeof gPayload.name === 'string') guardianName = gPayload.name;
+        guardianRowVersion = Number(gPayload.expected_row_version ?? guardianRowVersion) + 1;
         return jsonResponse({
-          id: 511,
-          name: typeof body.name === 'string' ? body.name : '재시도기존',
-          birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: 'ACTIVE',
-          recipient_no: null,
-          postal_code: null,
-          address: null,
-          home_phone: null,
-          mobile_phone: '010-1111-2222',
-          memo: null,
-          payer_guardian_id: null,
-          row_version: 2,
+          recipient: {
+            id: 511,
+            name: typeof recipientBody.name === 'string' ? recipientBody.name : '재시도기존',
+            birth_date: '1950-03-15',
+            sex_code: 'FEMALE',
+            recipient_status: 'ACTIVE',
+            recipient_no: null,
+            postal_code: null,
+            address: null,
+            home_phone: null,
+            mobile_phone: '010-1111-2222',
+            memo: null,
+            payer_guardian_id: null,
+            row_version: 2,
+          },
+          guardians: [
+            {
+              id: 41,
+              recipient_id: 511,
+              name: guardianName,
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: guardianRowVersion,
+            },
+          ],
+          saved_sections: ['recipient', 'guardians'],
         });
       }
       return jsonResponse({ detail: { code: 'not_found' } }, 404);
@@ -3271,27 +3392,39 @@ describe('recipient payer guardian UI contract', () => {
     });
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
-    await waitFor(() => expect(recipientPatchCount).toBe(1));
-    expect(guardianPatchCount).toBe(1);
+    await waitFor(() => expect(batchBodies.length).toBe(1));
     await waitFor(() => expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled());
+    // Atomic failure: both drafts remain.
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('기존가드수정');
+    expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('재시도기존수정');
 
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
-    await waitFor(() => expect(recipientPatchCount).toBe(2));
-    expect(guardianPatchCount).toBe(1);
-    expect(recipientPatchBodies[1]).toMatchObject({
+    await waitFor(() => expect(batchBodies.length).toBe(2));
+    expect(batchBodies[1].recipient).toMatchObject({
       expected_row_version: 1,
       name: '재시도기존수정',
     });
+    expect(batchBodies[1].guardians).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slot: 0,
+          guardian_id: 41,
+          payload: expect.objectContaining({
+            name: '기존가드수정',
+            expected_row_version: 1,
+          }),
+        }),
+      ]),
+    );
     await waitFor(() =>
-      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
+      expect(screen.getByText('수급자·보호자·본인부담금을 저장했습니다.')).toBeInTheDocument(),
     );
     expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('기존가드수정');
   });
 
   test('guardian ROW_VERSION_CONFLICT reloads guardians and shows guardian error not recipient stale panel', async () => {
     let guardianListGets = 0;
-    let guardianPatchCount = 0;
-    let recipientPatchCount = 0;
+    let batchCount = 0;
     let serverGuardianName = '충돌보호자';
     let serverGuardianRowVersion = 1;
 
@@ -3319,22 +3452,8 @@ describe('recipient payer guardian UI contract', () => {
           ],
         });
       }
-      if (url.pathname.endsWith('/guardians/55') && method === 'PATCH') {
-        guardianPatchCount += 1;
-        return jsonResponse(
-          {
-            error: {
-              code: 'ROW_VERSION_CONFLICT',
-              message: '다른 사용자가 먼저 변경했습니다. 최신 정보를 다시 불러오세요.',
-            },
-            field_errors: [],
-            details: { current_row_version: serverGuardianRowVersion },
-            request_id: 'g-conflict',
-          },
-          409,
-        );
-      }
       if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
       if (url.pathname === '/api/v1/recipients/512' && method === 'GET') {
         return jsonResponse({
           id: 512,
@@ -3352,9 +3471,20 @@ describe('recipient payer guardian UI contract', () => {
           row_version: 1,
         });
       }
-      if (url.pathname === '/api/v1/recipients/512' && method === 'PATCH') {
-        recipientPatchCount += 1;
-        return jsonResponse({ detail: { code: 'unexpected_recipient_patch' } }, 500);
+      if (isBasicUpdateBatch(url, method)) {
+        batchCount += 1;
+        return jsonResponse(
+          {
+            error: {
+              code: 'ROW_VERSION_CONFLICT',
+              message: '다른 사용자가 먼저 변경했습니다. 최신 정보를 다시 불러오세요.',
+            },
+            field_errors: [],
+            details: { current_row_version: serverGuardianRowVersion },
+            request_id: 'g-conflict',
+          },
+          409,
+        );
       }
       return jsonResponse({ detail: { code: 'not_found' } }, 404);
     }) as typeof globalThis.fetch;
@@ -3366,7 +3496,7 @@ describe('recipient payer guardian UI contract', () => {
     );
     expect(guardianListGets).toBe(1);
 
-    // Concurrent edit elsewhere advances server guardian before our PATCH.
+    // Concurrent edit elsewhere advances server guardian before our batch.
     serverGuardianName = '서버최신보호자';
     serverGuardianRowVersion = 9;
 
@@ -3376,7 +3506,7 @@ describe('recipient payer guardian UI contract', () => {
     });
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
-    await waitFor(() => expect(guardianPatchCount).toBe(1));
+    await waitFor(() => expect(batchCount).toBe(1));
     await waitFor(() => expect(guardianListGets).toBe(2));
     await waitFor(() =>
       expect(
@@ -3385,21 +3515,17 @@ describe('recipient payer guardian UI contract', () => {
     );
     expect(screen.queryByTestId('recipient-stale-conflict-message')).toBeNull();
     expect(screen.queryByTestId('recipient-stale-reapply')).toBeNull();
-    expect(recipientPatchCount).toBe(0);
     expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('서버최신보호자');
   });
 
-  test('partial guardian2 500 keeps unsaved draft dirty; retry skips guardian1 PATCH', async () => {
-    let guardian1PatchCount = 0;
-    let guardian2PatchCount = 0;
-    let recipientPatchCount = 0;
-    let failGuardian2Once = true;
+  test('atomic batch failure with two guardians keeps both drafts dirty; retry resends both', async () => {
+    // Atomic semantics: no partial guardian save. Failure keeps both drafts; retry sends both.
+    const batchBodies: Array<Record<string, unknown>> = [];
+    let failOnce = true;
     let guardian1Name = '보호자일';
     let guardian1RowVersion = 1;
     let guardian2Name = '보호자이';
     let guardian2RowVersion = 1;
-    const guardian1Bodies: Array<Record<string, unknown>> = [];
-    const guardian2Bodies: Array<Record<string, unknown>> = [];
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
@@ -3433,46 +3559,8 @@ describe('recipient payer guardian UI contract', () => {
           ],
         });
       }
-      if (url.pathname.endsWith('/guardians/61') && method === 'PATCH') {
-        guardian1PatchCount += 1;
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        guardian1Bodies.push(body);
-        if (typeof body.name === 'string') guardian1Name = body.name;
-        guardian1RowVersion = Number(body.expected_row_version) + 1;
-        return jsonResponse({
-          id: 61,
-          recipient_id: 513,
-          name: guardian1Name,
-          phone: body.phone ?? null,
-          address: body.address ?? null,
-          relationship_text: body.relationship_text ?? null,
-          row_version: guardian1RowVersion,
-        });
-      }
-      if (url.pathname.endsWith('/guardians/62') && method === 'PATCH') {
-        guardian2PatchCount += 1;
-        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-        guardian2Bodies.push(body);
-        if (failGuardian2Once) {
-          failGuardian2Once = false;
-          return jsonResponse(
-            { error: { code: 'INTERNAL_ERROR', message: '서버 오류' }, field_errors: [] },
-            500,
-          );
-        }
-        if (typeof body.name === 'string') guardian2Name = body.name;
-        guardian2RowVersion = Number(body.expected_row_version) + 1;
-        return jsonResponse({
-          id: 62,
-          recipient_id: 513,
-          name: guardian2Name,
-          phone: body.phone ?? null,
-          address: body.address ?? null,
-          relationship_text: body.relationship_text ?? null,
-          row_version: guardian2RowVersion,
-        });
-      }
       if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
       if (url.pathname === '/api/v1/recipients/513' && method === 'GET') {
         return jsonResponse({
           id: 513,
@@ -3490,22 +3578,65 @@ describe('recipient payer guardian UI contract', () => {
           row_version: 1,
         });
       }
-      if (url.pathname === '/api/v1/recipients/513' && method === 'PATCH') {
-        recipientPatchCount += 1;
+      if (isBasicUpdateBatch(url, method)) {
+        const body = parseJsonBody(init);
+        batchBodies.push(body);
+        if (failOnce) {
+          failOnce = false;
+          return jsonResponse(
+            { error: { code: 'INTERNAL_ERROR', message: '서버 오류' }, field_errors: [] },
+            500,
+          );
+        }
+        const guardians = body.guardians as Array<Record<string, unknown>>;
+        for (const g of guardians) {
+          const payload = (g.payload as Record<string, unknown> | undefined) ?? {};
+          if (g.slot === 0 && typeof payload.name === 'string') {
+            guardian1Name = payload.name;
+            guardian1RowVersion = Number(payload.expected_row_version) + 1;
+          }
+          if (g.slot === 1 && typeof payload.name === 'string') {
+            guardian2Name = payload.name;
+            guardian2RowVersion = Number(payload.expected_row_version) + 1;
+          }
+        }
         return jsonResponse({
-          id: 513,
-          name: '쌍보호자부분저장',
-          birth_date: '1950-03-15',
-          sex_code: 'FEMALE',
-          recipient_status: 'ACTIVE',
-          recipient_no: null,
-          postal_code: null,
-          address: null,
-          home_phone: null,
-          mobile_phone: '010-1111-2222',
-          memo: null,
-          payer_guardian_id: null,
-          row_version: 1,
+          recipient: {
+            id: 513,
+            name: '쌍보호자부분저장',
+            birth_date: '1950-03-15',
+            sex_code: 'FEMALE',
+            recipient_status: 'ACTIVE',
+            recipient_no: null,
+            postal_code: null,
+            address: null,
+            home_phone: null,
+            mobile_phone: '010-1111-2222',
+            memo: null,
+            payer_guardian_id: null,
+            row_version: 1,
+          },
+          guardians: [
+            {
+              id: 61,
+              recipient_id: 513,
+              name: guardian1Name,
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: guardian1RowVersion,
+            },
+            {
+              id: 62,
+              recipient_id: 513,
+              name: guardian2Name,
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: guardian2RowVersion,
+            },
+          ],
+          saved_sections: ['guardians'],
         });
       }
       return jsonResponse({ detail: { code: 'not_found' } }, 404);
@@ -3524,37 +3655,41 @@ describe('recipient payer guardian UI contract', () => {
     });
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
 
-    await waitFor(() => expect(guardian1PatchCount).toBe(1));
-    await waitFor(() => expect(guardian2PatchCount).toBe(1));
-    // guardian1 saved to server; guardian2 keeps unsaved user draft and stays dirty.
-    await waitFor(() =>
-      expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('보호자일수정'),
-    );
+    await waitFor(() => expect(batchBodies.length).toBe(1));
+    // Both drafts stay dirty after atomic failure.
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('보호자일수정');
     expect(screen.getByTestId('guardian-2-name-input')).toHaveValue('보호자이수정');
     await waitFor(() => expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled());
-    expect(recipientPatchCount).toBe(0);
 
     fireEvent.click(screen.getByTestId('recipient-basic-save'));
-    await waitFor(() => expect(guardian2PatchCount).toBe(2));
-    // Already-saved guardian1 must not be re-PATCHed on retry.
-    expect(guardian1PatchCount).toBe(1);
-    expect(guardian1Bodies).toHaveLength(1);
-    expect(guardian1Bodies[0]).toMatchObject({
-      name: '보호자일수정',
-      expected_row_version: 1,
-    });
-    expect(guardian2Bodies[1]).toMatchObject({
-      name: '보호자이수정',
-      expected_row_version: 1,
-    });
+    await waitFor(() => expect(batchBodies.length).toBe(2));
+    // Retry resends both guardian slots (no partial skip).
+    expect(batchBodies[1].guardians).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slot: 0,
+          guardian_id: 61,
+          payload: expect.objectContaining({
+            name: '보호자일수정',
+            expected_row_version: 1,
+          }),
+        }),
+        expect.objectContaining({
+          slot: 1,
+          guardian_id: 62,
+          payload: expect.objectContaining({
+            name: '보호자이수정',
+            expected_row_version: 1,
+          }),
+        }),
+      ]),
+    );
     await waitFor(() =>
-      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
+      expect(screen.getByText('수급자·보호자·본인부담금을 저장했습니다.')).toBeInTheDocument(),
     );
     expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('보호자일수정');
     expect(screen.getByTestId('guardian-2-name-input')).toHaveValue('보호자이수정');
     expect(guardian1Name).toBe('보호자일수정');
     expect(guardian2Name).toBe('보호자이수정');
-    expect(guardian1RowVersion).toBe(2);
-    expect(guardian2RowVersion).toBe(2);
   });
 });
