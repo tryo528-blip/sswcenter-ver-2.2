@@ -1907,10 +1907,18 @@ export const RecipientsPage = () => {
         guardians: guardianMutations,
         payer_guardian_slot: payerGuardianSlot === 'unlisted' ? null : payerGuardianSlot,
         preserve_payer: payerGuardianSlot === 'unlisted',
-        benefit_periods: buildCopayBenefitMutations(activeCopayPeriod, {
-          code: copayDraftCode,
-          startDate: copayDraftStartDate,
-        }),
+        // Inline dirty check (same logic as copayDraftDirty below) so this handler
+        // does not depend on a shared const that must sit after detailListProjection.
+        benefit_periods: (copayDraftCode !==
+          normalizeCopayBenefitCode(
+            activeCopayPeriod?.benefit_code ?? detailListProjection?.benefit_code,
+          ) ||
+          Boolean(activeCopayPeriod && copayDraftStartDate !== activeCopayPeriod.start_date))
+          ? buildCopayBenefitMutations(activeCopayPeriod, {
+              code: copayDraftCode,
+              startDate: copayDraftStartDate,
+            })
+          : [],
       });
       const updated = validateDetailRecipient(result.recipient, activeId);
       if (updated) {
@@ -2121,6 +2129,7 @@ export const RecipientsPage = () => {
     !guardianFormsEqual(guardianForms[0], guardianEditSnapshots[0]) ||
     !guardianFormsEqual(guardianForms[1], guardianEditSnapshots[1]);
   const payerDraftDirty = payerGuardianSlot !== payerGuardianSlotSnapshot;
+  // Same dirty condition as handleAtomicBasicSave benefit_periods — name-only saves must not invent a copay CREATE.
   const copayDraftDirty =
     copayDraftCode !==
       normalizeCopayBenefitCode(activeCopayPeriod?.benefit_code ?? detailListProjection?.benefit_code) ||

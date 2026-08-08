@@ -954,6 +954,10 @@ describe('REC-LIST frontend contract', () => {
       expected_row_version: 5,
       name: '재편집후이름',
     });
+    // Name-only re-save must not invent a copay CREATE (activeCopayPeriod null + dirty-unaware
+    // buildCopayBenefitMutations would otherwise open a new benefit period every save).
+    expect(batchBodies[1].benefit_periods).toEqual([]);
+    expect(batchBodies[1].preserve_payer).toBe(false);
   });
 
   test('mixed same-field + disjoint ROW_VERSION_CONFLICT preserves non-conflicting user edit', async () => {

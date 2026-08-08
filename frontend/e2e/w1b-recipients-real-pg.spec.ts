@@ -351,22 +351,24 @@ async function createRecipientViaUi(
   requestCaptures: RequestCapture[],
   responseSurfaces: string[],
 ): Promise<JsonRecord> {
-  const form = page.getByTestId('recipient-create-form');
-  if (!(await form.isVisible())) {
+  // Create mode exposes recipient-name-input (no standalone create-form wrapper required).
+  const nameInput = page.getByTestId('recipient-name-input');
+  if (!(await nameInput.isVisible())) {
     await page.getByTestId('recipient-create-toggle').click();
   }
-  await expect(form, 'W1B_E2E_RECIPIENT_CREATE_FORM_MISSING').toBeVisible();
-  await page.getByTestId('recipient-name-input').fill(name);
+  await expect(nameInput, 'W1B_E2E_RECIPIENT_CREATE_FORM_MISSING').toBeVisible();
+  await nameInput.fill(name);
   await page.getByTestId('recipient-birth-date-input').fill('2000-01-01');
   await page.getByTestId('recipient-sex-code-select').selectOption('MALE');
   await page.getByTestId('recipient-postal-code-input').fill('W1B-POSTAL');
   await page.getByTestId('recipient-address-input').fill(`${name} address`);
-  await page.getByTestId('recipient-home-phone-input').fill('010-1000-0001');
+  // home_phone is optional on RecipientCreateRequest and has no create-form input.
   await page.getByTestId('recipient-mobile-phone-input').fill('010-1000-0002');
 
+  // Live create posts atomic basic-batch (not plain POST /recipients).
   const responsePromise = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === '/api/v1/recipients' &&
+      new URL(response.url()).pathname === '/api/v1/recipients/basic-batch' &&
       response.request().method() === 'POST',
   );
   // Live UI uses recipient-create-toggle as the create form's external submit.
@@ -376,16 +378,19 @@ async function createRecipientViaUi(
   responseSurfaces.push(raw);
   expect(response.status(), 'W1B_E2E_RECIPIENT_CREATE_STATUS').toBe(201);
 
-  const body = asRecord(parseJson(raw));
+  const batchBody = asRecord(parseJson(raw));
+  const body = asRecord(batchBody.recipient);
   expect(body.recipient_no, 'W1B_E2E_RECIPIENT_NO_MUST_BE_NULL').toBeNull();
-  expect(body.home_phone, 'W1B_E2E_RECIPIENT_HOME_PHONE_READBACK').toBe('010-1000-0001');
+  expect(body.home_phone, 'W1B_E2E_RECIPIENT_HOME_PHONE_READBACK').toBeNull();
   expect(body.mobile_phone, 'W1B_E2E_RECIPIENT_MOBILE_PHONE_READBACK').toBe('010-1000-0002');
   const captured = findRequest(
     requestCaptures,
-    (item) => new URL(item.url).pathname === '/api/v1/recipients' && item.method === 'POST',
+    (item) =>
+      new URL(item.url).pathname === '/api/v1/recipients/basic-batch' && item.method === 'POST',
   );
   expect(captured, 'W1B_E2E_RECIPIENT_CREATE_REQUEST_MISSING').toBeTruthy();
-  expect('recipient_no' in asRecord(captured?.body), 'W1B_E2E_RECIPIENT_NO_INPUT_FORBIDDEN').toBe(false);
+  const capturedRecipient = asRecord(asRecord(captured?.body).recipient);
+  expect('recipient_no' in capturedRecipient, 'W1B_E2E_RECIPIENT_NO_INPUT_FORBIDDEN').toBe(false);
   return body;
 }
 
@@ -432,7 +437,7 @@ async function expectRecipientReadback(page: Page, recipientId: number, name: st
   const detail = await browserApi(page, { path: recipientPath(recipientId) });
   expect(detail.status, 'W1B_E2E_RECIPIENT_DETAIL_STATUS').toBe(200);
   expect(asRecord(detail.body).name, 'W1B_E2E_RECIPIENT_DETAIL_NAME').toBe(name);
-  expect(asRecord(detail.body).home_phone, 'W1B_E2E_RECIPIENT_DETAIL_HOME_PHONE').toBe('010-1000-0001');
+  expect(asRecord(detail.body).home_phone, 'W1B_E2E_RECIPIENT_DETAIL_HOME_PHONE').toBeNull();
   expect(asRecord(detail.body).mobile_phone, 'W1B_E2E_RECIPIENT_DETAIL_MOBILE_PHONE').toBe('010-1000-0002');
   return asRecord(detail.body);
 }
@@ -772,7 +777,8 @@ async function exercisePayerGuardianSelection(
   await expect(payerA, 'W1B_E2E_PAYER_UI_A_READY').toBeEnabled();
   await expect(payerB, 'W1B_E2E_PAYER_UI_B_READY').toBeEnabled();
 
-  // Assign guardian A through the visible UI.
+  // Assign guardian A through the visible UI (basic-batch slot 0 / 1, not PATCH payer_guardian_id).
+  const basicBatchPath = `${recipientPath(recipientId)}/basic-batch`;
   const current = await browserApi(page, { path: recipientPath(recipientId) });
   responseSurfaces.push(current.raw);
   const currentBody = asRecord(current.body);
@@ -782,19 +788,20 @@ async function exercisePayerGuardianSelection(
   await expect(payerB, 'W1B_E2E_PAYER_UI_B_EXCLUDED_BY_A').not.toBeChecked();
   const setAResponsePromise = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === recipientPath(recipientId) &&
-      response.request().method() === 'PATCH',
+      new URL(response.url()).pathname === basicBatchPath &&
+      response.request().method() === 'POST',
   );
   await saveButton.click();
   const setAResponse = await setAResponsePromise;
   const setARaw = await setAResponse.text();
   responseSurfaces.push(setARaw);
   expect(setAResponse.status(), 'W1B_E2E_PAYER_G_SET_A_STATUS').toBe(200);
-  expect(parseJson(setAResponse.request().postData() ?? ''), 'W1B_E2E_PAYER_G_SET_A_BODY').toEqual({
-    expected_row_version: version1,
-    payer_guardian_id: guardianAId,
-  });
-  const payerUiBodyA = asRecord(parseJson(setARaw));
+  const setARequest = asRecord(parseJson(setAResponse.request().postData() ?? ''));
+  expect(asRecord(setARequest.recipient).expected_row_version, 'W1B_E2E_PAYER_G_SET_A_VERSION').toBe(
+    version1,
+  );
+  expect(setARequest.payer_guardian_slot, 'W1B_E2E_PAYER_G_SET_A_SLOT').toBe(0);
+  const payerUiBodyA = asRecord(asRecord(parseJson(setARaw)).recipient);
   expect(payerUiBodyA.payer_guardian_id, 'W1B_E2E_PAYER_G_SET_A_VALUE').toBe(guardianAId);
   await expect(payerLabel, 'W1B_E2E_PAYER_G_SET_A_LABEL').toContainText('보호자1');
   const readA = await browserApi(page, { path: recipientPath(recipientId) });
@@ -803,26 +810,29 @@ async function exercisePayerGuardianSelection(
 
   const bodyA = payerUiBodyA;
 
-  // Switch to guardian B.
+  // Switch to guardian B (save closes edit mode; re-enter before the next mutation).
   const version2 = numberField(bodyA, 'row_version', 'W1B_E2E_PAYER_G_VERSION_2');
+  await editButton.click();
+  await expect(payerB, 'W1B_E2E_PAYER_UI_B_READY_AGAIN').toBeEnabled();
   await payerB.check();
   await expect(payerB, 'W1B_E2E_PAYER_UI_B_CHECKED').toBeChecked();
   await expect(payerA, 'W1B_E2E_PAYER_UI_A_EXCLUDED_BY_B').not.toBeChecked();
   const setBResponsePromise = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === recipientPath(recipientId) &&
-      response.request().method() === 'PATCH',
+      new URL(response.url()).pathname === basicBatchPath &&
+      response.request().method() === 'POST',
   );
   await saveButton.click();
   const setBResponse = await setBResponsePromise;
   const setBRaw = await setBResponse.text();
   responseSurfaces.push(setBRaw);
   expect(setBResponse.status(), 'W1B_E2E_PAYER_G_SET_B_STATUS').toBe(200);
-  expect(parseJson(setBResponse.request().postData() ?? ''), 'W1B_E2E_PAYER_G_SET_B_BODY').toEqual({
-    expected_row_version: version2,
-    payer_guardian_id: guardianBId,
-  });
-  const payerUiBodyB = asRecord(parseJson(setBRaw));
+  const setBRequest = asRecord(parseJson(setBResponse.request().postData() ?? ''));
+  expect(asRecord(setBRequest.recipient).expected_row_version, 'W1B_E2E_PAYER_G_SET_B_VERSION').toBe(
+    version2,
+  );
+  expect(setBRequest.payer_guardian_slot, 'W1B_E2E_PAYER_G_SET_B_SLOT').toBe(1);
+  const payerUiBodyB = asRecord(asRecord(parseJson(setBRaw)).recipient);
   expect(payerUiBodyB.payer_guardian_id, 'W1B_E2E_PAYER_G_SET_B_VALUE').toBe(guardianBId);
   await expect(payerLabel, 'W1B_E2E_PAYER_G_SET_B_LABEL').toContainText('보호자2');
   const readB = await browserApi(page, { path: recipientPath(recipientId) });
@@ -831,22 +841,28 @@ async function exercisePayerGuardianSelection(
   const bodyB = payerUiBodyB;
 
   const version3 = numberField(bodyB, 'row_version', 'W1B_E2E_PAYER_G_VERSION_3');
+  await editButton.click();
+  await expect(payerB, 'W1B_E2E_PAYER_UI_B_READY_CLEAR').toBeEnabled();
   await payerB.uncheck();
   await expect(payerA, 'W1B_E2E_PAYER_UI_A_CLEAR_FOR_SELF').not.toBeChecked();
   await expect(payerB, 'W1B_E2E_PAYER_UI_B_CLEAR_FOR_SELF').not.toBeChecked();
   const setSelfResponsePromise = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === recipientPath(recipientId) && response.request().method() === 'PATCH',
+    (response) =>
+      new URL(response.url()).pathname === basicBatchPath &&
+      response.request().method() === 'POST',
   );
   await saveButton.click();
   const setSelfResponse = await setSelfResponsePromise;
   const setSelfRaw = await setSelfResponse.text();
   responseSurfaces.push(setSelfRaw);
   expect(setSelfResponse.status(), 'W1B_E2E_PAYER_G_SET_SELF_STATUS').toBe(200);
-  expect(parseJson(setSelfResponse.request().postData() ?? ''), 'W1B_E2E_PAYER_G_SET_SELF_BODY').toEqual({
-    expected_row_version: version3,
-    payer_guardian_id: null,
-  });
-  const bodySelf = asRecord(parseJson(setSelfRaw));
+  const setSelfRequest = asRecord(parseJson(setSelfResponse.request().postData() ?? ''));
+  expect(
+    asRecord(setSelfRequest.recipient).expected_row_version,
+    'W1B_E2E_PAYER_G_SET_SELF_VERSION',
+  ).toBe(version3);
+  expect(setSelfRequest.payer_guardian_slot, 'W1B_E2E_PAYER_G_SET_SELF_SLOT').toBeNull();
+  const bodySelf = asRecord(asRecord(parseJson(setSelfRaw)).recipient);
   expect(bodySelf.payer_guardian_id, 'W1B_E2E_PAYER_G_SET_SELF_VALUE').toBeNull();
   await expect(payerLabel, 'W1B_E2E_PAYER_G_SET_SELF_LABEL').toContainText('수급자 본인');
   const reread = await browserApi(page, { path: recipientPath(recipientId) });
@@ -994,13 +1010,15 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     await expect(page.getByTestId('recipient-detail-workspace'), 'W1B_E2E_RECIPIENT_DETAIL_WORKSPACE').toContainText(
       recipientName,
     );
+    // Create form has no home_phone input; detail shows formatNullable → "없음".
     await expect(page.getByTestId('recipient-detail-home-phone'), 'W1B_E2E_RECIPIENT_DETAIL_HOME_UI').toContainText(
-      '010-1000-0001',
+      '없음',
     );
+    // After create, detail view uses the inert edit input (not the read-only strong).
     await expect(
-      page.getByTestId('recipient-detail-mobile-phone'),
+      page.getByTestId('recipient-detail-mobile-phone-input'),
       'W1B_E2E_RECIPIENT_DETAIL_MOBILE_UI',
-    ).toContainText('010-1000-0002');
+    ).toHaveValue('010-1000-0002');
 
     await expectRecipientReadback(page, recipientId, recipientName);
     const listReadback = await browserApi(page, {
@@ -1036,12 +1054,14 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     );
 
     const staleInput = `${recipientName}-USER-STALE`;
+    const basicBatchPath = `${recipientPath(recipientId)}/basic-batch`;
     await page.getByTestId('recipient-basic-edit').click();
     await page.getByTestId('recipient-detail-name-input').fill(staleInput);
+    // Live basic save posts atomic basic-batch (not plain PATCH /recipients/{id}).
     const staleUiResponse = page.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === recipientPath(recipientId) &&
-        response.request().method() === 'PATCH',
+        new URL(response.url()).pathname === basicBatchPath &&
+        response.request().method() === 'POST',
     );
     await page.getByTestId('recipient-basic-save').click();
     const staleUi = await staleUiResponse;
@@ -1064,8 +1084,8 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     await nameInput.fill(staleInput);
     const reapplyResponse = page.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === recipientPath(recipientId) &&
-        response.request().method() === 'PATCH',
+        new URL(response.url()).pathname === basicBatchPath &&
+        response.request().method() === 'POST',
     );
     await page.getByTestId('recipient-basic-save').click();
     const reapplied = await reapplyResponse;
@@ -1075,15 +1095,21 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     const reapplyRequest = findRequest(
       requestCaptures,
       (capture) =>
-        new URL(capture.url).pathname === recipientPath(recipientId) &&
-        capture.method === 'PATCH' &&
-        asRecord(capture.body).name === staleInput,
+        new URL(capture.url).pathname === basicBatchPath &&
+        capture.method === 'POST' &&
+        asRecord(asRecord(capture.body).recipient).name === staleInput,
     );
     expect(reapplyRequest, 'W1B_E2E_STALE_REAPPLY_REQUEST_MISSING').toBeDefined();
-    expect(reapplyRequest?.body, 'W1B_E2E_STALE_REAPPLY_PARTIAL_PAYLOAD').toEqual({
-      expected_row_version: externalVersion,
-      name: staleInput,
-    });
+    expect(asRecord(reapplyRequest?.body), 'W1B_E2E_STALE_REAPPLY_PARTIAL_PAYLOAD').toEqual(
+      expect.objectContaining({
+        recipient: {
+          expected_row_version: externalVersion,
+          name: staleInput,
+        },
+        // Name-only reapply must not send a copay CREATE (open-period exclusion constraint).
+        benefit_periods: [],
+      }),
+    );
     const reappliedReadback = await browserApi(page, { path: recipientPath(recipientId) });
     responseSurfaces.push(reappliedReadback.raw);
     expect(asRecord(reappliedReadback.body).name, 'W1B_E2E_STALE_REAPPLY_READBACK').toBe(staleInput);
