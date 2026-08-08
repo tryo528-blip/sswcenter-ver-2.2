@@ -1021,6 +1021,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recipients/{recipient_id}/detail-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save Recipient Detail Batch */
+        post: operations["save_recipient_detail_batch_api_v1_recipients__recipient_id__detail_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recipients/basic-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Recipient Basic Batch */
+        post: operations["create_recipient_basic_batch_api_v1_recipients_basic_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recipients/{recipient_id}/basic-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update Recipient Basic Batch */
+        post: operations["update_recipient_basic_batch_api_v1_recipients__recipient_id__basic_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/recipients/{recipient_id}/certification-identity": {
         parameters: {
             query?: never;
@@ -1380,6 +1431,13 @@ export interface components {
             /** Items */
             items: components["schemas"]["ApprovalAmountPeriodResponse"][];
         };
+        /** ApprovalAmountPeriodMutation */
+        ApprovalAmountPeriodMutation: {
+            /** Period Id */
+            period_id?: number | null;
+            /** Payload */
+            payload: components["schemas"]["ApprovalAmountPeriodCreateRequest"] | components["schemas"]["ApprovalAmountPeriodReplacementRequest"];
+        };
         /** ApprovalAmountPeriodReplacementRequest */
         ApprovalAmountPeriodReplacementRequest: {
             /**
@@ -1427,6 +1485,18 @@ export interface components {
             /** Row Version */
             row_version: number;
         };
+        /** BasicGuardianMutation */
+        BasicGuardianMutation: {
+            /**
+             * Slot
+             * @enum {integer}
+             */
+            slot: 0 | 1;
+            /** Guardian Id */
+            guardian_id?: number | null;
+            /** Payload */
+            payload: components["schemas"]["GuardianCreateRequest"] | components["schemas"]["GuardianUpdateRequest"];
+        };
         /**
          * BenefitCode
          * @enum {string}
@@ -1447,6 +1517,13 @@ export interface components {
         BenefitPeriodListResponse: {
             /** Items */
             items: components["schemas"]["BenefitPeriodResponse"][];
+        };
+        /** BenefitPeriodMutation */
+        BenefitPeriodMutation: {
+            /** Period Id */
+            period_id?: number | null;
+            /** Payload */
+            payload: components["schemas"]["BenefitPeriodCreateRequest"] | components["schemas"]["BenefitPeriodReplacementRequest"];
         };
         /** BenefitPeriodReplacementRequest */
         BenefitPeriodReplacementRequest: {
@@ -1546,6 +1623,13 @@ export interface components {
         CertificationPeriodListResponse: {
             /** Items */
             items: components["schemas"]["CertificationPeriodResponse"][];
+        };
+        /** CertificationPeriodMutation */
+        CertificationPeriodMutation: {
+            /** Period Id */
+            period_id?: number | null;
+            /** Payload */
+            payload: components["schemas"]["CertificationPeriodCreateRequest"] | components["schemas"]["CertificationPeriodReplacementRequest"];
         };
         /** CertificationPeriodReplacementRequest */
         CertificationPeriodReplacementRequest: {
@@ -1851,6 +1935,13 @@ export interface components {
         GradePeriodListResponse: {
             /** Items */
             items: components["schemas"]["GradePeriodResponse"][];
+        };
+        /** GradePeriodMutation */
+        GradePeriodMutation: {
+            /** Period Id */
+            period_id?: number | null;
+            /** Payload */
+            payload: components["schemas"]["GradePeriodCreateRequest"] | components["schemas"]["GradePeriodReplacementRequest"];
         };
         /** GradePeriodReplacementRequest */
         GradePeriodReplacementRequest: {
@@ -2197,6 +2288,39 @@ export interface components {
          * @enum {string}
          */
         QuarterlyConsultationStatus: "COMPLETE" | "INCOMPLETE" | "EXEMPT";
+        /** RecipientBasicBatchResponse */
+        RecipientBasicBatchResponse: {
+            recipient: components["schemas"]["RecipientResponse"];
+            /** Guardians */
+            guardians: components["schemas"]["GuardianResponse"][];
+            /** Saved Sections */
+            saved_sections: string[];
+        };
+        /** RecipientBasicCreateBatchRequest */
+        RecipientBasicCreateBatchRequest: {
+            recipient: components["schemas"]["RecipientCreateRequest"];
+            /** Guardians */
+            guardians?: components["schemas"]["BasicGuardianMutation"][];
+            /** Payer Guardian Slot */
+            payer_guardian_slot?: (0 | 1) | null;
+            /** Benefit Periods */
+            benefit_periods?: components["schemas"]["BenefitPeriodMutation"][];
+        };
+        /** RecipientBasicUpdateBatchRequest */
+        RecipientBasicUpdateBatchRequest: {
+            recipient: components["schemas"]["RecipientUpdateRequest"];
+            /** Guardians */
+            guardians?: components["schemas"]["BasicGuardianMutation"][];
+            /** Payer Guardian Slot */
+            payer_guardian_slot?: (0 | 1) | null;
+            /**
+             * Preserve Payer
+             * @default false
+             */
+            preserve_payer: boolean;
+            /** Benefit Periods */
+            benefit_periods?: components["schemas"]["BenefitPeriodMutation"][];
+        };
         /** RecipientCreateRequest */
         RecipientCreateRequest: {
             /** Name */
@@ -2247,6 +2371,23 @@ export interface components {
         RecipientDeadlineListResponse: {
             /** Items */
             items: components["schemas"]["RecipientDeadlineItem"][];
+        };
+        /** RecipientDetailBatchRequest */
+        RecipientDetailBatchRequest: {
+            certification_identity?: components["schemas"]["CertificationIdentityCreateRequest"] | null;
+            certification_period?: components["schemas"]["CertificationPeriodMutation"] | null;
+            grade_period?: components["schemas"]["GradePeriodMutation"] | null;
+            benefit_period?: components["schemas"]["BenefitPeriodMutation"] | null;
+            approval_amount_period?: components["schemas"]["ApprovalAmountPeriodMutation"] | null;
+            plan_notification?: components["schemas"]["PlanNotificationCreateRequest"] | null;
+            contract?: components["schemas"]["ContractCreateRequest"] | null;
+        };
+        /** RecipientDetailBatchResponse */
+        RecipientDetailBatchResponse: {
+            /** Recipient Id */
+            recipient_id: number;
+            /** Saved Sections */
+            saved_sections: string[];
         };
         /** RecipientErrorBody */
         RecipientErrorBody: {
@@ -9157,6 +9298,244 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanNotificationResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+        };
+    };
+    save_recipient_detail_batch_api_v1_recipients__recipient_id__detail_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recipient_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecipientDetailBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientDetailBatchResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+        };
+    };
+    create_recipient_basic_batch_api_v1_recipients_basic_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecipientBasicCreateBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientBasicBatchResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientErrorEnvelope"];
+                };
+            };
+        };
+    };
+    update_recipient_basic_batch_api_v1_recipients__recipient_id__basic_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recipient_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecipientBasicUpdateBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipientBasicBatchResponse"];
                 };
             };
             /** @description Unauthorized */

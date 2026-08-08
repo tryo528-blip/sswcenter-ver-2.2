@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Literal, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
@@ -315,7 +316,11 @@ def _build_batch_request(index: int, *, today: date) -> RecipientBasicCreateBatc
     sex_code = RecipientSexCode.MALE if index % 2 == 0 else RecipientSexCode.FEMALE
     benefit_code = BENEFIT_CODES[index % len(BENEFIT_CODES)]
     guardians = _build_guardians(index)
-    payer_slot = 0 if guardians else None
+    payer_slot: Literal[0, 1] | None
+    if guardians:
+        payer_slot = 0
+    else:
+        payer_slot = None
 
     if index < len(SPECIAL_RECIPIENTS):
         special = SPECIAL_RECIPIENTS[index]
@@ -379,9 +384,11 @@ def _create_seed_recipient(
     recipient = recipient_service.create_recipient(payload.recipient, current_account)
     guardians: dict[int, GuardianResponse] = {}
     for mutation in sorted(payload.guardians, key=lambda item: item.slot):
+        # Seed path only creates guardians (never updates).
+        create_payload = cast(GuardianCreateRequest, mutation.payload)
         guardians[mutation.slot] = recipient_service.create_guardian(
             recipient.id,
-            mutation.payload,
+            create_payload,
             current_account,
         )
     if payload.payer_guardian_slot is not None:
@@ -393,10 +400,10 @@ def _create_seed_recipient(
             ),
             current_account,
         )
-    for mutation in payload.benefit_periods:
+    for benefit_mutation in payload.benefit_periods:
         w1c_service.create_benefit_period(
             recipient.id,
-            mutation.payload,
+            benefit_mutation.payload,
             current_account,
         )
     _attach_certification_and_grade(

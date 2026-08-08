@@ -10,11 +10,12 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import Table
 
 from app.db.models import Recipient
 from app.domains.recipient.errors import RecipientDomainError
@@ -45,13 +46,14 @@ def test_migration_0016_source_is_linked_and_not_silently_skippable() -> None:
 
 
 def test_model_has_payer_guardian_id_and_composite_fk() -> None:
-    column = Recipient.__table__.c.payer_guardian_id
+    table = cast(Table, Recipient.__table__)
+    column = table.c.payer_guardian_id
     assert column.nullable is True
-    fk_names = {fk.name for fk in Recipient.__table__.foreign_key_constraints}
+    fk_names = {fk.name for fk in table.foreign_key_constraints}
     assert "fk_recipient_payer_guardian_same_recipient" in fk_names
     composite = next(
         fk
-        for fk in Recipient.__table__.foreign_key_constraints
+        for fk in table.foreign_key_constraints
         if fk.name == "fk_recipient_payer_guardian_same_recipient"
     )
     src = [col.name for col in composite.columns]
@@ -166,9 +168,9 @@ def _service_with_recipient(
             return None
         return guardian
 
-    service.repository.get_recipient = get_recipient  # type: ignore[method-assign]
-    service.repository.get_guardian = get_guardian  # type: ignore[method-assign]
-    service.repository.add = audits.append  # type: ignore[method-assign]
+    service.repository.get_recipient = get_recipient  # type: ignore[method-assign, assignment]
+    service.repository.get_guardian = get_guardian  # type: ignore[method-assign, assignment]
+    service.repository.add = audits.append  # type: ignore[method-assign, assignment]
     service.repository.flush = MagicMock()  # type: ignore[method-assign]
     return service, session, audits
 

@@ -373,69 +373,69 @@ class RecipientDetailBatchService:
                 saved_sections.append("certification_identity")
 
             if payload.certification_period is not None:
-                mutation = payload.certification_period
-                if mutation.period_id is None:
+                certification_mutation = payload.certification_period
+                if certification_mutation.period_id is None:
                     self._w1c_service.create_certification_period(
                         recipient_id,
-                        mutation.payload,
+                        certification_mutation.payload,
                         current_account,
                     )
                 else:
                     self._w1c_service.replace_certification_period(
                         recipient_id,
-                        mutation.period_id,
-                        mutation.payload,
+                        certification_mutation.period_id,
+                        certification_mutation.payload,
                         current_account,
                     )
                 saved_sections.append("certification_period")
 
             if payload.grade_period is not None:
-                mutation = payload.grade_period
-                if mutation.period_id is None:
+                grade_mutation = payload.grade_period
+                if grade_mutation.period_id is None:
                     self._w1c_service.create_grade_period(
                         recipient_id,
-                        mutation.payload,
+                        grade_mutation.payload,
                         current_account,
                     )
                 else:
                     self._w1c_service.replace_grade_period(
                         recipient_id,
-                        mutation.period_id,
-                        mutation.payload,
+                        grade_mutation.period_id,
+                        grade_mutation.payload,
                         current_account,
                     )
                 saved_sections.append("grade_period")
 
             if payload.benefit_period is not None:
-                mutation = payload.benefit_period
-                if mutation.period_id is None:
+                benefit_mutation = payload.benefit_period
+                if benefit_mutation.period_id is None:
                     self._w1c_service.create_benefit_period(
                         recipient_id,
-                        mutation.payload,
+                        benefit_mutation.payload,
                         current_account,
                     )
                 else:
                     self._w1c_service.replace_benefit_period(
                         recipient_id,
-                        mutation.period_id,
-                        mutation.payload,
+                        benefit_mutation.period_id,
+                        benefit_mutation.payload,
                         current_account,
                     )
                 saved_sections.append("benefit_period")
 
             if payload.approval_amount_period is not None:
-                mutation = payload.approval_amount_period
-                if mutation.period_id is None:
+                approval_mutation = payload.approval_amount_period
+                if approval_mutation.period_id is None:
                     self._w1c_service.create_approval_amount_period(
                         recipient_id,
-                        mutation.payload,
+                        approval_mutation.payload,
                         current_account,
                     )
                 else:
                     self._w1c_service.replace_approval_amount_period(
                         recipient_id,
-                        mutation.period_id,
-                        mutation.payload,
+                        approval_mutation.period_id,
+                        approval_mutation.payload,
                         current_account,
                     )
                 saved_sections.append("approval_amount_period")
