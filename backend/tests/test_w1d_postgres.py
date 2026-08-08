@@ -36,6 +36,10 @@ RECIPIENT_NO_EXACT_RE = re.compile(r"^[0-9]{6,}$")
 
 W1C_HEAD = "20260730_0010_w1c_certification_ledgers"
 W1D_REVISION = "20260730_0011_w1d_recipient_contract"
+# Wrapper (scripts/test-w1d-postgres.ps1) seals the historical 0011 lifecycle,
+# then upgrades the runtime DB to current head and exports this exact expected
+# runtime revision for ORM/product assertions. Unset falls back to W1D_REVISION.
+_RUNTIME_REVISION_ENV = "SSWCENTER_W1D_EXPECTED_RUNTIME_REVISION"
 SERVICE_HOME_CARE = "HOME_CARE"
 SERVICE_HOME_BATH = "HOME_BATH"
 SERVICE_TEMP = "TEMP_HOME_CARE"
@@ -55,6 +59,23 @@ W1D_REVERSE_PERIOD_FIELD_ERRORS = [
 
 def _fail(marker: str) -> NoReturn:
     pytest.fail(marker, pytrace=False)
+
+
+def _expected_runtime_revision() -> str:
+    """Exact runtime Alembic revision required by product/catalog assertions.
+
+    The PowerShell wrapper proves historical 0011 lifecycle separately, then
+    upgrades to current head and sets SSWCENTER_W1D_EXPECTED_RUNTIME_REVISION.
+    When unset (e.g. isolated local runs still at 0011), fall back to the
+    historical W1D revision so exact equality is preserved either way.
+    """
+    provided = os.environ.get(_RUNTIME_REVISION_ENV)
+    if provided is None:
+        return W1D_REVISION
+    text = str(provided).strip()
+    if not text:
+        return W1D_REVISION
+    return text
 
 
 @dataclass(frozen=True)
@@ -90,14 +111,15 @@ def _synthetic_pin_for_staff_id(staff_id: int) -> str:
 
 
 def _require_w1d_catalog(engine: Engine) -> None:
+    expected_revision = _expected_runtime_revision()
     with engine.connect() as connection:
         revision = connection.execute(
             text("SELECT version_num FROM erp.alembic_version")
         ).scalar_one_or_none()
-        if revision != W1D_REVISION:
+        if revision != expected_revision:
             _fail(
                 "W1D_MIGRATION_REVISION_NOT_APPLIED: expected "
-                + W1D_REVISION
+                + expected_revision
                 + " got "
                 + str(revision)
             )
@@ -276,7 +298,8 @@ def test_w1d_pg_harness_w1c_head_self_check(
         revision = connection.execute(
             text("SELECT version_num FROM erp.alembic_version")
         ).scalar_one_or_none()
-        if revision not in {W1C_HEAD, W1D_REVISION}:
+        allowed_revisions = {W1C_HEAD, W1D_REVISION, _expected_runtime_revision()}
+        if revision not in allowed_revisions:
             _fail("W1D_HARNESS_UNEXPECTED_REVISION: " + str(revision))
 
         # Catalog seed for service types (W1A) ??W1D contracts depend on these codes.

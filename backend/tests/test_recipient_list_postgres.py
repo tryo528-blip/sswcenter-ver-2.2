@@ -836,7 +836,12 @@ def test_migration_0015_present_in_alembic_version_when_column_exists(
         else:
             pytest.fail("alembic_version table missing while recipient_status exists")
         assert revision is not None
-        assert "20260806_0015_recipient_status_tag" in str(revision)
+        # Head may be 0015 itself or a serial descendant (e.g. 0016) that keeps the column.
+        revision_text = str(revision)
+        assert (
+            "20260806_0015_recipient_status_tag" in revision_text
+            or "20260808_0016_recipient_payer_guardian" in revision_text
+        )
 
 
 def test_postcheck_0015_source_marker_contract_present() -> None:

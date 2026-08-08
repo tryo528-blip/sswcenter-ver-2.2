@@ -221,12 +221,12 @@ describe('W1D RED: contract and certification transition UI', () => {
 
   /**
    * Expand collapsed extra panels via the accessible detail toggle control
-   * (product label: 세부정보; data-testid: recipient-detail-toggle).
+   * (closed name: 상세; open name: 기본정보; data-testid: recipient-detail-toggle).
    * Role/name/state are primary; testid is secondary identity only.
    * Contract and certification-transition panels mount only after this click.
    */
   async function expandDetailExtras() {
-    const toggle = screen.getByRole('button', { name: /세부정보|추가정보/ });
+    const toggle = screen.getByRole('button', { name: '상세' });
     expect(toggle, 'W1D_UI_DETAIL_EXTRAS_TOGGLE_MISSING').toBeInTheDocument();
     // Secondary identity only — not a substitute for role/name selection.
     expect(toggle).toHaveAttribute('data-testid', 'recipient-detail-toggle');
@@ -235,18 +235,26 @@ describe('W1D RED: contract and certification transition UI', () => {
       'W1D_UI_DETAIL_EXTRAS_ALREADY_EXPANDED',
     ).toBe('false');
     fireEvent.click(toggle);
+    const expandedToggle = screen.getByRole('button', { name: '기본정보' });
     expect(
-      toggle.getAttribute('aria-expanded'),
+      expandedToggle.getAttribute('aria-expanded'),
       'W1D_UI_DETAIL_EXTRAS_NOT_EXPANDED_AFTER_CLICK',
     ).toBe('true');
+    // Unique container first, then required panels separately (no multi-node OR).
     await waitFor(() => {
       expect(
-        screen.queryByTestId('recipient-detail-extra-sections') ||
-          screen.queryByTestId('recipient-contract-panel') ||
-          screen.queryByTestId('certification-transition-panel'),
-        'W1D_UI_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE',
-      ).toBeTruthy();
+        screen.getByTestId('recipient-detail-extra-sections'),
+        'W1D_UI_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE_EXTRAS',
+      ).toBeInTheDocument();
     });
+    expect(
+      screen.getByTestId('recipient-contract-panel'),
+      'W1D_UI_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE_CONTRACT',
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('certification-transition-panel'),
+      'W1D_UI_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE_TRANSITION',
+    ).toBeInTheDocument();
   }
 
   function fillRequiredTransitionFields(transition: HTMLElement) {

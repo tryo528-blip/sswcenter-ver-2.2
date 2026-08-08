@@ -49,6 +49,7 @@ const recipientTasks = [
 type WorkItem = {
   id: string;
   label: string;
+  completed?: boolean;
 };
 
 type WorkCard = {
@@ -95,9 +96,11 @@ const initialWorkCards: WorkCard[] = [
 function SortableWorkCard({
   card,
   ddayOverride,
+  onToggleItem,
 }: {
   card: WorkCard;
   ddayOverride?: string;
+  onToggleItem: (cardId: string, itemId: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
@@ -130,13 +133,26 @@ function SortableWorkCard({
       <h3>{card.person}</h3>
       <p>{card.taskName}</p>
       <ul className="dashboard-work-subtask-list">
-        {card.items.map((item) => (
-          <li key={item.id} className="dashboard-work-subtask">
-            <span className="dashboard-work-subtask-label">
-              <span>{item.label}</span>
-            </span>
-          </li>
-        ))}
+        {card.items.map((item) => {
+          const completed = item.completed === true;
+          return (
+            <li
+              key={item.id}
+              className={`dashboard-work-subtask${completed ? ' dashboard-work-subtask-completed' : ''}`}
+            >
+              <button
+                type="button"
+                className="dashboard-work-subtask-toggle"
+                aria-label={completed ? `${item.label} 미완료로 표시` : `${item.label} 완료로 표시`}
+                onClick={() => onToggleItem(card.id, item.id)}
+              >
+                <span className="dashboard-work-subtask-label">
+                  <span>{item.label}</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
       <footer className="dashboard-work-card-footer">
         <span className="dashboard-dday" aria-label={`마감 ${ddayOverride ?? card.dday}`}>
@@ -422,6 +438,23 @@ export const DashboardPage = () => {
     });
   };
 
+  const toggleWorkItem = (cardId: string, itemId: string) => {
+    setWorkCards((cards) =>
+      cards.map((card) =>
+        card.id === cardId
+          ? {
+              ...card,
+              items: card.items.map((item) =>
+                item.id === itemId
+                  ? { ...item, completed: !item.completed }
+                  : item,
+              ),
+            }
+          : card,
+      ),
+    );
+  };
+
   const addTodo = (event: FormEvent) => {
     event.preventDefault();
     const text = todoText.trim();
@@ -567,7 +600,13 @@ export const DashboardPage = () => {
                             }
                       : card;
 
-                  return <SortableWorkCard card={displayCard} key={card.id} />;
+                  return (
+                    <SortableWorkCard
+                      card={displayCard}
+                      key={card.id}
+                      onToggleItem={toggleWorkItem}
+                    />
+                  );
                 })}
               </section>
             </SortableContext>

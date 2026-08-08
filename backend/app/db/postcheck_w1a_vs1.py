@@ -17,11 +17,15 @@ W1E_REVISION = "20260801_0012_w1e_care_assignment"
 CONTINUING_EDUCATION_REVISION = "20260802_0013_staff_continuing_education"
 RECIPIENT_PLAN_NOTIFICATION_REVISION = "20260803_0014_recipient_plan_notification"
 RECIPIENT_STATUS_TAG_REVISION = "20260806_0015_recipient_status_tag"
+RECIPIENT_PAYER_GUARDIAN_REVISION = "20260808_0016_recipient_payer_guardian"
+RECIPIENT_GUARDIAN_EMAIL_REVISION = "20260808_0017_recipient_guardian_email"
 W1E_LINEAGE_REVISIONS = {
     W1E_REVISION,
     CONTINUING_EDUCATION_REVISION,
     RECIPIENT_PLAN_NOTIFICATION_REVISION,
     RECIPIENT_STATUS_TAG_REVISION,
+    RECIPIENT_PAYER_GUARDIAN_REVISION,
+    RECIPIENT_GUARDIAN_EMAIL_REVISION,
 }
 W1A_PERMISSION_CODES = {
     "COPAY_USE",
@@ -849,6 +853,8 @@ def main() -> None:
                 CONTINUING_EDUCATION_REVISION,
                 RECIPIENT_PLAN_NOTIFICATION_REVISION,
                 RECIPIENT_STATUS_TAG_REVISION,
+                RECIPIENT_PAYER_GUARDIAN_REVISION,
+                RECIPIENT_GUARDIAN_EMAIL_REVISION,
             }:
                 raise SystemExit("Unexpected W1A migration revision")
             verify_wave0_invariants(
@@ -1108,6 +1114,8 @@ def main() -> None:
                             CONTINUING_EDUCATION_REVISION,
                             RECIPIENT_PLAN_NOTIFICATION_REVISION,
                             RECIPIENT_STATUS_TAG_REVISION,
+                            RECIPIENT_PAYER_GUARDIAN_REVISION,
+                            RECIPIENT_GUARDIAN_EMAIL_REVISION,
                         }
                     ),
                 )
@@ -1121,10 +1129,25 @@ def main() -> None:
                 if current_revision in {
                     RECIPIENT_PLAN_NOTIFICATION_REVISION,
                     RECIPIENT_STATUS_TAG_REVISION,
+                    RECIPIENT_PAYER_GUARDIAN_REVISION,
+                    RECIPIENT_GUARDIAN_EMAIL_REVISION,
                 }:
                     _verify_recipient_plan_notification_contract(connection)
-                if current_revision == RECIPIENT_STATUS_TAG_REVISION:
+                if current_revision in {
+                    RECIPIENT_STATUS_TAG_REVISION,
+                    RECIPIENT_PAYER_GUARDIAN_REVISION,
+                    RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                }:
+                    # 0015 status tag remains required through the 0017 head.
                     _verify_recipient_status_tag_contract(connection)
+                if current_revision in {
+                    RECIPIENT_PAYER_GUARDIAN_REVISION,
+                    RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                }:
+                    # 0016 payer guardian remains required through the 0017 head.
+                    _verify_recipient_payer_guardian_contract(connection)
+                if current_revision == RECIPIENT_GUARDIAN_EMAIL_REVISION:
+                    _verify_recipient_guardian_email_contract(connection)
 
             sensitive_indexes = set(
                 connection.execute(
@@ -1211,7 +1234,11 @@ def main() -> None:
     finally:
         engine.dispose()
 
-    if current_revision == RECIPIENT_STATUS_TAG_REVISION:
+    if current_revision == RECIPIENT_GUARDIAN_EMAIL_REVISION:
+        print("RECIPIENT_GUARDIAN_EMAIL_DB_POSTCHECK_OK")
+    elif current_revision == RECIPIENT_PAYER_GUARDIAN_REVISION:
+        print("RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK")
+    elif current_revision == RECIPIENT_STATUS_TAG_REVISION:
         print("RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK")
     elif current_revision == RECIPIENT_PLAN_NOTIFICATION_REVISION:
         print("RECIPIENT_PLAN_NOTIFICATION_DB_POSTCHECK_OK")
@@ -3087,6 +3114,141 @@ def _normalize_recipient_status_sql(sql_text: str | None) -> str | None:
     if sql_text is None:
         return None
     return " ".join(str(sql_text).split())
+
+
+def _verify_recipient_guardian_email_contract(connection: Connection) -> None:
+    """Assert recipient_guardian.email is nullable text for revision 0017.
+
+    Marker RECIPIENT_GUARDIAN_EMAIL_DB_POSTCHECK_OK is the head success signal.
+    """
+    col = (
+        connection.execute(
+            text(
+                """
+            SELECT is_nullable, data_type, udt_name
+              FROM information_schema.columns
+             WHERE table_schema = 'erp'
+               AND table_name = 'recipient_guardian'
+               AND column_name = 'email'
+            """
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if col is None:
+        raise SystemExit("email column missing on erp.recipient_guardian")
+    if col["is_nullable"] != "YES":
+        raise SystemExit("recipient_guardian.email must be NULLABLE")
+    # text
+    data_type = str(col["data_type"] or "").lower()
+    udt_name = str(col["udt_name"] or "").lower()
+    if "text" not in data_type and udt_name not in {"text"}:
+        raise SystemExit(
+            f"recipient_guardian.email must be TEXT; got data_type={col['data_type']!r} "
+            f"udt_name={col['udt_name']!r}"
+        )
+
+
+def _verify_recipient_payer_guardian_contract(connection: Connection) -> None:
+    """Assert recipient.payer_guardian_id + same-recipient composite FK for revision 0016.
+
+    NULL means recipient self is payer. Non-null values must reference a guardian
+    of the same recipient via composite FK
+    (recipient.id, recipient.payer_guardian_id) -> (guardian.recipient_id, guardian.id).
+    Marker RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK is the head success signal.
+    """
+    col = (
+        connection.execute(
+            text(
+                """
+            SELECT is_nullable, data_type, udt_name
+              FROM information_schema.columns
+             WHERE table_schema = 'erp'
+               AND table_name = 'recipient'
+               AND column_name = 'payer_guardian_id'
+            """
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if col is None:
+        raise SystemExit("payer_guardian_id column missing on erp.recipient")
+    if col["is_nullable"] != "YES":
+        raise SystemExit("payer_guardian_id must be NULLABLE (NULL = self payer)")
+    # bigint / int8
+    data_type = str(col["data_type"] or "").lower()
+    udt_name = str(col["udt_name"] or "").lower()
+    if "bigint" not in data_type and udt_name not in {"int8", "bigint"}:
+        raise SystemExit(
+            f"payer_guardian_id must be BIGINT; got data_type={col['data_type']!r} "
+            f"udt_name={col['udt_name']!r}"
+        )
+
+    fk_row = (
+        connection.execute(
+            text(
+                """
+            SELECT
+                c.conname,
+                c.confdeltype,
+                pg_get_constraintdef(c.oid, true) AS definition,
+                ARRAY(
+                    SELECT a.attname
+                      FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+                      JOIN pg_attribute a
+                        ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+                     ORDER BY k.ord
+                ) AS src_cols,
+                ARRAY(
+                    SELECT a.attname
+                      FROM unnest(c.confkey) WITH ORDINALITY AS k(attnum, ord)
+                      JOIN pg_attribute a
+                        ON a.attrelid = c.confrelid AND a.attnum = k.attnum
+                     ORDER BY k.ord
+                ) AS ref_cols,
+                confrel.relname AS ref_table
+              FROM pg_constraint c
+              JOIN pg_class confrel ON confrel.oid = c.confrelid
+             WHERE c.conrelid = 'erp.recipient'::regclass
+               AND c.contype = 'f'
+               AND c.conname = 'fk_recipient_payer_guardian_same_recipient'
+            """
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if fk_row is None:
+        raise SystemExit(
+            "fk_recipient_payer_guardian_same_recipient foreign key missing on erp.recipient"
+        )
+    if str(fk_row["ref_table"]) != "recipient_guardian":
+        raise SystemExit(
+            "payer_guardian composite FK must reference recipient_guardian; "
+            f"got {fk_row['ref_table']!r}"
+        )
+    src_cols = [str(name) for name in (fk_row["src_cols"] or [])]
+    ref_cols = [str(name) for name in (fk_row["ref_cols"] or [])]
+    if src_cols != ["id", "payer_guardian_id"] or ref_cols != ["recipient_id", "id"]:
+        raise SystemExit(
+            "payer_guardian composite FK columns must be "
+            "(id, payer_guardian_id) -> (recipient_id, id); "
+            f"got {src_cols} -> {ref_cols}"
+        )
+    # confdeltype: a=NO ACTION, r=RESTRICT, c=CASCADE, n=SET NULL, d=SET DEFAULT
+    if str(fk_row["confdeltype"]) not in {"r", "a"}:
+        # RESTRICT and NO ACTION are equivalent for our purpose; require non-cascade.
+        raise SystemExit(
+            "fk_recipient_payer_guardian_same_recipient must be ON DELETE RESTRICT "
+            f"(or NO ACTION); got confdeltype={fk_row['confdeltype']!r}"
+        )
+    definition = str(fk_row["definition"] or "")
+    if "recipient_guardian" not in definition:
+        raise SystemExit(
+            f"fk_recipient_payer_guardian_same_recipient definition invalid: {definition!r}"
+        )
 
 
 def _verify_recipient_status_tag_contract(connection: Connection) -> None:

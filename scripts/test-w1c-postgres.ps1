@@ -214,7 +214,7 @@ CREATE ROLE erp_backup LOGIN;
         Write-Output "W1C_APP_ROLE_OK"
 
         # Historical 0010 lifecycle is sealed above. Current ORM/tests/postcheck
-        # require the live Alembic head (includes 0015 recipient_status).
+        # require the live Alembic head (includes 0016 payer_guardian_id).
         & $PythonExe -m alembic -c alembic.ini upgrade head
         if ($LASTEXITCODE -ne 0) {
             throw "W1C_HARNESS_HEAD_UPGRADE_FAILED"
@@ -231,7 +231,7 @@ CREATE ROLE erp_backup LOGIN;
         $PostcheckOutput | Write-Output
         if (
             $LASTEXITCODE -ne 0 -or
-            $PostcheckOutput -notcontains "RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK"
+            $PostcheckOutput -notcontains "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK"
         ) {
             throw "W1C_HARNESS_POSTCHECK_FAILED"
         }

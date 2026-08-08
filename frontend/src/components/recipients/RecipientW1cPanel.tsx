@@ -423,6 +423,7 @@ const RecipientW1cPanel = ({ recipientId }: RecipientW1cPanelProps) => {
                 인정번호 <em>필수</em>
                 <input
                   data-testid="w1c-certification-input"
+                  data-detail-batch-field="true"
                   value={identityInput}
                   onChange={(event) => setIdentityInput(event.target.value)}
                   placeholder="L1234567890 또는 l1234567890-100"
@@ -497,6 +498,12 @@ const RecipientW1cPanel = ({ recipientId }: RecipientW1cPanelProps) => {
                 시작일 <em>필수</em>
                 <input
                   data-testid="w1c-certification-start-date"
+                  data-detail-batch-field="true"
+                  data-period-id={editingCertificationId ?? undefined}
+                  data-row-version={
+                    certificationPeriods.find((item) => item.id === editingCertificationId)
+                      ?.row_version
+                  }
                   type="date"
                   value={certificationForm.start_date}
                   onChange={(event) =>
@@ -647,6 +654,11 @@ const RecipientW1cPanel = ({ recipientId }: RecipientW1cPanelProps) => {
                 시작일 <em>필수</em>
                 <input
                   data-testid="w1c-grade-start-date"
+                  data-detail-batch-field="true"
+                  data-period-id={editingGradeId ?? undefined}
+                  data-row-version={
+                    gradePeriods.find((item) => item.id === editingGradeId)?.row_version
+                  }
                   type="date"
                   value={gradeForm.start_date}
                   onChange={(event) =>
@@ -779,6 +791,11 @@ const RecipientW1cPanel = ({ recipientId }: RecipientW1cPanelProps) => {
                 시작일 <em>필수</em>
                 <input
                   data-testid="w1c-benefit-start-date"
+                  data-detail-batch-field="true"
+                  data-period-id={editingBenefitId ?? undefined}
+                  data-row-version={
+                    benefitPeriods.find((item) => item.id === editingBenefitId)?.row_version
+                  }
                   type="date"
                   value={benefitForm.start_date}
                   onChange={(event) =>
@@ -903,6 +920,11 @@ const RecipientW1cPanel = ({ recipientId }: RecipientW1cPanelProps) => {
                 시작일 <em>필수</em>
                 <input
                   data-testid="w1c-approval-start-date"
+                  data-detail-batch-field="true"
+                  data-period-id={editingApprovalId ?? undefined}
+                  data-row-version={
+                    approvalPeriods.find((item) => item.id === editingApprovalId)?.row_version
+                  }
                   type="date"
                   value={approvalForm.start_date}
                   onChange={(event) =>

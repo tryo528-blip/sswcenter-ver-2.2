@@ -1032,7 +1032,7 @@
 .staff-workspace {
   min-height: 690px;
   background: #fff;
-  border-top: 2px solid var(--color-primary);
+  border-top: 1px solid var(--border-color-thin);
   box-shadow: var(--shadow-card);
 }
 

@@ -649,6 +649,28 @@ button.dashboard-task-row-button:focus-visible {
   min-width: 0;
 }
 
+.dashboard-work-subtask-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.dashboard-work-subtask-completed {
+  opacity: 0.3;
+}
+
+.dashboard-work-subtask-completed .dashboard-work-subtask-label {
+  text-decoration: line-through;
+}
+
 .dashboard-work-card-footer {
   display: flex;
   align-items: center;
@@ -883,7 +905,7 @@ button.dashboard-task-row-button:focus-visible {
   padding: 15px;
   background: #fff;
   border: 1px solid var(--border-color-thin);
-  border-top: 2px solid var(--color-primary);
+  border-top: 2px solid var(--border-color-thin);
   border-radius: var(--border-radius-lg);
   box-shadow: var(--shadow-card);
 }

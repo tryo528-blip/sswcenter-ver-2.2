@@ -186,6 +186,9 @@ class W1CService:
             raise _domain_error("UNEXPECTED_SERVER_ERROR", 500) from None
 
     def _commit(self) -> None:
+        if self.database_session.info.get("recipient_detail_batch_defer_commit"):
+            self.database_session.flush()
+            return
         try:
             self.database_session.commit()
         except IntegrityError as exc:

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router';
 import { getMonthlyColorToken } from '../../design-system/tokens';
 import { useAuthSafe } from '../../context/useAuth';
 
@@ -8,12 +9,18 @@ export interface HeaderProps {
   user?: { display_name: string } | null;
 }
 
+const TRANSPARENT_HEADER_PATH_PREFIXES = ['/staff', '/social-workers', '/copay'] as const;
+
 export const Header: React.FC<HeaderProps> = ({
   currentMonth = new Date().getMonth() + 1,
   onMonthChange,
   user: userProp,
 }) => {
   const auth = useAuthSafe();
+  const location = useLocation();
+  const isTransparentHeader = TRANSPARENT_HEADER_PATH_PREFIXES.some((prefix) =>
+    location.pathname.startsWith(prefix),
+  );
 
   const currentUser = userProp !== undefined ? userProp : auth.user;
   const authError = auth.error;
@@ -54,7 +61,10 @@ export const Header: React.FC<HeaderProps> = ({
   });
 
   return (
-    <header className="app-header" data-testid="app-header">
+    <header
+      className={`app-header${isTransparentHeader ? ' app-header-transparent' : ''}`}
+      data-testid="app-header"
+    >
       <div className="header-left">
         {currentUser && (
           <span className="header-user-name" data-testid="header-user-name">

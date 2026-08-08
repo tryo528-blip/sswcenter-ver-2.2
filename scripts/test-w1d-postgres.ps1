@@ -21,6 +21,7 @@ $CreateDbExe = Join-Path $PostgresBin "createdb.exe"
 $PsqlExe = Join-Path $PostgresBin "psql.exe"
 $ExpectedW1dRevision = "20260730_0011_w1d_recipient_contract"
 $W1cHead = "20260730_0010_w1c_certification_ledgers"
+$CurrentHead = "20260808_0016_recipient_payer_guardian"
 
 function Write-W1dHarnessFailure {
     param([string]$Marker, [string]$Detail = "")
@@ -432,6 +433,32 @@ CREATE ROLE erp_backup LOGIN;
             Write-W1dHarnessFailure "W1D_HARNESS_APP_ROLE_MISMATCH"
         }
         Write-Output "W1D_APP_ROLE_OK"
+
+        # Historical 0010->0011->0010->0011 lifecycle and exact 0011 observation
+        # are sealed above. Current ORM/seed/E2E require the live Alembic head
+        # (includes 0015 recipient_status).
+        & $PythonExe -m alembic -c alembic.ini upgrade $CurrentHead
+        if ($LASTEXITCODE -ne 0) {
+            Write-W1dHarnessFailure "W1D_HARNESS_HEAD_UPGRADE_FAILED" "current-head upgrade failed"
+        }
+        $HeadRevision = & $PsqlExe `
+            -v ON_ERROR_STOP=1 `
+            -h 127.0.0.1 `
+            -p $Port `
+            -U erp_owner `
+            -d $DatabaseName `
+            -tAc "SELECT version_num FROM erp.alembic_version"
+        if ($LASTEXITCODE -ne 0) {
+            Write-W1dHarnessFailure "W1D_HARNESS_HEAD_UPGRADE_FAILED" "current-head revision query failed"
+        }
+        $HeadRevisionText = ($HeadRevision -join "").Trim()
+        if ($HeadRevisionText -ne $CurrentHead) {
+            Write-W1dHarnessFailure "W1D_HARNESS_HEAD_UPGRADE_FAILED" (
+                "expected={0} actual={1}" -f $CurrentHead, $HeadRevisionText
+            )
+        }
+        Write-Output "W1D_HEAD_UPGRADE_OK"
+        $env:SSWCENTER_W1D_EXPECTED_RUNTIME_REVISION = $CurrentHead
 
         $env:SSWCENTER_DATABASE_URL = $AppDatabaseUrl
 

@@ -1258,6 +1258,13 @@ class Recipient(Base):
             name="fk_recipient_updated_by_account",
             ondelete="RESTRICT",
         ),
+        # Same-recipient payer guardian: NULL = self; non-null must be this recipient's guardian.
+        ForeignKeyConstraint(
+            ["id", "payer_guardian_id"],
+            ["erp.recipient_guardian.recipient_id", "erp.recipient_guardian.id"],
+            name="fk_recipient_payer_guardian_same_recipient",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint("recipient_no", name="uq_recipient_recipient_no"),
     )
 
@@ -1272,6 +1279,8 @@ class Recipient(Base):
     address: Mapped[str | None] = mapped_column(Text)
     home_phone: Mapped[str | None] = mapped_column(Text)
     mobile_phone: Mapped[str | None] = mapped_column(Text)
+    # NULL = recipient self is payer; positive id = that guardian (same recipient via composite FK).
+    payer_guardian_id: Mapped[int | None] = mapped_column(BigInteger)
     created_by_account_id: Mapped[int] = mapped_column(BigInteger)
     created_at_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -1367,6 +1376,7 @@ class RecipientGuardian(Base):
     recipient_id: Mapped[int] = mapped_column(BigInteger)
     name: Mapped[str] = mapped_column(Text)
     phone: Mapped[str | None] = mapped_column(Text)
+    email: Mapped[str | None] = mapped_column(Text)
     address: Mapped[str | None] = mapped_column(Text)
     relationship_text: Mapped[str | None] = mapped_column(Text)
     created_by_account_id: Mapped[int] = mapped_column(BigInteger)

@@ -1907,6 +1907,8 @@ export interface components {
             name: string;
             /** Phone */
             phone?: string | null;
+            /** Email */
+            email?: string | null;
             /** Address */
             address?: string | null;
             /** Relationship Text */
@@ -1927,6 +1929,8 @@ export interface components {
             name: string;
             /** Phone */
             phone: string | null;
+            /** Email */
+            email: string | null;
             /** Address */
             address: string | null;
             /** Relationship Text */
@@ -1942,6 +1946,8 @@ export interface components {
             name?: string | null;
             /** Phone */
             phone?: string | null;
+            /** Email */
+            email?: string | null;
             /** Address */
             address?: string | null;
             /** Relationship Text */
@@ -2370,6 +2376,8 @@ export interface components {
             mobile_phone: string | null;
             /** Memo */
             memo: string | null;
+            /** Payer Guardian Id */
+            payer_guardian_id: number | null;
             /** Row Version */
             row_version: number;
         };
@@ -2408,6 +2416,8 @@ export interface components {
             mobile_phone?: string | null;
             /** Memo */
             memo?: string | null;
+            /** Payer Guardian Id */
+            payer_guardian_id?: number | null;
         };
         /** ReplacementPreviewItem */
         ReplacementPreviewItem: {

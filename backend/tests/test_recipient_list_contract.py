@@ -230,6 +230,7 @@ def _recipient(
     name: str,
     birth_date: date = date(1950, 1, 1),
     recipient_status: str = "ACTIVE",
+    payer_guardian_id: int | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=recipient_id,
@@ -243,6 +244,7 @@ def _recipient(
         home_phone=None,
         mobile_phone=None,
         memo=None,
+        payer_guardian_id=payer_guardian_id,
         row_version=1,
     )
 

@@ -55,6 +55,8 @@ class RecipientUpdateRequest(StrictModel):
     home_phone: str | None = Field(default=None, max_length=100)
     mobile_phone: str | None = Field(default=None, max_length=100)
     memo: str | None = Field(default=None, max_length=4000)
+    # omit = no change; explicit null = recipient self; positive int = that guardian.
+    payer_guardian_id: int | None = Field(default=None)
 
     @field_validator("recipient_status", mode="before")
     @classmethod
@@ -63,6 +65,18 @@ class RecipientUpdateRequest(StrictModel):
             raise ValueError(
                 "recipient_status cannot be null; omit the field to leave it unchanged"
             )
+        return value
+
+    @field_validator("payer_guardian_id", mode="before")
+    @classmethod
+    def _validate_payer_guardian_id(cls, value: object) -> object:
+        # Explicit null is allowed (self). Omission is handled via model_fields_set.
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("payer_guardian_id must be a positive integer or null")
+        if value <= 0:
+            raise ValueError("payer_guardian_id must be a positive integer or null")
         return value
 
 
@@ -78,6 +92,8 @@ class RecipientResponse(StrictModel):
     home_phone: str | None
     mobile_phone: str | None
     memo: str | None
+    # NULL = recipient self is payer; positive id = selected guardian of this recipient.
+    payer_guardian_id: int | None
     row_version: int
 
 
@@ -138,6 +154,7 @@ class RecipientListResponse(StrictModel):
 class GuardianCreateRequest(StrictModel):
     name: str = Field(min_length=1, max_length=200)
     phone: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=320)
     address: str | None = Field(default=None, max_length=1000)
     relationship_text: str | None = Field(default=None, max_length=200)
 
@@ -146,6 +163,7 @@ class GuardianUpdateRequest(StrictModel):
     expected_row_version: PositiveVersion
     name: str | None = Field(default=None, min_length=1, max_length=200)
     phone: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=320)
     address: str | None = Field(default=None, max_length=1000)
     relationship_text: str | None = Field(default=None, max_length=200)
 
@@ -155,6 +173,7 @@ class GuardianResponse(StrictModel):
     recipient_id: int
     name: str
     phone: str | None
+    email: str | None
     address: str | None
     relationship_text: str | None
     row_version: int

@@ -8,6 +8,16 @@ from app.api.dependencies import (
     RecipientManageAccountDependency,
     RecipientServiceDependency,
     RecipientViewAccountDependency,
+    W1CServiceDependency,
+    W1DServiceDependency,
+)
+from app.domains.recipient.detail_batch import (
+    RecipientBasicBatchResponse,
+    RecipientBasicCreateBatchRequest,
+    RecipientBasicUpdateBatchRequest,
+    RecipientDetailBatchRequest,
+    RecipientDetailBatchResponse,
+    RecipientDetailBatchService,
 )
 from app.domains.recipient.schemas import (
     GuardianCreateRequest,
@@ -409,4 +419,72 @@ def invalidate_plan_notification(
         notification_id,
         payload,
         current_account,
+    )
+
+
+@router.post(
+    "/recipients/{recipient_id}/detail-batch",
+    response_model=RecipientDetailBatchResponse,
+    responses=ERROR_RESPONSES,
+)
+def save_recipient_detail_batch(
+    recipient_id: int,
+    payload: RecipientDetailBatchRequest,
+    current_account: RecipientManageAccountDependency,
+    recipient_service: RecipientServiceDependency,
+    w1c_service: W1CServiceDependency,
+    w1d_service: W1DServiceDependency,
+) -> RecipientDetailBatchResponse:
+    return RecipientDetailBatchService(
+        recipient_service=recipient_service,
+        w1c_service=w1c_service,
+        w1d_service=w1d_service,
+    ).save(
+        recipient_id=recipient_id,
+        payload=payload,
+        current_account=current_account,
+    )
+
+
+@router.post(
+    "/recipients/basic-batch",
+    response_model=RecipientBasicBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=ERROR_RESPONSES,
+)
+def create_recipient_basic_batch(
+    payload: RecipientBasicCreateBatchRequest,
+    current_account: RecipientManageAccountDependency,
+    recipient_service: RecipientServiceDependency,
+    w1c_service: W1CServiceDependency,
+    w1d_service: W1DServiceDependency,
+) -> RecipientBasicBatchResponse:
+    return RecipientDetailBatchService(
+        recipient_service=recipient_service,
+        w1c_service=w1c_service,
+        w1d_service=w1d_service,
+    ).create_basic(payload=payload, current_account=current_account)
+
+
+@router.post(
+    "/recipients/{recipient_id}/basic-batch",
+    response_model=RecipientBasicBatchResponse,
+    responses=ERROR_RESPONSES,
+)
+def update_recipient_basic_batch(
+    recipient_id: int,
+    payload: RecipientBasicUpdateBatchRequest,
+    current_account: RecipientManageAccountDependency,
+    recipient_service: RecipientServiceDependency,
+    w1c_service: W1CServiceDependency,
+    w1d_service: W1DServiceDependency,
+) -> RecipientBasicBatchResponse:
+    return RecipientDetailBatchService(
+        recipient_service=recipient_service,
+        w1c_service=w1c_service,
+        w1d_service=w1d_service,
+    ).update_basic(
+        recipient_id=recipient_id,
+        payload=payload,
+        current_account=current_account,
     )

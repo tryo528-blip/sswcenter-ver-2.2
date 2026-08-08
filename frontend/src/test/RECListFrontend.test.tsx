@@ -122,6 +122,7 @@ function installRecipientListFetch(
         home_phone: item.home_phone,
         mobile_phone: item.mobile_phone,
         memo: item.memo,
+        payer_guardian_id: null,
         row_version: item.row_version,
       });
     }
@@ -133,6 +134,16 @@ function installRecipientListFetch(
 }
 
 /** Fire scroll near the bottom of the list panel (not window). */
+function enterBasicEdit() {
+  const edit = screen.queryByTestId('recipient-basic-edit');
+  if (edit) fireEvent.click(edit);
+}
+
+function clickBasicSave() {
+  enterBasicEdit();
+  fireEvent.click(screen.getByTestId('recipient-basic-save'));
+}
+
 function scrollListNearBottom() {
   const scroller = screen.getByTestId('recipient-list-scroll');
   Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 1000 });
@@ -275,7 +286,8 @@ describe('REC-LIST frontend contract', () => {
             home_phone: '02-111-2222',
             mobile_phone: '010-1111-2222',
             memo: null,
-            row_version: detailRowVersion,
+            payer_guardian_id: null,
+          row_version: detailRowVersion,
           });
         }
         return jsonResponse(
@@ -305,6 +317,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: '02-111-2222',
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: detailRowVersion,
         });
       }
@@ -323,7 +336,8 @@ describe('REC-LIST frontend contract', () => {
     ]);
 
     fireEvent.change(statusSelect, { target: { value: 'WAITING' } });
-    fireEvent.click(await screen.findByRole('button', { name: '기본정보 저장' }));
+    enterBasicEdit();
+    clickBasicSave();
 
     await waitFor(() => expect(patchBodies.length).toBeGreaterThan(0));
     expect(patchBodies[0]).toEqual(
@@ -333,7 +347,7 @@ describe('REC-LIST frontend contract', () => {
       }),
     );
     await waitFor(() =>
-      expect(screen.getByText('수급자 정보를 저장했습니다.')).toBeInTheDocument(),
+      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
     );
     expect(statusSelect).toHaveValue('WAITING');
 
@@ -341,7 +355,8 @@ describe('REC-LIST frontend contract', () => {
     forcePatchError = true;
     fireEvent.change(statusSelect, { target: { value: 'ENDED' } });
     expect(statusSelect).toHaveValue('ENDED');
-    fireEvent.click(await screen.findByRole('button', { name: '기본정보 저장' }));
+    enterBasicEdit();
+    clickBasicSave();
     const errorAlert = await screen.findByRole('alert');
     expect(errorAlert).toHaveClass('recipient-inline-error');
     expect(errorAlert.textContent).toMatch(/상태 오류|저장하지 못했습니다/);
@@ -383,6 +398,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: Number(body.expected_row_version ?? 1) + 1,
         });
       }
@@ -409,8 +425,8 @@ describe('REC-LIST frontend contract', () => {
       expect(screen.getByText('상세 정보를 불러오는 중입니다.')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
-    expect(screen.queryByTestId('recipient-detail-save')).toBeNull();
-    expect(screen.queryByRole('button', { name: '기본정보 저장' })).toBeNull();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
     expect(patchBodies).toHaveLength(0);
 
     expect(pendingDetail.length).toBeGreaterThan(0);
@@ -427,13 +443,15 @@ describe('REC-LIST frontend contract', () => {
         home_phone: null,
         mobile_phone: '010-1111-2222',
         memo: null,
-        row_version: 7,
+        payer_guardian_id: null,
+          row_version: 7,
       }),
     );
 
     const statusSelect = await screen.findByTestId('recipient-detail-status-select');
     expect(statusSelect).toHaveValue('ENDED');
-    const saveButton = screen.getByRole('button', { name: '기본정보 저장' });
+    enterBasicEdit();
+    const saveButton = screen.getByTestId('recipient-basic-save');
     // no-op: successful detail GET with no user edits → Save stays disabled (baseline === draft).
     expect(saveButton).toBeDisabled();
 
@@ -492,7 +510,7 @@ describe('REC-LIST frontend contract', () => {
     expect(alert).toHaveClass('recipient-inline-error');
     expect(alert.textContent).toBeTruthy();
     expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
-    expect(screen.queryByRole('button', { name: '기본정보 저장' })).toBeNull();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
     expect(patchBodies).toHaveLength(0);
   });
 
@@ -549,6 +567,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -570,6 +589,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -587,7 +607,8 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.change(screen.getByTestId('recipient-detail-status-select'), {
       target: { value: 'WAITING' },
     });
-    fireEvent.click(await screen.findByRole('button', { name: '기본정보 저장' }));
+    enterBasicEdit();
+    clickBasicSave();
 
     const conflictAlerts = await screen.findAllByRole('alert');
     expect(conflictAlerts).toHaveLength(1);
@@ -672,6 +693,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -692,6 +714,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -711,7 +734,8 @@ describe('REC-LIST frontend contract', () => {
       target: { value: '이름만수정' },
     });
     expect(screen.getByTestId('recipient-detail-status-select')).toHaveValue('ACTIVE');
-    fireEvent.click(await screen.findByRole('button', { name: '기본정보 저장' }));
+    enterBasicEdit();
+    clickBasicSave();
 
     const conflictAlerts = await screen.findAllByRole('alert');
     expect(conflictAlerts).toHaveLength(1);
@@ -799,6 +823,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -819,6 +844,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -836,7 +862,8 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '사용자이름' },
     });
-    fireEvent.click(await screen.findByRole('button', { name: '기본정보 저장' }));
+    enterBasicEdit();
+    clickBasicSave();
 
     const alerts = await screen.findAllByRole('alert');
     expect(alerts).toHaveLength(1);
@@ -861,7 +888,8 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '재편집후이름' },
     });
-    fireEvent.click(screen.getByTestId('recipient-detail-save'));
+    enterBasicEdit();
+    clickBasicSave();
     await waitFor(() => expect(patchBodies.length).toBe(2));
     expect(patchBodies[1]).toEqual({
       expected_row_version: 5,
@@ -921,6 +949,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -941,6 +970,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: serverRowVersion,
         });
       }
@@ -960,7 +990,8 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.change(screen.getByTestId('recipient-detail-status-select'), {
       target: { value: 'WAITING' },
     });
-    fireEvent.click(await screen.findByRole('button', { name: '기본정보 저장' }));
+    enterBasicEdit();
+    clickBasicSave();
 
     const alerts = await screen.findAllByRole('alert');
     expect(alerts).toHaveLength(1);
@@ -974,7 +1005,8 @@ describe('REC-LIST frontend contract', () => {
     expect(patchBodies).toHaveLength(1);
 
     // Save remaining disjoint edit against latest row_version (no stale draft resend of name).
-    fireEvent.click(screen.getByTestId('recipient-detail-save'));
+    enterBasicEdit();
+    clickBasicSave();
     await waitFor(() => expect(patchBodies.length).toBe(2));
     expect(patchBodies[1]).toEqual({
       expected_row_version: 7,
@@ -1019,6 +1051,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: serverMemo,
+          payer_guardian_id: null,
           row_version: serverVersion,
         });
       }
@@ -1039,6 +1072,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: serverMemo,
+          payer_guardian_id: null,
           row_version: serverVersion,
         });
       }
@@ -1049,7 +1083,8 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.click(await screen.findByRole('button', { name: /변경감지/ }));
     await waitFor(() => expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('변경감지'));
 
-    const save = screen.getByTestId('recipient-detail-save');
+    enterBasicEdit();
+    const save = screen.getByTestId('recipient-basic-save');
     expect(save).toBeDisabled();
     fireEvent.click(save);
     expect(patchBodies).toHaveLength(0);
@@ -1165,6 +1200,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: 1,
         });
       }
@@ -1176,7 +1212,7 @@ describe('REC-LIST frontend contract', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toMatch(/올바르지 않아|불러오지 못/);
     expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
-    expect(screen.queryByTestId('recipient-detail-save')).toBeNull();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
     expect(patchBodies).toHaveLength(0);
   });
 
@@ -1212,6 +1248,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: 1,
         });
       }
@@ -1223,7 +1260,7 @@ describe('REC-LIST frontend contract', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toMatch(/올바르지 않아|불러오지 못/);
     expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
-    expect(screen.queryByTestId('recipient-detail-save')).toBeNull();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
     expect(patchBodies).toHaveLength(0);
   });
 
@@ -1258,6 +1295,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: 1,
         });
       }
@@ -1269,7 +1307,7 @@ describe('REC-LIST frontend contract', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toMatch(/올바르지 않아|불러오지 못/);
     expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
-    expect(screen.queryByTestId('recipient-detail-save')).toBeNull();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
     expect(patchBodies).toHaveLength(0);
   });
 
@@ -1305,6 +1343,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: 1,
         });
       }
@@ -1316,7 +1355,7 @@ describe('REC-LIST frontend contract', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toMatch(/올바르지 않아|불러오지 못/);
     expect(screen.queryByTestId('recipient-detail-status-select')).toBeNull();
-    expect(screen.queryByTestId('recipient-detail-save')).toBeNull();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
     expect(patchBodies).toHaveLength(0);
   });
 
@@ -1355,6 +1394,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: 1,
         });
       }
@@ -1368,7 +1408,8 @@ describe('REC-LIST frontend contract', () => {
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '저장중이름' },
     });
-    fireEvent.click(screen.getByTestId('recipient-detail-save'));
+    enterBasicEdit();
+    clickBasicSave();
 
     await waitFor(() => expect(patchBodies).toHaveLength(1));
     // Every detail input/select and Save must be disabled while save is in flight.
@@ -1383,7 +1424,8 @@ describe('REC-LIST frontend contract', () => {
     pendingInputs.forEach((node) => {
       expect(node).toBeDisabled();
     });
-    expect(screen.getByTestId('recipient-detail-save')).toBeDisabled();
+    enterBasicEdit();
+    expect(screen.getByTestId('recipient-basic-save')).toBeDisabled();
 
     releasePatch?.(
       jsonResponse({
@@ -1398,12 +1440,14 @@ describe('REC-LIST frontend contract', () => {
         home_phone: null,
         mobile_phone: '010-1111-2222',
         memo: null,
-        row_version: 2,
+        payer_guardian_id: null,
+          row_version: 2,
       }),
     );
     await waitFor(() => expect(screen.getByTestId('recipient-detail-name-input')).not.toBeDisabled());
     expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('저장중이름');
-    expect(screen.getByTestId('recipient-detail-save')).toBeDisabled();
+    enterBasicEdit();
+    expect(screen.getByTestId('recipient-basic-save')).toBeDisabled();
   });
 
   test('create POST payload has no recipient_status field', async () => {
@@ -1432,6 +1476,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: body.home_phone ?? null,
           mobile_phone: body.mobile_phone ?? null,
           memo: body.memo ?? null,
+          payer_guardian_id: null,
           row_version: 1,
         }, 201);
       }
@@ -1452,6 +1497,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1234-5678',
           memo: null,
+          payer_guardian_id: null,
           row_version: 1,
         });
       }
@@ -1460,22 +1506,42 @@ describe('REC-LIST frontend contract', () => {
 
     render(<RecipientsPage />);
     fireEvent.click(await screen.findByTestId('recipient-create-toggle'));
+    const createForm = document.getElementById('recipient-create-form');
+    expect(createForm).toBeTruthy();
+    // Live create form must expose independent home/mobile controls (W1B contract).
+    const homePhoneInput = within(createForm!).getByTestId('recipient-home-phone-input');
+    const mobilePhoneInput = within(createForm!).getByTestId('recipient-mobile-phone-input');
+    expect(homePhoneInput).not.toBe(mobilePhoneInput);
+
+    // Focusing an empty live mobile input must not inject a 010- prefix (W1B paste/fill race).
+    expect(mobilePhoneInput).toHaveValue('');
+    fireEvent.focus(mobilePhoneInput);
+    expect(mobilePhoneInput).toHaveValue('');
+
     fireEvent.change(screen.getByTestId('recipient-name-input'), { target: { value: '생성수급' } });
     fireEvent.change(screen.getByTestId('recipient-birth-date-input'), {
       target: { value: '1960-01-01' },
     });
-    fireEvent.change(screen.getByTestId('recipient-mobile-phone-input'), {
-      target: { value: '01012345678' },
+    fireEvent.change(homePhoneInput, { target: { value: '02-123-4567' } });
+    // Full 010 value normalizes via formatMobilePhoneInput and stays independent of home_phone.
+    fireEvent.change(mobilePhoneInput, {
+      target: { value: '010-1000-0002' },
     });
-    const createForm = document.getElementById('recipient-create-form');
-    expect(createForm).toBeTruthy();
-    fireEvent.submit(createForm!);
+    expect(mobilePhoneInput).toHaveValue('010-1000-0002');
+    // After createOpen, the same toggle is the live external submit control.
+    const submitToggle = screen.getByTestId('recipient-create-toggle');
+    expect(submitToggle).toHaveAttribute('form', 'recipient-create-form');
+    expect(submitToggle).toHaveAttribute('type', 'submit');
+    fireEvent.click(submitToggle);
 
     await waitFor(() => expect(postBodies.length).toBe(1));
     const body = postBodies[0] as Record<string, unknown>;
     expect(body).not.toHaveProperty('recipient_status');
     expect(Object.keys(body)).not.toContain('recipient_status');
     expect(body.name).toBe('생성수급');
+    expect(body.home_phone).toBe('02-123-4567');
+    expect(body.mobile_phone).toBe('010-1000-0002');
+    expect(body.home_phone).not.toBe(body.mobile_phone);
   });
 
   test('renders grade_code, benefit_code, copayment_rate, and multi services from server response', async () => {
@@ -1556,7 +1622,7 @@ describe('REC-LIST frontend contract', () => {
       .filter(Boolean);
     // Header is five direct spans: 등급, 이름, 나이, 본·부%, 제공중 서비스.
     expect(header.children).toHaveLength(5);
-    expect([...header.children].map((node) => node.textContent)).toEqual([
+    expect(Array.from(header.children).map((node) => node.textContent)).toEqual([
       '등급',
       '이름',
       '나이',
@@ -1775,6 +1841,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: null,
           mobile_phone: '010-1111-2222',
           memo: null,
+          payer_guardian_id: null,
           row_version: 1,
         });
       }
@@ -2322,6 +2389,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: item.home_phone,
           mobile_phone: item.mobile_phone,
           memo: item.memo,
+          payer_guardian_id: null,
           row_version: item.row_version,
         });
       }
@@ -2437,6 +2505,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: item.home_phone,
           mobile_phone: item.mobile_phone,
           memo: item.memo,
+          payer_guardian_id: null,
           row_version: item.row_version + 1,
         });
       }
@@ -2460,6 +2529,7 @@ describe('REC-LIST frontend contract', () => {
           home_phone: item.home_phone,
           mobile_phone: item.mobile_phone,
           memo: item.memo,
+          payer_guardian_id: null,
           row_version: item.row_version,
         });
       }
@@ -2483,7 +2553,8 @@ describe('REC-LIST frontend contract', () => {
     });
 
     // No-op save is disabled; change a field so save can trigger listReload (same query key).
-    const saveButton = await screen.findByRole('button', { name: '기본정보 저장' });
+    enterBasicEdit();
+    const saveButton = screen.getByTestId('recipient-basic-save');
     expect(saveButton).toBeDisabled();
     fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
       target: { value: '성공목록행수정' },
@@ -2561,5 +2632,929 @@ describe('REC-LIST frontend contract', () => {
     expect(screen.getByTestId('recipient-detail-grade')).not.toHaveTextContent('3등급');
     expect(screen.getByTestId('recipient-detail-copay')).not.toHaveTextContent('15%');
     expect(screen.getByTestId('recipient-selected-name')).toHaveTextContent('새페이지수급');
+  });
+});
+
+describe('recipient payer guardian UI contract', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/recipients');
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  test('basic screen shows recipient and two guardians; no per-guardian save; no primary/payer snapshot UI', async () => {
+    const requested: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      requested.push(`${method} ${url.pathname}`);
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 501, name: '납부자UI' })]));
+      }
+      if (url.pathname.endsWith('/guardians')) {
+        return jsonResponse({
+          items: [
+            {
+              id: 11,
+              recipient_id: 501,
+              name: '보호자갑',
+              phone: '010-1',
+              address: null,
+              relationship_text: '자녀',
+              row_version: 1,
+            },
+            {
+              id: 22,
+              recipient_id: 501,
+              name: '보호자을',
+              phone: '010-2',
+              address: null,
+              relationship_text: '배우자',
+              row_version: 1,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.startsWith('/api/v1/recipients/') && method === 'GET') {
+        return jsonResponse({
+          id: 501,
+          name: '납부자UI',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: 'R-501',
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /납부자UI/ }));
+    await waitFor(() => expect(screen.getByTestId('recipient-guardian-1-section')).toBeInTheDocument());
+    expect(screen.getByTestId('recipient-guardian-2-section')).toBeInTheDocument();
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('보호자갑');
+    expect(screen.getByTestId('guardian-2-name-input')).toHaveValue('보호자을');
+    expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent('수급자 본인');
+    expect(screen.queryByTestId('guardian-1-save-button')).toBeNull();
+    expect(screen.queryByTestId('guardian-2-save-button')).toBeNull();
+    expect(screen.queryByTestId('recipient-primary-guardian-form')).toBeNull();
+    expect(screen.queryByTestId('recipient-payer-snapshot-section')).toBeNull();
+    expect(screen.getByTestId('recipient-detail-toggle')).toHaveTextContent('상세');
+    expect(requested.some((r) => r.includes('/payer-snapshots'))).toBe(false);
+    expect(requested.some((r) => r.includes('/primary-guardian-periods'))).toBe(false);
+  });
+
+  test('single edit mode mutual-exclusive payer checkboxes and cancel restore', async () => {
+    let payerId: number | null = null;
+    const patchBodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 502, name: '체크박스' })]));
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        return jsonResponse({
+          items: [
+            {
+              id: 11,
+              recipient_id: 502,
+              name: '가드1',
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: 1,
+            },
+            {
+              id: 22,
+              recipient_id: 502,
+              name: '가드2',
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: 1,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/502' && method === 'GET') {
+        return jsonResponse({
+          id: 502,
+          name: '체크박스',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: payerId,
+          row_version: 1,
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/502' && method === 'PATCH') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        patchBodies.push(body);
+        if ('payer_guardian_id' in body) {
+          payerId = body.payer_guardian_id as number | null;
+        }
+        return jsonResponse({
+          id: 502,
+          name: typeof body.name === 'string' ? body.name : '체크박스',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: payerId,
+          row_version: 2,
+        });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /체크박스/ }));
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).toBeInTheDocument());
+    enterBasicEdit();
+    expect(screen.getByTestId('recipient-basic-save')).toBeInTheDocument();
+    expect(screen.getByTestId('recipient-basic-cancel')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('guardian-1-payer-checkbox'));
+    expect(screen.getByTestId('guardian-1-payer-checkbox')).toBeChecked();
+    expect(screen.getByTestId('guardian-2-payer-checkbox')).not.toBeChecked();
+    fireEvent.click(screen.getByTestId('guardian-2-payer-checkbox'));
+    expect(screen.getByTestId('guardian-2-payer-checkbox')).toBeChecked();
+    expect(screen.getByTestId('guardian-1-payer-checkbox')).not.toBeChecked();
+    fireEvent.click(screen.getByTestId('guardian-2-payer-checkbox'));
+    expect(screen.getByTestId('guardian-1-payer-checkbox')).not.toBeChecked();
+    expect(screen.getByTestId('guardian-2-payer-checkbox')).not.toBeChecked();
+    expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent('수급자 본인');
+
+    fireEvent.click(screen.getByTestId('guardian-1-payer-checkbox'));
+    fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
+      target: { value: '임시이름' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-cancel'));
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('체크박스'),
+    );
+    expect(screen.getByTestId('guardian-1-payer-checkbox')).not.toBeChecked();
+    expect(screen.queryByTestId('recipient-basic-save')).toBeNull();
+  });
+
+  test('new guardian id is used for payer PATCH; save locks inputs', async () => {
+    const patchBodies: Array<Record<string, unknown>> = [];
+    let createdGuardianId = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 503, name: '신규납부' })]));
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        return jsonResponse({ items: [] });
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'POST') {
+        createdGuardianId = 77;
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        return jsonResponse(
+          {
+            id: 77,
+            recipient_id: 503,
+            name: body.name,
+            phone: body.phone ?? null,
+            address: body.address ?? null,
+            relationship_text: body.relationship_text ?? null,
+            row_version: 1,
+          },
+          201,
+        );
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/503' && method === 'GET') {
+        return jsonResponse({
+          id: 503,
+          name: '신규납부',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/503' && method === 'PATCH') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        patchBodies.push(body);
+        return jsonResponse({
+          id: 503,
+          name: '신규납부',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: body.payer_guardian_id ?? null,
+          row_version: 2,
+        });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /신규납부/ }));
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).toBeInTheDocument());
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('guardian-1-name-input'), { target: { value: '신규보호자' } });
+    fireEvent.click(screen.getByTestId('guardian-1-payer-checkbox'));
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(patchBodies.length).toBe(1));
+    expect(createdGuardianId).toBe(77);
+    expect(patchBodies[0]).toMatchObject({
+      expected_row_version: 1,
+      payer_guardian_id: 77,
+    });
+  });
+
+  test('detail toggle keeps existing extras component contract', async () => {
+    installRecipientListFetch(() => listResponse([listItem({ id: 504, name: '상세토글' })]));
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /상세토글/ }));
+    await waitFor(() => expect(screen.getByTestId('recipient-detail-toggle')).toHaveTextContent('상세'));
+    fireEvent.click(screen.getByTestId('recipient-detail-toggle'));
+    expect(screen.getByTestId('recipient-detail-toggle')).toHaveTextContent('기본정보');
+    expect(screen.getByTestId('recipient-detail-extra-sections')).toBeInTheDocument();
+  });
+
+  test('unlisted payer preserved on name-only save; self button clears payer', async () => {
+    let recipientName = '목록외납부자';
+    let payerId: number | null = 33;
+    let rowVersion = 1;
+    const patchBodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 505, name: recipientName })]));
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        return jsonResponse({
+          items: [
+            {
+              id: 11,
+              recipient_id: 505,
+              name: '가드1',
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: 1,
+            },
+            {
+              id: 22,
+              recipient_id: 505,
+              name: '가드2',
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: 1,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/505' && method === 'GET') {
+        return jsonResponse({
+          id: 505,
+          name: recipientName,
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: payerId,
+          row_version: rowVersion,
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/505' && method === 'PATCH') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (typeof body.name === 'string') recipientName = body.name;
+        if (Object.prototype.hasOwnProperty.call(body, 'payer_guardian_id')) {
+          payerId = body.payer_guardian_id as number | null;
+        }
+        if (typeof body.expected_row_version === 'number') {
+          rowVersion = body.expected_row_version + 1;
+        }
+        return jsonResponse({
+          id: 505,
+          name: recipientName,
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: payerId,
+          row_version: rowVersion,
+        });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /목록외납부자/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent(
+        '납부자 · 목록 외 보호자',
+      ),
+    );
+    expect(screen.getByTestId('guardian-1-payer-checkbox')).not.toBeChecked();
+    expect(screen.getByTestId('guardian-2-payer-checkbox')).not.toBeChecked();
+
+    enterBasicEdit();
+    expect(screen.getByTestId('recipient-payer-self-button')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('recipient-payer-self-button'));
+    fireEvent.click(screen.getByTestId('recipient-basic-cancel'));
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent(
+        '납부자 · 목록 외 보호자',
+      ),
+    );
+    expect(screen.queryByTestId('recipient-payer-self-button')).toBeNull();
+    expect(screen.getByTestId('guardian-1-payer-checkbox')).not.toBeChecked();
+    expect(screen.getByTestId('guardian-2-payer-checkbox')).not.toBeChecked();
+
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
+      target: { value: '목록외납부자수정' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(patchBodies.length).toBe(1));
+    expect(patchBodies[0]).toMatchObject({
+      expected_row_version: 1,
+      name: '목록외납부자수정',
+    });
+    expect(Object.prototype.hasOwnProperty.call(patchBodies[0], 'payer_guardian_id')).toBe(false);
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent(
+        '납부자 · 목록 외 보호자',
+      ),
+    );
+
+    expect(screen.getByTestId('recipient-payer-self-button')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('recipient-payer-self-button'));
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(patchBodies.length).toBe(2));
+    expect(patchBodies[1]).toEqual({
+      expected_row_version: 2,
+      payer_guardian_id: null,
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent('수급자 본인'),
+    );
+  });
+
+  test('retry after recipient 500 does not re-POST guardian created on first save', async () => {
+    const patchBodies: Array<Record<string, unknown>> = [];
+    let guardianPostCount = 0;
+    let recipientPatchCount = 0;
+    let createdGuardianId = 0;
+    let failRecipientOnce = true;
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 510, name: '재시도신규' })]));
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        return jsonResponse({ items: [] });
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'POST') {
+        guardianPostCount += 1;
+        createdGuardianId = 88;
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        return jsonResponse(
+          {
+            id: 88,
+            recipient_id: 510,
+            name: body.name,
+            phone: body.phone ?? null,
+            address: body.address ?? null,
+            relationship_text: body.relationship_text ?? null,
+            row_version: 1,
+          },
+          201,
+        );
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/510' && method === 'GET') {
+        return jsonResponse({
+          id: 510,
+          name: '재시도신규',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/510' && method === 'PATCH') {
+        recipientPatchCount += 1;
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        patchBodies.push(body);
+        if (failRecipientOnce) {
+          failRecipientOnce = false;
+          return jsonResponse(
+            { error: { code: 'INTERNAL_ERROR', message: '서버 오류' }, field_errors: [] },
+            500,
+          );
+        }
+        return jsonResponse({
+          id: 510,
+          name: '재시도신규',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: body.payer_guardian_id ?? null,
+          row_version: 2,
+        });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /재시도신규/ }));
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-edit')).toBeInTheDocument());
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('guardian-1-name-input'), { target: { value: '신규보호자' } });
+    fireEvent.click(screen.getByTestId('guardian-1-payer-checkbox'));
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+
+    await waitFor(() => expect(recipientPatchCount).toBe(1));
+    expect(guardianPostCount).toBe(1);
+    expect(createdGuardianId).toBe(88);
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled());
+
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(recipientPatchCount).toBe(2));
+    expect(guardianPostCount).toBe(1);
+    expect(patchBodies[1]).toMatchObject({
+      expected_row_version: 1,
+      payer_guardian_id: 88,
+    });
+    await waitFor(() =>
+      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('recipient-payer-current-label')).toHaveTextContent('납부자 · 보호자1');
+  });
+
+  test('retry after recipient 500 does not re-PATCH guardian already saved', async () => {
+    const recipientPatchBodies: Array<Record<string, unknown>> = [];
+    let guardianPatchCount = 0;
+    let recipientPatchCount = 0;
+    let failRecipientOnce = true;
+    let guardianRowVersion = 1;
+    let guardianName = '기존가드';
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 511, name: '재시도기존' })]));
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        return jsonResponse({
+          items: [
+            {
+              id: 41,
+              recipient_id: 511,
+              name: guardianName,
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: guardianRowVersion,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/guardians/41') && method === 'PATCH') {
+        guardianPatchCount += 1;
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        if (typeof body.name === 'string') guardianName = body.name;
+        guardianRowVersion = Number(body.expected_row_version) + 1;
+        return jsonResponse({
+          id: 41,
+          recipient_id: 511,
+          name: guardianName,
+          phone: body.phone ?? null,
+          address: body.address ?? null,
+          relationship_text: body.relationship_text ?? null,
+          row_version: guardianRowVersion,
+        });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/511' && method === 'GET') {
+        return jsonResponse({
+          id: 511,
+          name: '재시도기존',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/511' && method === 'PATCH') {
+        recipientPatchCount += 1;
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        recipientPatchBodies.push(body);
+        if (failRecipientOnce) {
+          failRecipientOnce = false;
+          return jsonResponse(
+            { error: { code: 'INTERNAL_ERROR', message: '서버 오류' }, field_errors: [] },
+            500,
+          );
+        }
+        return jsonResponse({
+          id: 511,
+          name: typeof body.name === 'string' ? body.name : '재시도기존',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 2,
+        });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /재시도기존/ }));
+    await waitFor(() => expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('기존가드'));
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('guardian-1-name-input'), {
+      target: { value: '기존가드수정' },
+    });
+    fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
+      target: { value: '재시도기존수정' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+
+    await waitFor(() => expect(recipientPatchCount).toBe(1));
+    expect(guardianPatchCount).toBe(1);
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled());
+
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(recipientPatchCount).toBe(2));
+    expect(guardianPatchCount).toBe(1);
+    expect(recipientPatchBodies[1]).toMatchObject({
+      expected_row_version: 1,
+      name: '재시도기존수정',
+    });
+    await waitFor(() =>
+      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('기존가드수정');
+  });
+
+  test('guardian ROW_VERSION_CONFLICT reloads guardians and shows guardian error not recipient stale panel', async () => {
+    let guardianListGets = 0;
+    let guardianPatchCount = 0;
+    let recipientPatchCount = 0;
+    let serverGuardianName = '충돌보호자';
+    let serverGuardianRowVersion = 1;
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 512, name: '보호자충돌' })]));
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        guardianListGets += 1;
+        return jsonResponse({
+          items: [
+            {
+              id: 55,
+              recipient_id: 512,
+              name: serverGuardianName,
+              phone: null,
+              address: null,
+              relationship_text: '자녀',
+              row_version: serverGuardianRowVersion,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/guardians/55') && method === 'PATCH') {
+        guardianPatchCount += 1;
+        return jsonResponse(
+          {
+            error: {
+              code: 'ROW_VERSION_CONFLICT',
+              message: '다른 사용자가 먼저 변경했습니다. 최신 정보를 다시 불러오세요.',
+            },
+            field_errors: [],
+            details: { current_row_version: serverGuardianRowVersion },
+            request_id: 'g-conflict',
+          },
+          409,
+        );
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/512' && method === 'GET') {
+        return jsonResponse({
+          id: 512,
+          name: '보호자충돌',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/512' && method === 'PATCH') {
+        recipientPatchCount += 1;
+        return jsonResponse({ detail: { code: 'unexpected_recipient_patch' } }, 500);
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /보호자충돌/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('충돌보호자'),
+    );
+    expect(guardianListGets).toBe(1);
+
+    // Concurrent edit elsewhere advances server guardian before our PATCH.
+    serverGuardianName = '서버최신보호자';
+    serverGuardianRowVersion = 9;
+
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('guardian-1-name-input'), {
+      target: { value: '내쪽수정이름' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+
+    await waitFor(() => expect(guardianPatchCount).toBe(1));
+    await waitFor(() => expect(guardianListGets).toBe(2));
+    await waitFor(() =>
+      expect(
+        screen.getAllByText('보호자 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.').length,
+      ).toBeGreaterThan(0),
+    );
+    expect(screen.queryByTestId('recipient-stale-conflict-message')).toBeNull();
+    expect(screen.queryByTestId('recipient-stale-reapply')).toBeNull();
+    expect(recipientPatchCount).toBe(0);
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('서버최신보호자');
+  });
+
+  test('partial guardian2 500 keeps unsaved draft dirty; retry skips guardian1 PATCH', async () => {
+    let guardian1PatchCount = 0;
+    let guardian2PatchCount = 0;
+    let recipientPatchCount = 0;
+    let failGuardian2Once = true;
+    let guardian1Name = '보호자일';
+    let guardian1RowVersion = 1;
+    let guardian2Name = '보호자이';
+    let guardian2RowVersion = 1;
+    const guardian1Bodies: Array<Record<string, unknown>> = [];
+    const guardian2Bodies: Array<Record<string, unknown>> = [];
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(listResponse([listItem({ id: 513, name: '쌍보호자부분저장' })]));
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        return jsonResponse({
+          items: [
+            {
+              id: 61,
+              recipient_id: 513,
+              name: guardian1Name,
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: guardian1RowVersion,
+            },
+            {
+              id: 62,
+              recipient_id: 513,
+              name: guardian2Name,
+              phone: null,
+              address: null,
+              relationship_text: null,
+              row_version: guardian2RowVersion,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/guardians/61') && method === 'PATCH') {
+        guardian1PatchCount += 1;
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        guardian1Bodies.push(body);
+        if (typeof body.name === 'string') guardian1Name = body.name;
+        guardian1RowVersion = Number(body.expected_row_version) + 1;
+        return jsonResponse({
+          id: 61,
+          recipient_id: 513,
+          name: guardian1Name,
+          phone: body.phone ?? null,
+          address: body.address ?? null,
+          relationship_text: body.relationship_text ?? null,
+          row_version: guardian1RowVersion,
+        });
+      }
+      if (url.pathname.endsWith('/guardians/62') && method === 'PATCH') {
+        guardian2PatchCount += 1;
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        guardian2Bodies.push(body);
+        if (failGuardian2Once) {
+          failGuardian2Once = false;
+          return jsonResponse(
+            { error: { code: 'INTERNAL_ERROR', message: '서버 오류' }, field_errors: [] },
+            500,
+          );
+        }
+        if (typeof body.name === 'string') guardian2Name = body.name;
+        guardian2RowVersion = Number(body.expected_row_version) + 1;
+        return jsonResponse({
+          id: 62,
+          recipient_id: 513,
+          name: guardian2Name,
+          phone: body.phone ?? null,
+          address: body.address ?? null,
+          relationship_text: body.relationship_text ?? null,
+          row_version: guardian2RowVersion,
+        });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/513' && method === 'GET') {
+        return jsonResponse({
+          id: 513,
+          name: '쌍보호자부분저장',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/513' && method === 'PATCH') {
+        recipientPatchCount += 1;
+        return jsonResponse({
+          id: 513,
+          name: '쌍보호자부분저장',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /쌍보호자부분저장/ }));
+    await waitFor(() => expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('보호자일'));
+    await waitFor(() => expect(screen.getByTestId('guardian-2-name-input')).toHaveValue('보호자이'));
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('guardian-1-name-input'), {
+      target: { value: '보호자일수정' },
+    });
+    fireEvent.change(screen.getByTestId('guardian-2-name-input'), {
+      target: { value: '보호자이수정' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+
+    await waitFor(() => expect(guardian1PatchCount).toBe(1));
+    await waitFor(() => expect(guardian2PatchCount).toBe(1));
+    // guardian1 saved to server; guardian2 keeps unsaved user draft and stays dirty.
+    await waitFor(() =>
+      expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('보호자일수정'),
+    );
+    expect(screen.getByTestId('guardian-2-name-input')).toHaveValue('보호자이수정');
+    await waitFor(() => expect(screen.getByTestId('recipient-basic-save')).not.toBeDisabled());
+    expect(recipientPatchCount).toBe(0);
+
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+    await waitFor(() => expect(guardian2PatchCount).toBe(2));
+    // Already-saved guardian1 must not be re-PATCHed on retry.
+    expect(guardian1PatchCount).toBe(1);
+    expect(guardian1Bodies).toHaveLength(1);
+    expect(guardian1Bodies[0]).toMatchObject({
+      name: '보호자일수정',
+      expected_row_version: 1,
+    });
+    expect(guardian2Bodies[1]).toMatchObject({
+      name: '보호자이수정',
+      expected_row_version: 1,
+    });
+    await waitFor(() =>
+      expect(screen.getByText('수급자·보호자 정보를 저장했습니다.')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('보호자일수정');
+    expect(screen.getByTestId('guardian-2-name-input')).toHaveValue('보호자이수정');
+    expect(guardian1Name).toBe('보호자일수정');
+    expect(guardian2Name).toBe('보호자이수정');
+    expect(guardian1RowVersion).toBe(2);
+    expect(guardian2RowVersion).toBe(2);
   });
 });

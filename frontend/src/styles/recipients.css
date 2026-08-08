@@ -175,6 +175,8 @@
 .recipient-inline-error,
 .recipient-state-error {
   color: var(--color-danger);
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .recipient-workspace {
@@ -396,7 +398,11 @@
 
 .recipient-detail-form {
   margin-top: 17px;
-  display: none !important;
+  display: none;
+}
+
+.recipient-detail-form.is-editing {
+  display: block;
 }
 
 .recipient-detail-contact-grid,
@@ -946,11 +952,19 @@ button.recipient-list-row.is-selected {
   border-top: 1px solid var(--border-color-thin);
 }
 
-/* 등록·기본정보 편집 화면은 새 입력 방식을 정할 때까지 보류 */
+/* Create form remains deferred except the in-panel create summary flow. */
 .recipient-create-form,
-.recipient-create-form.is-open,
-.recipient-detail-form {
+.recipient-create-form.is-open {
   display: none !important;
+}
+
+/* Basic edit form is hidden unless single-edit mode opens it. */
+.recipient-detail-form {
+  display: none;
+}
+
+.recipient-detail-form.is-editing {
+  display: block;
 }
 
 .recipient-form-heading {
@@ -1093,6 +1107,21 @@ button.recipient-list-row.is-selected {
   margin-top: 14px;
 }
 
+.recipient-payer-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.recipient-payer-checkbox input {
+  width: 14px;
+  height: 14px;
+}
+
 .recipient-subsection {
   padding: 13px;
   background: var(--bg-subtle);
@@ -1150,19 +1179,24 @@ button.recipient-list-row.is-selected {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   grid-template-rows: 56px 56px 54px;
   gap: 8px;
-  margin-top: 0;
+  margin: 0;
+  padding: 0;
   border: 0;
   border-radius: 0;
+  background: transparent;
 }
 
 .recipient-basic-section .recipient-summary-item {
+  grid-template-rows: 13px 17.05px;
+  align-content: start;
+  gap: 3px;
   height: 100%;
   min-height: 0;
   box-sizing: border-box;
   padding: 10px 11px;
-  border: 1px solid var(--border-color-thin);
+  border: 0;
   border-radius: var(--border-radius-sm);
-  background: transparent;
+  background: var(--bg-subtle);
 }
 
 .recipient-basic-section.is-editing .recipient-summary-item {
@@ -1173,21 +1207,107 @@ button.recipient-list-row.is-selected {
   grid-column: 1 / -1;
 }
 
-.recipient-create-summary-field input,
-.recipient-create-summary-field select {
+.recipient-basic-section .recipient-summary-item > span {
+  display: block;
+  height: 13px;
+  line-height: 13px;
+}
+
+.recipient-basic-section .recipient-summary-item > strong,
+.recipient-basic-section .recipient-summary-control {
+  display: block;
+  width: 100%;
   min-width: 0;
+  height: 17.05px;
+  box-sizing: border-box;
+  margin: 0;
   padding: 0;
   border: 0;
   outline: 0;
   color: var(--text-main);
   background: transparent;
-  font: inherit;
-  font-size: 10px;
-  line-height: 1.2;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17.05px;
+  vertical-align: top;
 }
 
-.recipient-create-summary-field {
-  line-height: 1.2;
+.recipient-basic-section .recipient-address-inline {
+  height: 17.05px;
+  line-height: 17.05px;
+}
+
+.recipient-basic-section .recipient-copay-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  align-items: start;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 17.05px;
+}
+
+.recipient-basic-section .recipient-copay-inline .recipient-summary-control {
+  min-width: 0;
+}
+
+.recipient-basic-section .recipient-address-inline > :is(span, input) {
+  height: 17.05px;
+  box-sizing: border-box;
+  margin: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17.05px;
+  vertical-align: top;
+}
+
+.recipient-basic-section .recipient-summary-control::placeholder {
+  color: var(--text-muted);
+  font-weight: 700;
+  opacity: 1;
+}
+
+.recipient-guardian-form :is(input, select, textarea):disabled {
+  color: var(--text-main);
+  opacity: 1;
+  -webkit-text-fill-color: var(--text-main);
+}
+
+.recipient-basic-section input.recipient-summary-control:not([type='date']),
+.recipient-basic-section select.recipient-summary-control {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.recipient-basic-section select.recipient-summary-control {
+  padding-right: 18px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%231f2937' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 2px center;
+  background-size: 9px 6px;
+}
+
+.recipient-basic-section input[type='date'].recipient-summary-control::-webkit-datetime-edit {
+  padding: 0;
+  line-height: 17.05px;
+}
+
+.recipient-basic-section
+  input[type='date'].recipient-summary-control::-webkit-datetime-edit-fields-wrapper {
+  padding: 0;
+}
+
+.recipient-basic-section
+  input[type='date'].recipient-summary-control::-webkit-calendar-picker-indicator {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 .recipient-address-input-row,
@@ -1200,14 +1320,6 @@ button.recipient-list-row.is-selected {
 
 .recipient-address-input-row input {
   min-width: 0;
-  padding: 0;
-  border: 0;
-  outline: 0;
-  color: var(--text-main);
-  background: transparent;
-  font: inherit;
-  font-size: 10px;
-  line-height: 1.2;
 }
 
 .recipient-address-input-row input:first-child,
@@ -1226,7 +1338,8 @@ button.recipient-list-row.is-selected {
   overflow-wrap: anywhere;
   color: var(--text-main);
   font-size: 11px;
-  line-height: 1.35;
+  font-weight: 700;
+  line-height: 17.05px;
 }
 
 .recipient-address-inline span {
@@ -1234,6 +1347,8 @@ button.recipient-list-row.is-selected {
   gap: 2px;
   color: var(--text-main);
   font-size: 11px;
+  font-weight: 700;
+  line-height: 17.05px;
 }
 
 .recipient-address-inline small {
@@ -1241,15 +1356,14 @@ button.recipient-list-row.is-selected {
   font-size: 8px;
 }
 
-.recipient-create-summary-field input:focus,
-.recipient-create-summary-field select:focus {
+.recipient-summary-control:focus {
   box-shadow: 0 1px 0 var(--color-primary);
 }
 
 .recipient-basic-section .recipient-summary-item:nth-child(4n),
 .recipient-basic-section .recipient-summary-item:nth-child(n + 9) {
-  border-right: 1px solid var(--border-color-thin);
-  border-bottom: 1px solid var(--border-color-thin);
+  border-right: 0;
+  border-bottom: 0;
 }
 
 .recipient-basic-section .recipient-summary-item-address {
@@ -1530,14 +1644,33 @@ button.recipient-list-row.is-selected {
   min-height: 42px;
   box-sizing: border-box;
   padding: 7px 8px;
-  border: 1px solid var(--border-color-thin);
+  border: 0;
   border-radius: var(--border-radius-sm);
-  background: transparent;
+  background: var(--bg-subtle);
   color: var(--text-muted);
   font-size: 9px;
 }
 
 .recipient-guardian-section.is-editing .recipient-field {
+  background: var(--color-seasonal-accent-soft);
+}
+
+.recipient-detail-form .recipient-form-grid .recipient-field,
+#recipient-create-form .recipient-form-grid .recipient-field,
+.recipient-guardian-section .recipient-guardian-form .recipient-field {
+  border: 0;
+  background: var(--bg-subtle);
+}
+
+.recipient-guardian-section.is-editing .recipient-guardian-form .recipient-field {
+  background: var(--color-seasonal-accent-soft);
+}
+
+.recipient-detail-panel.is-creating .recipient-guardian-section {
+  background: #fff;
+}
+
+.recipient-detail-panel.is-creating .recipient-guardian-form .recipient-field {
   background: var(--color-seasonal-accent-soft);
 }
 
@@ -1683,4 +1816,55 @@ button.recipient-list-row.is-selected {
   .recipient-field-wide {
     grid-column: auto;
   }
+}
+.recipient-detail-batch-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #d7dde4;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.recipient-detail-batch-toolbar > div {
+  display: flex;
+  gap: 8px;
+}
+
+body.recipient-detail-batch-editing [data-testid="recipient-basic-edit"] {
+  display: none;
+}
+
+body.recipient-detail-batch-managed
+  form:has([data-detail-batch-field="true"])
+  button[type="submit"],
+body.recipient-detail-batch-managed
+  form[data-testid="contract-create-form"]
+  button[type="submit"] {
+  display: none;
+}
+
+body.recipient-detail-batch-managed:not(.recipient-detail-batch-editing)
+  form:has([data-detail-batch-field="true"])
+  :is(input, select, textarea),
+body.recipient-detail-batch-managed:not(.recipient-detail-batch-editing)
+  form[data-testid="contract-create-form"]
+  :is(input, select, textarea) {
+  cursor: default;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+body.recipient-detail-batch-editing
+  form:has([data-detail-batch-field="true"])
+  :is(input, select, textarea),
+body.recipient-detail-batch-editing
+  form[data-testid="contract-create-form"]
+  :is(input, select, textarea) {
+  background: var(
+    --recipient-month-field-background,
+    var(--month-theme-soft, #fff3df)
+  );
 }

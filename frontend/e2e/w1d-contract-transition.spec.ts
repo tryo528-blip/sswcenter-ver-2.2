@@ -117,12 +117,19 @@ async function expandDetailExtras(page: Page) {
     'aria-expanded',
     'true',
   );
+  // Strict mode: do not OR unique testids — all three mount and would match together.
   const extras = page.getByTestId('recipient-detail-extra-sections');
-  const contractPanel = page.getByTestId('recipient-contract-panel');
-  const transitionPanel = page.getByTestId('certification-transition-panel');
   await expect(
-    extras.or(contractPanel).or(transitionPanel),
-    'W1D_E2E_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE',
+    extras,
+    'W1D_E2E_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE_EXTRAS',
+  ).toBeVisible({ timeout: 10000 });
+  await expect(
+    page.getByTestId('recipient-contract-panel'),
+    'W1D_E2E_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE_CONTRACT',
+  ).toBeVisible({ timeout: 10000 });
+  await expect(
+    page.getByTestId('certification-transition-panel'),
+    'W1D_E2E_EXTRA_PANELS_NOT_REVEALED_AFTER_TOGGLE_TRANSITION',
   ).toBeVisible({ timeout: 10000 });
 }
 

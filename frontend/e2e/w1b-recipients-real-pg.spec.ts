@@ -49,11 +49,7 @@ function asRecord(value: unknown): JsonRecord {
     : {};
 }
 
-function responseItems(value: unknown, marker: string): JsonRecord[] {
-  const items = asRecord(value).items;
-  expect(Array.isArray(items), marker).toBe(true);
-  return (items as unknown[]).map((item) => asRecord(item));
-}
+
 
 function parseJson(raw: string): unknown {
   try {
@@ -122,16 +118,6 @@ function findRequest(
   predicate: (capture: RequestCapture) => boolean,
 ): RequestCapture | undefined {
   return [...captures].reverse().find(predicate);
-}
-
-function countCapturedRequests(captures: RequestCapture[], path: string, method: string): number {
-  return captures.filter((capture) => {
-    try {
-      return new URL(capture.url).pathname === path && capture.method === method;
-    } catch {
-      return false;
-    }
-  }).length;
 }
 
 function assertNoKeys(value: unknown, pattern: RegExp, marker: string): void {
@@ -383,7 +369,8 @@ async function createRecipientViaUi(
       new URL(response.url()).pathname === '/api/v1/recipients' &&
       response.request().method() === 'POST',
   );
-  await page.getByTestId('recipient-submit-button').click();
+  // Live UI uses recipient-create-toggle as the create form's external submit.
+  await page.getByTestId('recipient-create-toggle').click();
   const response = await responsePromise;
   const raw = await response.text();
   responseSurfaces.push(raw);
@@ -765,284 +752,147 @@ async function exercisePayerHistory(
   assertNoKeys(payerListAfter.body, PAYER_GUARDIAN_KEY_PATTERN, 'W1B_E2E_PAYER_LIST_FORBIDDEN_FK');
 }
 
-async function exerciseInclusiveEndUiBoundaries(
+async function exercisePayerGuardianSelection(
   page: Page,
   recipientId: number,
   guardianAId: number,
   guardianBId: number,
-  requestCaptures: RequestCapture[],
   responseSurfaces: string[],
 ): Promise<void> {
-  const primaryPath = primaryCollectionPath(recipientId);
-  const payerPath = payerCollectionPath(recipientId);
-  const primaryForm = page.getByTestId('recipient-primary-guardian-form');
-  const primaryHistory = page.getByTestId('recipient-primary-guardian-history');
-  const primarySelect = page.getByTestId('recipient-primary-guardian-select');
-  const primaryStart = page.getByTestId('recipient-primary-start-date-input');
-  const primaryEnd = page.getByTestId('recipient-primary-end-date-input');
-  const primarySubmit = primaryForm.locator('button[type="submit"]');
-  const payerForm = page.getByTestId('recipient-payer-form');
-  const payerHistory = page.getByTestId('recipient-payer-snapshot-section');
-  const payerName = page.getByTestId('recipient-payer-name-input');
-  const payerPhone = page.getByTestId('recipient-payer-phone-input');
-  const payerRelationship = page.getByTestId('recipient-payer-relationship-input');
-  const payerAddress = page.getByTestId('recipient-payer-address-input');
-  const payerStart = page.getByTestId('recipient-payer-start-date-input');
-  const payerEnd = page.getByTestId('recipient-payer-end-date-input');
-  const payerSubmit = payerForm.locator('button[type="submit"]');
-
   await page.reload();
-  await expect(page.getByTestId('page-recipients'), 'W1B_E2E_BOUNDARY_RELOAD_PAGE').toBeVisible();
-  await expect(page.getByTestId('recipient-detail-workspace'), 'W1B_E2E_BOUNDARY_RELOAD_DETAIL').toBeVisible();
-  await expect(primaryForm, 'W1B_E2E_PRIMARY_BOUNDARY_FORM_READY').toBeVisible();
-  await expect(primarySelect.locator('option'), 'W1B_E2E_PRIMARY_BOUNDARY_GUARDIANS_READY').toHaveCount(3);
-  await expect(payerForm, 'W1B_E2E_PAYER_BOUNDARY_FORM_READY').toBeVisible();
+  await expect(page.getByTestId('page-recipients'), 'W1B_E2E_PAYER_UI_PAGE_READY').toBeVisible();
+  await expect(page.getByTestId('recipient-detail-workspace'), 'W1B_E2E_PAYER_UI_DETAIL_READY').toBeVisible();
+  const editButton = page.getByTestId('recipient-basic-edit');
+  const saveButton = page.getByTestId('recipient-basic-save');
+  const payerA = page.getByTestId('guardian-1-payer-checkbox');
+  const payerB = page.getByTestId('guardian-2-payer-checkbox');
+  const payerLabel = page.getByTestId('recipient-payer-current-label');
+  await expect(editButton, 'W1B_E2E_PAYER_UI_EDIT_READY').toBeVisible();
+  await editButton.click();
+  await expect(payerA, 'W1B_E2E_PAYER_UI_A_READY').toBeEnabled();
+  await expect(payerB, 'W1B_E2E_PAYER_UI_B_READY').toBeEnabled();
 
-  await primarySelect.selectOption(String(guardianAId));
-  await primaryStart.fill('2024-04-01');
-  await primaryEnd.fill('2024-04-01');
-  const primaryDayBefore = countCapturedRequests(requestCaptures, primaryPath, 'POST');
-  const primaryDayResponsePromise = page.waitForResponse(
+  // Assign guardian A through the visible UI.
+  const current = await browserApi(page, { path: recipientPath(recipientId) });
+  responseSurfaces.push(current.raw);
+  const currentBody = asRecord(current.body);
+  const version1 = numberField(currentBody, 'row_version', 'W1B_E2E_PAYER_G_VERSION_1');
+  await payerA.check();
+  await expect(payerA, 'W1B_E2E_PAYER_UI_A_CHECKED').toBeChecked();
+  await expect(payerB, 'W1B_E2E_PAYER_UI_B_EXCLUDED_BY_A').not.toBeChecked();
+  const setAResponsePromise = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === primaryPath && response.request().method() === 'POST',
+      new URL(response.url()).pathname === recipientPath(recipientId) &&
+      response.request().method() === 'PATCH',
   );
-  await primarySubmit.click();
-  const primaryDayResponse = await primaryDayResponsePromise;
-  const primaryDayRaw = await primaryDayResponse.text();
-  responseSurfaces.push(primaryDayRaw);
-  expect(primaryDayResponse.status(), 'W1B_E2E_PRIMARY_BOUNDARY_DAY_STATUS').toBe(201);
-  expect(
-    countCapturedRequests(requestCaptures, primaryPath, 'POST'),
-    'W1B_E2E_PRIMARY_BOUNDARY_DAY_POST_COUNT',
-  ).toBe(primaryDayBefore + 1);
-  const primaryDayBody = asRecord(parseJson(primaryDayRaw));
-  expect(primaryDayBody.start_date, 'W1B_E2E_PRIMARY_BOUNDARY_DAY_START').toBe('2024-04-01');
-  expect(primaryDayBody.end_date, 'W1B_E2E_PRIMARY_BOUNDARY_DAY_END').toBe('2024-04-01');
-  await expect(primaryHistory, 'W1B_E2E_PRIMARY_BOUNDARY_DAY_UI_READBACK').toContainText('2024-04-01');
+  await saveButton.click();
+  const setAResponse = await setAResponsePromise;
+  const setARaw = await setAResponse.text();
+  responseSurfaces.push(setARaw);
+  expect(setAResponse.status(), 'W1B_E2E_PAYER_G_SET_A_STATUS').toBe(200);
+  expect(parseJson(setAResponse.request().postData() ?? ''), 'W1B_E2E_PAYER_G_SET_A_BODY').toEqual({
+    expected_row_version: version1,
+    payer_guardian_id: guardianAId,
+  });
+  const payerUiBodyA = asRecord(parseJson(setARaw));
+  expect(payerUiBodyA.payer_guardian_id, 'W1B_E2E_PAYER_G_SET_A_VALUE').toBe(guardianAId);
+  await expect(payerLabel, 'W1B_E2E_PAYER_G_SET_A_LABEL').toContainText('보호자1');
+  const readA = await browserApi(page, { path: recipientPath(recipientId) });
+  responseSurfaces.push(readA.raw);
+  expect(asRecord(readA.body).payer_guardian_id, 'W1B_E2E_PAYER_G_READ_A').toBe(guardianAId);
 
-  const primaryDayReadback = await browserApi(page, { path: primaryPath });
-  responseSurfaces.push(primaryDayReadback.raw);
-  expect(primaryDayReadback.status, 'W1B_E2E_PRIMARY_BOUNDARY_DAY_READBACK_STATUS').toBe(200);
-  const primaryDayRows = responseItems(primaryDayReadback.body, 'W1B_E2E_PRIMARY_BOUNDARY_DAY_READBACK_SHAPE');
-  expect(
-    primaryDayRows.some(
-      (period) =>
-        period.start_date === '2024-04-01' &&
-        period.end_date === '2024-04-01' &&
-        period.invalidated_at_utc === null,
-    ),
-    'W1B_E2E_PRIMARY_BOUNDARY_DAY_READBACK',
-  ).toBe(true);
+  const bodyA = payerUiBodyA;
 
-  await primarySelect.selectOption(String(guardianBId));
-  await primaryStart.fill('2024-04-01');
-  await primaryEnd.fill('2024-04-01');
-  const primaryOverlapBefore = countCapturedRequests(requestCaptures, primaryPath, 'POST');
-  await primarySubmit.click();
-  await expect(
-    primaryForm.locator('.recipient-inline-error'),
-    'W1B_E2E_PRIMARY_BOUNDARY_OVERLAP_ERROR',
-  ).toBeVisible();
-  expect(
-    countCapturedRequests(requestCaptures, primaryPath, 'POST'),
-    'W1B_E2E_PRIMARY_BOUNDARY_OVERLAP_NO_POST',
-  ).toBe(primaryOverlapBefore);
-
-  await primarySelect.selectOption(String(guardianBId));
-  await primaryStart.fill('2024-04-02');
-  await primaryEnd.fill('2024-04-02');
-  const primaryAdjacentBefore = countCapturedRequests(requestCaptures, primaryPath, 'POST');
-  const primaryAdjacentResponsePromise = page.waitForResponse(
+  // Switch to guardian B.
+  const version2 = numberField(bodyA, 'row_version', 'W1B_E2E_PAYER_G_VERSION_2');
+  await payerB.check();
+  await expect(payerB, 'W1B_E2E_PAYER_UI_B_CHECKED').toBeChecked();
+  await expect(payerA, 'W1B_E2E_PAYER_UI_A_EXCLUDED_BY_B').not.toBeChecked();
+  const setBResponsePromise = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === primaryPath && response.request().method() === 'POST',
+      new URL(response.url()).pathname === recipientPath(recipientId) &&
+      response.request().method() === 'PATCH',
   );
-  await primarySubmit.click();
-  const primaryAdjacentResponse = await primaryAdjacentResponsePromise;
-  const primaryAdjacentRaw = await primaryAdjacentResponse.text();
-  responseSurfaces.push(primaryAdjacentRaw);
-  expect(primaryAdjacentResponse.status(), 'W1B_E2E_PRIMARY_BOUNDARY_ADJACENT_STATUS').toBe(201);
-  expect(
-    countCapturedRequests(requestCaptures, primaryPath, 'POST'),
-    'W1B_E2E_PRIMARY_BOUNDARY_ADJACENT_POST_COUNT',
-  ).toBe(primaryAdjacentBefore + 1);
-  const primaryAdjacentBody = asRecord(parseJson(primaryAdjacentRaw));
-  expect(primaryAdjacentBody.start_date, 'W1B_E2E_PRIMARY_BOUNDARY_ADJACENT_START').toBe('2024-04-02');
-  expect(primaryAdjacentBody.end_date, 'W1B_E2E_PRIMARY_BOUNDARY_ADJACENT_END').toBe('2024-04-02');
-  await expect(primaryHistory, 'W1B_E2E_PRIMARY_BOUNDARY_ADJACENT_UI_READBACK').toContainText('2024-04-02');
+  await saveButton.click();
+  const setBResponse = await setBResponsePromise;
+  const setBRaw = await setBResponse.text();
+  responseSurfaces.push(setBRaw);
+  expect(setBResponse.status(), 'W1B_E2E_PAYER_G_SET_B_STATUS').toBe(200);
+  expect(parseJson(setBResponse.request().postData() ?? ''), 'W1B_E2E_PAYER_G_SET_B_BODY').toEqual({
+    expected_row_version: version2,
+    payer_guardian_id: guardianBId,
+  });
+  const payerUiBodyB = asRecord(parseJson(setBRaw));
+  expect(payerUiBodyB.payer_guardian_id, 'W1B_E2E_PAYER_G_SET_B_VALUE').toBe(guardianBId);
+  await expect(payerLabel, 'W1B_E2E_PAYER_G_SET_B_LABEL').toContainText('보호자2');
+  const readB = await browserApi(page, { path: recipientPath(recipientId) });
+  responseSurfaces.push(readB.raw);
+  expect(asRecord(readB.body).payer_guardian_id, 'W1B_E2E_PAYER_G_READ_B').toBe(guardianBId);
+  const bodyB = payerUiBodyB;
 
-  const primaryBoundaryReadback = await browserApi(page, { path: primaryPath });
-  responseSurfaces.push(primaryBoundaryReadback.raw);
-  expect(primaryBoundaryReadback.status, 'W1B_E2E_PRIMARY_BOUNDARY_READBACK_STATUS').toBe(200);
-  const primaryBoundaryRows = responseItems(
-    primaryBoundaryReadback.body,
-    'W1B_E2E_PRIMARY_BOUNDARY_READBACK_SHAPE',
+  const version3 = numberField(bodyB, 'row_version', 'W1B_E2E_PAYER_G_VERSION_3');
+  await payerB.uncheck();
+  await expect(payerA, 'W1B_E2E_PAYER_UI_A_CLEAR_FOR_SELF').not.toBeChecked();
+  await expect(payerB, 'W1B_E2E_PAYER_UI_B_CLEAR_FOR_SELF').not.toBeChecked();
+  const setSelfResponsePromise = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === recipientPath(recipientId) && response.request().method() === 'PATCH',
   );
-  const activePrimaryBoundaryRows = primaryBoundaryRows.filter(
-    (period) =>
-      (period.start_date === '2024-04-01' || period.start_date === '2024-04-02') &&
-      period.end_date === period.start_date &&
-      period.invalidated_at_utc === null,
+  await saveButton.click();
+  const setSelfResponse = await setSelfResponsePromise;
+  const setSelfRaw = await setSelfResponse.text();
+  responseSurfaces.push(setSelfRaw);
+  expect(setSelfResponse.status(), 'W1B_E2E_PAYER_G_SET_SELF_STATUS').toBe(200);
+  expect(parseJson(setSelfResponse.request().postData() ?? ''), 'W1B_E2E_PAYER_G_SET_SELF_BODY').toEqual({
+    expected_row_version: version3,
+    payer_guardian_id: null,
+  });
+  const bodySelf = asRecord(parseJson(setSelfRaw));
+  expect(bodySelf.payer_guardian_id, 'W1B_E2E_PAYER_G_SET_SELF_VALUE').toBeNull();
+  await expect(payerLabel, 'W1B_E2E_PAYER_G_SET_SELF_LABEL').toContainText('수급자 본인');
+  const reread = await browserApi(page, { path: recipientPath(recipientId) });
+  responseSurfaces.push(reread.raw);
+  expect(asRecord(reread.body).payer_guardian_id, 'W1B_E2E_PAYER_G_REREAD_SELF').toBeNull();
+
+  // Cross-recipient rejection: create second recipient and try to use its guardian id.
+  const otherCreate = await browserApi(page, {
+    data: {
+      birth_date: '1990-01-01',
+      name: `W1B cross payer ${recipientId}`,
+      sex_code: 'MALE',
+    },
+    method: 'POST',
+    path: '/api/v1/recipients',
+  });
+  responseSurfaces.push(otherCreate.raw);
+  const other = await expectApiSuccess(otherCreate, 201, 'W1B_E2E_PAYER_G_OTHER_RECIPIENT');
+  const otherId = numberField(other, 'id', 'W1B_E2E_PAYER_G_OTHER_ID');
+  const otherGuardianCreate = await browserApi(page, {
+    data: { name: `W1B foreign guardian ${otherId}` },
+    method: 'POST',
+    path: guardianCollectionPath(otherId),
+  });
+  responseSurfaces.push(otherGuardianCreate.raw);
+  const otherGuardian = await expectApiSuccess(
+    otherGuardianCreate,
+    201,
+    'W1B_E2E_PAYER_G_FOREIGN_GUARDIAN',
   );
-  expect(activePrimaryBoundaryRows, 'W1B_E2E_PRIMARY_BOUNDARY_ACTIVE_ROWS').toHaveLength(2);
-  for (const period of activePrimaryBoundaryRows) {
-    const periodId = numberField(period, 'id', 'W1B_E2E_PRIMARY_BOUNDARY_CLEANUP_ID');
-    const periodVersion = numberField(period, 'row_version', 'W1B_E2E_PRIMARY_BOUNDARY_CLEANUP_VERSION');
-    const invalidation = await browserApi(page, {
-      data: { expected_row_version: periodVersion },
-      method: 'POST',
-      path: `${primaryPath}/${escapedId(periodId)}/invalidate`,
-    });
-    responseSurfaces.push(invalidation.raw);
-    const invalidated = await expectApiSuccess(
-      invalidation,
-      200,
-      'W1B_E2E_PRIMARY_BOUNDARY_CLEANUP_INVALIDATE',
-    );
-    expect(
-      invalidated.invalidated_at_utc,
-      'W1B_E2E_PRIMARY_BOUNDARY_CLEANUP_INVALIDATED_AT',
-    ).not.toBeNull();
-  }
-
-  const primaryAfterCleanup = await browserApi(page, { path: primaryPath });
-  responseSurfaces.push(primaryAfterCleanup.raw);
-  const primaryAfterCleanupRows = responseItems(
-    primaryAfterCleanup.body,
-    'W1B_E2E_PRIMARY_BOUNDARY_CLEANUP_READBACK_SHAPE',
+  const foreignGuardianId = numberField(otherGuardian, 'id', 'W1B_E2E_PAYER_G_FOREIGN_ID');
+  const selfAgain = await browserApi(page, { path: recipientPath(recipientId) });
+  responseSurfaces.push(selfAgain.raw);
+  const selfVersion = numberField(
+    asRecord(selfAgain.body),
+    'row_version',
+    'W1B_E2E_PAYER_G_CROSS_VERSION',
   );
-  expect(
-    primaryAfterCleanupRows
-      .filter((period) => period.start_date === '2024-04-01' || period.start_date === '2024-04-02')
-      .every((period) => period.invalidated_at_utc !== null),
-    'W1B_E2E_PRIMARY_BOUNDARY_CLEANUP_READBACK',
-  ).toBe(true);
-
-  await page.reload();
-  await expect(page.getByTestId('page-recipients'), 'W1B_E2E_PAYER_BOUNDARY_RELOAD_PAGE').toBeVisible();
-  await expect(payerForm, 'W1B_E2E_PAYER_BOUNDARY_FORM_AFTER_PRIMARY_CLEANUP').toBeVisible();
-  await expect(payerPhone, 'W1B_E2E_PAYER_BOUNDARY_PHONE_EMPTY').toHaveValue('');
-  await expect(payerRelationship, 'W1B_E2E_PAYER_BOUNDARY_RELATIONSHIP_EMPTY').toHaveValue('');
-  await expect(payerAddress, 'W1B_E2E_PAYER_BOUNDARY_ADDRESS_EMPTY').toHaveValue('');
-
-  await payerName.fill(`W1B payer boundary day ${recipientId}`);
-  await payerStart.fill('2024-06-01');
-  await payerEnd.fill('2024-06-01');
-  const payerDayBefore = countCapturedRequests(requestCaptures, payerPath, 'POST');
-  const payerDayResponsePromise = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === payerPath && response.request().method() === 'POST',
-  );
-  await payerSubmit.click();
-  const payerDayResponse = await payerDayResponsePromise;
-  const payerDayRaw = await payerDayResponse.text();
-  responseSurfaces.push(payerDayRaw);
-  expect(payerDayResponse.status(), 'W1B_E2E_PAYER_BOUNDARY_DAY_STATUS').toBe(201);
-  expect(
-    countCapturedRequests(requestCaptures, payerPath, 'POST'),
-    'W1B_E2E_PAYER_BOUNDARY_DAY_POST_COUNT',
-  ).toBe(payerDayBefore + 1);
-  const payerDayBody = asRecord(parseJson(payerDayRaw));
-  expect(payerDayBody.start_date, 'W1B_E2E_PAYER_BOUNDARY_DAY_START').toBe('2024-06-01');
-  expect(payerDayBody.end_date, 'W1B_E2E_PAYER_BOUNDARY_DAY_END').toBe('2024-06-01');
-  await expect(payerHistory, 'W1B_E2E_PAYER_BOUNDARY_DAY_UI_READBACK').toContainText('2024-06-01');
-
-  const payerDayReadback = await browserApi(page, { path: payerPath });
-  responseSurfaces.push(payerDayReadback.raw);
-  expect(payerDayReadback.status, 'W1B_E2E_PAYER_BOUNDARY_DAY_READBACK_STATUS').toBe(200);
-  const payerDayRows = responseItems(payerDayReadback.body, 'W1B_E2E_PAYER_BOUNDARY_DAY_READBACK_SHAPE');
-  expect(
-    payerDayRows.some(
-      (snapshot) =>
-        snapshot.start_date === '2024-06-01' &&
-        snapshot.end_date === '2024-06-01' &&
-        snapshot.invalidated_at_utc === null,
-    ),
-    'W1B_E2E_PAYER_BOUNDARY_DAY_READBACK',
-  ).toBe(true);
-
-  await payerName.fill(`W1B payer boundary overlap ${recipientId}`);
-  await payerStart.fill('2024-06-01');
-  await payerEnd.fill('2024-06-01');
-  const payerOverlapBefore = countCapturedRequests(requestCaptures, payerPath, 'POST');
-  await payerSubmit.click();
-  await expect(
-    payerForm.locator('.recipient-inline-error'),
-    'W1B_E2E_PAYER_BOUNDARY_OVERLAP_ERROR',
-  ).toBeVisible();
-  expect(
-    countCapturedRequests(requestCaptures, payerPath, 'POST'),
-    'W1B_E2E_PAYER_BOUNDARY_OVERLAP_NO_POST',
-  ).toBe(payerOverlapBefore);
-
-  await payerName.fill(`W1B payer boundary adjacent ${recipientId}`);
-  await payerStart.fill('2024-06-02');
-  await payerEnd.fill('2024-06-02');
-  const payerAdjacentBefore = countCapturedRequests(requestCaptures, payerPath, 'POST');
-  const payerAdjacentResponsePromise = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === payerPath && response.request().method() === 'POST',
-  );
-  await payerSubmit.click();
-  const payerAdjacentResponse = await payerAdjacentResponsePromise;
-  const payerAdjacentRaw = await payerAdjacentResponse.text();
-  responseSurfaces.push(payerAdjacentRaw);
-  expect(payerAdjacentResponse.status(), 'W1B_E2E_PAYER_BOUNDARY_ADJACENT_STATUS').toBe(201);
-  expect(
-    countCapturedRequests(requestCaptures, payerPath, 'POST'),
-    'W1B_E2E_PAYER_BOUNDARY_ADJACENT_POST_COUNT',
-  ).toBe(payerAdjacentBefore + 1);
-  const payerAdjacentBody = asRecord(parseJson(payerAdjacentRaw));
-  expect(payerAdjacentBody.start_date, 'W1B_E2E_PAYER_BOUNDARY_ADJACENT_START').toBe('2024-06-02');
-  expect(payerAdjacentBody.end_date, 'W1B_E2E_PAYER_BOUNDARY_ADJACENT_END').toBe('2024-06-02');
-  await expect(payerHistory, 'W1B_E2E_PAYER_BOUNDARY_ADJACENT_UI_READBACK').toContainText('2024-06-02');
-
-  const payerBoundaryReadback = await browserApi(page, { path: payerPath });
-  responseSurfaces.push(payerBoundaryReadback.raw);
-  expect(payerBoundaryReadback.status, 'W1B_E2E_PAYER_BOUNDARY_READBACK_STATUS').toBe(200);
-  const payerBoundaryRows = responseItems(payerBoundaryReadback.body, 'W1B_E2E_PAYER_BOUNDARY_READBACK_SHAPE');
-  const activePayerBoundaryRows = payerBoundaryRows.filter(
-    (snapshot) =>
-      (snapshot.start_date === '2024-06-01' || snapshot.start_date === '2024-06-02') &&
-      snapshot.end_date === snapshot.start_date &&
-      snapshot.invalidated_at_utc === null,
-  );
-  expect(activePayerBoundaryRows, 'W1B_E2E_PAYER_BOUNDARY_ACTIVE_ROWS').toHaveLength(2);
-  for (const snapshot of activePayerBoundaryRows) {
-    const snapshotId = numberField(snapshot, 'id', 'W1B_E2E_PAYER_BOUNDARY_CLEANUP_ID');
-    const snapshotVersion = numberField(snapshot, 'row_version', 'W1B_E2E_PAYER_BOUNDARY_CLEANUP_VERSION');
-    const invalidation = await browserApi(page, {
-      data: { expected_row_version: snapshotVersion },
-      method: 'POST',
-      path: `${payerPath}/${escapedId(snapshotId)}/invalidate`,
-    });
-    responseSurfaces.push(invalidation.raw);
-    const invalidated = await expectApiSuccess(
-      invalidation,
-      200,
-      'W1B_E2E_PAYER_BOUNDARY_CLEANUP_INVALIDATE',
-    );
-    expect(
-      invalidated.invalidated_at_utc,
-      'W1B_E2E_PAYER_BOUNDARY_CLEANUP_INVALIDATED_AT',
-    ).not.toBeNull();
-  }
-
-  const payerAfterCleanup = await browserApi(page, { path: payerPath });
-  responseSurfaces.push(payerAfterCleanup.raw);
-  const payerAfterCleanupRows = responseItems(
-    payerAfterCleanup.body,
-    'W1B_E2E_PAYER_BOUNDARY_CLEANUP_READBACK_SHAPE',
-  );
-  expect(
-    payerAfterCleanupRows
-      .filter((snapshot) => snapshot.start_date === '2024-06-01' || snapshot.start_date === '2024-06-02')
-      .every((snapshot) => snapshot.invalidated_at_utc !== null),
-    'W1B_E2E_PAYER_BOUNDARY_CLEANUP_READBACK',
-  ).toBe(true);
-  await page.reload();
-  await expect(page.getByTestId('page-recipients'), 'W1B_E2E_BOUNDARY_FINAL_RELOAD_PAGE').toBeVisible();
-  await expect(primaryForm, 'W1B_E2E_BOUNDARY_FINAL_PRIMARY_FORM').toBeVisible();
-  await expect(payerForm, 'W1B_E2E_BOUNDARY_FINAL_PAYER_FORM').toBeVisible();
+  const cross = await browserApi(page, {
+    data: { expected_row_version: selfVersion, payer_guardian_id: foreignGuardianId },
+    method: 'PATCH',
+    path: recipientPath(recipientId),
+  });
+  responseSurfaces.push(cross.raw);
+  expect(cross.status, 'W1B_E2E_PAYER_G_CROSS_STATUS').toBe(404);
+  expect(errorCode(cross.body), 'W1B_E2E_PAYER_G_CROSS_CODE').toBe('RECIPIENT_GUARDIAN_NOT_FOUND');
 }
 
 test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
@@ -1186,38 +1036,38 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     );
 
     const staleInput = `${recipientName}-USER-STALE`;
+    await page.getByTestId('recipient-basic-edit').click();
     await page.getByTestId('recipient-detail-name-input').fill(staleInput);
     const staleUiResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === recipientPath(recipientId) &&
         response.request().method() === 'PATCH',
     );
-    await page.getByRole('button', { name: '기본정보 저장', exact: true }).click();
+    await page.getByTestId('recipient-basic-save').click();
     const staleUi = await staleUiResponse;
     const staleUiRaw = await staleUi.text();
     responseSurfaces.push(staleUiRaw);
     const staleUiBody = parseJson(staleUiRaw);
     expect(staleUi.status(), 'W1B_E2E_STALE_UI_STATUS').toBe(409);
     expect(errorCode(staleUiBody), 'W1B_E2E_STALE_UI_CODE').toBe('ROW_VERSION_CONFLICT');
-    expect(
-      await page.getByTestId('recipient-detail-name-input').inputValue(),
-      'W1B_E2E_STALE_UI_INPUT_RETAINED',
-    ).toBe(staleInput);
     const latestValue = page.getByTestId('recipient-stale-latest-value');
-    const diffValue = page.getByTestId('recipient-stale-diff');
-    const reapply = page.getByTestId('recipient-stale-reapply');
+    const conflictLog = page.getByTestId('recipient-same-field-conflict-log');
+    const nameInput = page.getByTestId('recipient-detail-name-input');
     await expect(latestValue, 'W1B_E2E_STALE_LATEST_VALUE_MISSING').toBeVisible();
     await expect(latestValue, 'W1B_E2E_STALE_LATEST_VALUE').toContainText(externalName);
-    await expect(diffValue, 'W1B_E2E_STALE_DIFF_MISSING').toBeVisible();
-    await expect(diffValue, 'W1B_E2E_STALE_DIFF').toContainText(staleInput);
-    await expect(diffValue, 'W1B_E2E_STALE_DIFF_LATEST').toContainText(externalName);
-    await expect(reapply, 'W1B_E2E_STALE_REAPPLY_MISSING').toBeVisible();
+    await expect(conflictLog, 'W1B_E2E_STALE_SAME_FIELD_LOG_MISSING').toBeVisible();
+    await expect(conflictLog, 'W1B_E2E_STALE_SAME_FIELD_USER').toContainText(staleInput);
+    await expect(conflictLog, 'W1B_E2E_STALE_SAME_FIELD_SERVER').toContainText(externalName);
+    await expect(nameInput, 'W1B_E2E_STALE_SERVER_VALUE_WINS').toHaveValue(externalName);
+    await expect(page.getByTestId('recipient-stale-reapply'), 'W1B_E2E_STALE_REAPPLY_FORBIDDEN').toHaveCount(0);
+
+    await nameInput.fill(staleInput);
     const reapplyResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === recipientPath(recipientId) &&
         response.request().method() === 'PATCH',
     );
-    await reapply.click();
+    await page.getByTestId('recipient-basic-save').click();
     const reapplied = await reapplyResponse;
     const reappliedRaw = await reapplied.text();
     responseSurfaces.push(reappliedRaw);
@@ -1241,16 +1091,16 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     const { guardianA, guardianB } = await createGuardians(page, recipientId, responseSurfaces);
     const guardianAId = numberField(guardianA, 'id', 'W1B_E2E_GUARDIAN_A_FINAL_ID');
     const guardianBId = numberField(guardianB, 'id', 'W1B_E2E_GUARDIAN_B_FINAL_ID');
-    await exerciseInclusiveEndUiBoundaries(
+    // Historical primary/payer snapshot APIs remain available (compatibility); exercised via API.
+    await exercisePrimaryHistory(page, recipientId, guardianA, guardianB, responseSurfaces);
+    await exercisePayerHistory(page, recipientId, guardianAId, responseSurfaces);
+    await exercisePayerGuardianSelection(
       page,
       recipientId,
       guardianAId,
       guardianBId,
-      requestCaptures,
       responseSurfaces,
     );
-    await exercisePrimaryHistory(page, recipientId, guardianA, guardianB, responseSurfaces);
-    await exercisePayerHistory(page, recipientId, guardianAId, responseSurfaces);
 
     await snapshotDomAcrossNavigations(
       page,
@@ -1260,12 +1110,8 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     );
     await page.reload();
     await expect(page.getByTestId('page-recipients'), 'W1B_E2E_POST_HISTORY_PAGE').toBeVisible();
-    await expect(page.getByTestId('recipient-guardian-section'), 'W1B_E2E_GUARDIAN_UI_READBACK').toContainText(
-      'W1B guardian B updated',
-    );
-    await expect(page.getByTestId('recipient-payer-snapshot-section'), 'W1B_E2E_PAYER_UI_READBACK').toContainText(
-      'W1B payer recreated',
-    );
+    await expect(page.getByTestId('recipient-guardian-1-section'), 'W1B_E2E_GUARDIAN_UI_READBACK').toBeVisible();
+    await expect(page.getByTestId('recipient-guardian-2-section'), 'W1B_E2E_GUARDIAN2_UI_READBACK').toBeVisible();
 
     await snapshotDomAcrossNavigations(
       page,
@@ -1275,26 +1121,31 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
     );
     await page.goto('/recipients');
     await expect(page.getByTestId('page-recipients'), 'W1B_E2E_CONTEXT_PAGE_READY').toBeVisible();
+    const pageOneResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === '/api/v1/recipients' &&
+        response.request().method() === 'GET' &&
+        url.searchParams.get('search') === runKey &&
+        url.searchParams.get('page') === '1'
+      );
+    });
     await page.getByTestId('recipient-search-input').fill(runKey);
+    const pageOneResponse = await pageOneResponsePromise;
+    await pageOneResponse.finished();
+    expect(pageOneResponse.ok(), 'W1B_E2E_CONTEXT_PAGE_ONE_RESPONSE').toBe(true);
     await expect(page, 'W1B_E2E_CONTEXT_SEARCH_URL_READY').toHaveURL(
-      (url) => url.searchParams.get('search') === runKey && url.searchParams.get('page') === '1',
-    );
-    await page.getByTestId('recipient-filter-select').selectOption('ACTIVE');
-    await expect(page, 'W1B_E2E_CONTEXT_FILTER_URL_READY').toHaveURL(
       (url) =>
         url.searchParams.get('search') === runKey &&
-        url.searchParams.get('filter') === 'ACTIVE' &&
-        url.searchParams.get('page') === '1',
+        url.searchParams.get('status') === 'ACTIVE' &&
+        !url.searchParams.has('page'),
     );
-    await page.getByTestId('recipient-sort-select').selectOption('name_desc');
-    await expect(page, 'W1B_E2E_CONTEXT_SORT_URL_READY').toHaveURL(
-      (url) =>
-        url.searchParams.get('search') === runKey &&
-        url.searchParams.get('filter') === 'ACTIVE' &&
-        url.searchParams.get('sort') === 'name_desc' &&
-        url.searchParams.get('page') === '1',
-    );
-    await expect(page.getByTestId('recipient-page-indicator'), 'W1B_E2E_CONTEXT_PAGE_ONE').toHaveText('1');
+    await expect(page.getByTestId('recipient-page-indicator'), 'W1B_E2E_CONTEXT_PAGE_INDICATOR_FORBIDDEN').toHaveCount(0);
+    await expect(page.getByRole('button', { name: '이전', exact: true }), 'W1B_E2E_CONTEXT_PREVIOUS_FORBIDDEN').toHaveCount(0);
+    await expect(page.getByRole('button', { name: '다음', exact: true }), 'W1B_E2E_CONTEXT_NEXT_FORBIDDEN').toHaveCount(0);
+    await expect(page.getByTestId('recipient-sort-select'), 'W1B_E2E_CONTEXT_SORT_FORBIDDEN').toHaveCount(0);
+    const rows = page.getByTestId('recipient-name-option');
+    await expect(rows, 'W1B_E2E_CONTEXT_PAGE_ONE_ROWS').toHaveCount(100);
     const pageTwoResponsePromise = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return (
@@ -1304,73 +1155,23 @@ test.describe('W1B-F2 real PostgreSQL recipient GREEN contract', () => {
         url.searchParams.get('page') === '2'
       );
     });
-    await page.getByRole('button', { name: '다음', exact: true }).click();
-    const pageTwoResponse = await pageTwoResponsePromise;
-    await pageTwoResponse.finished();
-    expect(pageTwoResponse.ok(), 'W1B_E2E_CONTEXT_PAGE_TWO_RESPONSE').toBe(true);
-    await expect(page.getByTestId('recipient-page-indicator'), 'W1B_E2E_CONTEXT_PAGE_TWO').toHaveText('2');
-    const pageTwoRows = page.getByTestId('recipient-name-option');
-    await expect(pageTwoRows, 'W1B_E2E_CONTEXT_PAGE_TWO_ROWS').toHaveCount(3);
-
-    const scroll = page.getByTestId('recipient-list-scroll');
-    const originalStyle = await scroll.evaluate((node) => ({
-      height: (node as HTMLElement).style.height,
-      maxHeight: (node as HTMLElement).style.maxHeight,
-    }));
-    const styleHandle = await page.addStyleTag({
-      content:
-        '[data-testid="recipient-list-scroll"] { height: 8px !important; max-height: 8px !important; overflow-y: auto !important; }',
-    });
-    const scrollBefore = await scroll.evaluate((node) => {
+    const scrollBefore = await page.getByTestId('recipient-list-scroll').evaluate((node) => {
       const element = node as HTMLElement;
-      element.scrollTop = Math.max(1, element.scrollHeight - element.clientHeight);
+      element.scrollTop = element.scrollHeight;
       element.dispatchEvent(new Event('scroll', { bubbles: true }));
       return { clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, scrollTop: element.scrollTop };
     });
     expect(scrollBefore.scrollHeight > scrollBefore.clientHeight, 'W1B_E2E_CONTEXT_SCROLL_REQUIRED').toBe(true);
     expect(scrollBefore.scrollTop, 'W1B_E2E_CONTEXT_SCROLL_SET').toBeGreaterThan(0);
-    const contextA = await pageTwoRows.nth(0).locator('strong').innerText();
-    const contextB = await pageTwoRows.nth(1).locator('strong').innerText();
-    const contextBefore = new URL(page.url()).searchParams;
-    const contextBeforeValues = {
-      filter: contextBefore.get('filter'),
-      page: contextBefore.get('page'),
-      search: contextBefore.get('search'),
-      sort: contextBefore.get('sort'),
-    };
-    await pageTwoRows.nth(0).click();
-    await expect(page.getByTestId('recipient-detail-workspace'), 'W1B_E2E_CONTEXT_A_DETAIL').toContainText(contextA);
-    await page.getByTestId('recipient-name-option').nth(1).click();
-    await expect(page.getByTestId('recipient-detail-workspace'), 'W1B_E2E_CONTEXT_B_DETAIL').toContainText(contextB);
-    await page.goBack();
-    await expect(page.getByTestId('recipient-detail-workspace'), 'W1B_E2E_CONTEXT_BACK_A_DETAIL').toContainText(
-      contextA,
+    const pageTwoResponse = await pageTwoResponsePromise;
+    await pageTwoResponse.finished();
+    expect(pageTwoResponse.ok(), 'W1B_E2E_CONTEXT_PAGE_TWO_RESPONSE').toBe(true);
+    await expect(rows, 'W1B_E2E_CONTEXT_APPENDED_ROWS').toHaveCount(103);
+    await expect(page, 'W1B_E2E_CONTEXT_PAGE_NOT_EXPOSED').toHaveURL(
+      (url) => !url.searchParams.has('page'),
     );
-    const contextAfter = new URL(page.url()).searchParams;
-    expect(contextAfter.get('filter'), 'W1B_E2E_CONTEXT_FILTER_RESTORED').toBe(contextBeforeValues.filter);
-    expect(contextAfter.get('page'), 'W1B_E2E_CONTEXT_PAGE_RESTORED').toBe(contextBeforeValues.page);
-    expect(contextAfter.get('search'), 'W1B_E2E_CONTEXT_SEARCH_RESTORED').toBe(contextBeforeValues.search);
-    expect(contextAfter.get('sort'), 'W1B_E2E_CONTEXT_SORT_RESTORED').toBe(contextBeforeValues.sort);
-    await expect(page.getByTestId('recipient-selected-name'), 'W1B_E2E_CONTEXT_SELECTED_RESTORED').toContainText(
-      contextA,
-    );
-    await expect(
-      page.getByTestId('recipient-name-option').filter({ hasText: contextA }),
-      'W1B_E2E_CONTEXT_SELECTED_ROW_RESTORED',
-    ).toHaveClass(/is-selected/);
-    await expect
-      .poll(() => scroll.evaluate((node) => (node as HTMLElement).scrollTop), {
-        message: 'W1B_E2E_CONTEXT_SCROLL_RESTORED',
-      })
-      .toBeGreaterThan(0);
-    await styleHandle.evaluate((element) => {
-      (element as HTMLElement).remove();
-    });
-    await scroll.evaluate((node, style) => {
-      const element = node as HTMLElement;
-      element.style.height = style.height;
-      element.style.maxHeight = style.maxHeight;
-    }, originalStyle);
+
+
 
     await Promise.all(responsePromises);
     await snapshotDomAcrossNavigations(page, domSurfacesAcrossNavigations, urlSurfaces, 'W1B_E2E_DOM_FINAL');

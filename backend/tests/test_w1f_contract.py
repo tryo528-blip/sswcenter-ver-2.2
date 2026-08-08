@@ -1,13 +1,13 @@
 """W1F HIGH integration/recovery RED-first contract.
 
 Sealed nodes bind the W1F backup/restore recovery boundary at the current
-Alembic head ``20260806_0015_recipient_status_tag``. Probes for W1D/W1E/0013/
-0014/0015 are dynamic; postcheck/wrapper/W1C checks are static source evidence.
+Alembic head ``20260808_0016_recipient_payer_guardian``. Probes for W1D/W1E/0013/
+0014/0015/0016 are dynamic; postcheck/wrapper/W1C checks are static source evidence.
 
-Preserve W1D downgrade and existing 0011~0014 restore support/markers. Current-
+Preserve W1D downgrade and existing 0011~0015 restore support/markers. Current-
 head synthetic backup/restore must seed and full-row-hash 0013 continuing
-education and 0014 plan notification, and include recipient 0015 status via
-to_jsonb(recipient) full-row canonical evidence.
+education and 0014 plan notification, and include recipient 0015 status plus
+0016 payer_guardian_id via to_jsonb(recipient) full-row canonical evidence.
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_ROOT = REPO_ROOT / "scripts"
 RESTORE_DRILL = SCRIPTS_ROOT / "restore-drill.ps1"
+W1B_WRAPPER = SCRIPTS_ROOT / "test-w1b-postgres.ps1"
 W1C_WRAPPER = SCRIPTS_ROOT / "test-w1c-postgres.ps1"
+W1D_WRAPPER = SCRIPTS_ROOT / "test-w1d-postgres.ps1"
 W1F_WRAPPER = SCRIPTS_ROOT / "test-w1f-postgres.ps1"
 W1A_RRN_DETECTOR = SCRIPTS_ROOT / "w1a-rrn-detector.ps1"
 POSTCHECK = REPO_ROOT / "backend" / "app" / "db" / "postcheck_w1a_vs1.py"
@@ -42,7 +44,8 @@ W1E_REVISION = "20260801_0012_w1e_care_assignment"
 CONTINUING_EDUCATION_REVISION = "20260802_0013_staff_continuing_education"
 RECIPIENT_PLAN_NOTIFICATION_REVISION = "20260803_0014_recipient_plan_notification"
 RECIPIENT_STATUS_TAG_REVISION = "20260806_0015_recipient_status_tag"
-CURRENT_HEAD = RECIPIENT_STATUS_TAG_REVISION
+RECIPIENT_PAYER_GUARDIAN_REVISION = "20260808_0016_recipient_payer_guardian"
+CURRENT_HEAD = RECIPIENT_PAYER_GUARDIAN_REVISION
 
 UNSUPPORTED_REVISION_MARKER = "Unsupported backup Alembic revision"
 ARTIFACT_STAGE_MARKER = "Backup dump file is missing"
@@ -52,6 +55,7 @@ W1E_MARKER = "W1E_DB_POSTCHECK_OK"
 CONTINUING_EDUCATION_MARKER = "STAFF_CONTINUING_EDUCATION_DB_POSTCHECK_OK"
 RECIPIENT_PLAN_NOTIFICATION_MARKER = "RECIPIENT_PLAN_NOTIFICATION_DB_POSTCHECK_OK"
 RECIPIENT_STATUS_TAG_MARKER = "RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK"
+RECIPIENT_PAYER_GUARDIAN_MARKER = "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK"
 
 # Exact historical E2E fixture value, constructed only from fragments so this
 # contract file itself never embeds a detector-visible contiguous RRN candidate.
@@ -262,7 +266,7 @@ def test_w1f_restore_drill_accepts_recipient_plan_notification_manifest_revision
 
 
 def test_w1f_restore_drill_accepts_recipient_status_tag_manifest_revision() -> None:
-    """Node 2c: restore-drill must accept the 0015 current-head revision before artifacts."""
+    """Node 2c: restore-drill must still accept the historical 0015 revision before artifacts."""
     returncode, output = _run_restore_drill_manifest_probe(RECIPIENT_STATUS_TAG_REVISION)
     if returncode == 0:
         _fail("W1F_RESTORE_0015_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
@@ -279,8 +283,26 @@ def test_w1f_restore_drill_accepts_recipient_status_tag_manifest_revision() -> N
         )
 
 
+def test_w1f_restore_drill_accepts_recipient_payer_guardian_manifest_revision() -> None:
+    """Node 2d: restore-drill must accept the 0016 current-head revision before artifacts."""
+    returncode, output = _run_restore_drill_manifest_probe(RECIPIENT_PAYER_GUARDIAN_REVISION)
+    if returncode == 0:
+        _fail("W1F_RESTORE_0016_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
+    if UNSUPPORTED_REVISION_MARKER in output:
+        _fail(
+            "W1F_RESTORE_0016_REVISION_REJECTED: restore-drill rejects "
+            + RECIPIENT_PAYER_GUARDIAN_REVISION
+            + " before artifact validation"
+        )
+    if ARTIFACT_STAGE_MARKER not in output:
+        _fail(
+            "W1F_RESTORE_0016_ARTIFACT_STAGE_NOT_REACHED: restore-drill did not reach "
+            "artifact validation for " + RECIPIENT_PAYER_GUARDIAN_REVISION
+        )
+
+
 def test_w1f_postcheck_declares_w1d_w1e_revision_contract() -> None:
-    """Node 3: postcheck must supply exact W1D/W1E/0013/0014/0015 verifiers and markers."""
+    """Node 3: postcheck must supply exact W1D/W1E/0013/0014/0015/0016 verifiers and markers."""
     if not POSTCHECK.is_file():
         _fail("W1F_POSTCHECK_MODULE_MISSING: backend/app/db/postcheck_w1a_vs1.py absent")
     source = POSTCHECK.read_text(encoding="utf-8")
@@ -315,14 +337,18 @@ def test_w1f_postcheck_declares_w1d_w1e_revision_contract() -> None:
         "W1F_POSTCHECK_0015_MARKER_MISSING": RECIPIENT_STATUS_TAG_MARKER,
         "W1F_POSTCHECK_0015_VERIFIER_MISSING": "def _verify_recipient_status_tag_contract",
         "W1F_POSTCHECK_0015_COLUMN_MISSING": "recipient_status",
+        "W1F_POSTCHECK_0016_REVISION_MISSING": f'"{RECIPIENT_PAYER_GUARDIAN_REVISION}"',
+        "W1F_POSTCHECK_0016_MARKER_MISSING": RECIPIENT_PAYER_GUARDIAN_MARKER,
+        "W1F_POSTCHECK_0016_VERIFIER_MISSING": "def _verify_recipient_payer_guardian_contract",
+        "W1F_POSTCHECK_0016_COLUMN_MISSING": "payer_guardian_id",
     }
     for marker, token in required_tokens.items():
         if token not in source:
             _fail(f"{marker}: missing {token}")
 
 
-def test_w1f_restore_drill_fail_closed_markers_for_0011_through_0015() -> None:
-    """Preserve exact-revision fail-closed postcheck markers for 0011~0015."""
+def test_w1f_restore_drill_fail_closed_markers_for_0011_through_0016() -> None:
+    """Preserve exact-revision fail-closed postcheck markers for 0011~0016."""
     if not RESTORE_DRILL.is_file():
         _fail("W1F_HARNESS_RESTORE_DRILL_MISSING: scripts/restore-drill.ps1 absent")
     source = RESTORE_DRILL.read_text(encoding="utf-8")
@@ -343,6 +369,11 @@ def test_w1f_restore_drill_fail_closed_markers_for_0011_through_0015() -> None:
             RECIPIENT_STATUS_TAG_REVISION,
             RECIPIENT_STATUS_TAG_MARKER,
             "W1F_RESTORE_0015_MARKER_FAIL_CLOSED_MISSING",
+        ),
+        (
+            RECIPIENT_PAYER_GUARDIAN_REVISION,
+            RECIPIENT_PAYER_GUARDIAN_MARKER,
+            "W1F_RESTORE_0016_MARKER_FAIL_CLOSED_MISSING",
         ),
     )
     for revision, marker, fail_marker in required:
@@ -373,7 +404,7 @@ def test_w1f_postgres_gate_contract_is_sealed() -> None:
         "W1F_WRAPPER_BACKUP_STEP_MISSING": "backup-postgres.ps1",
         "W1F_WRAPPER_RESTORE_STEP_MISSING": "restore-drill.ps1",
         "W1F_WRAPPER_W1D_MARKER_MISSING": W1D_MARKER,
-        "W1F_WRAPPER_0015_MARKER_MISSING": RECIPIENT_STATUS_TAG_MARKER,
+        "W1F_WRAPPER_0016_MARKER_MISSING": RECIPIENT_PAYER_GUARDIAN_MARKER,
         "W1F_WRAPPER_CURRENT_HEAD_MISSING": f'$CurrentHead = "{CURRENT_HEAD}"',
         "W1F_WRAPPER_W1D_HEAD_MISSING": f'$W1dHead = "{W1D_REVISION}"',
         "W1F_WRAPPER_DOWNGRADE_STEP_MISSING": "W1F_STAGE_DOWNGRADE",
@@ -557,7 +588,7 @@ def test_w1f_w1c_wrapper_seals_0010_lifecycle_then_upgrades_to_head() -> None:
         "W1F_W1C_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_MISSING": "W1C_HARNESS_HEAD_UPGRADE_FAILED",
         "W1F_W1C_WRAPPER_HEAD_UPGRADE_MARKER_MISSING": "W1C_HEAD_UPGRADE_OK",
         "W1F_W1C_WRAPPER_PYTEST_MISSING": "tests/test_w1c_postgres.py",
-        "W1F_W1C_WRAPPER_HEAD_POSTCHECK_MARKER_MISSING": RECIPIENT_STATUS_TAG_MARKER,
+        "W1F_W1C_WRAPPER_HEAD_POSTCHECK_MARKER_MISSING": RECIPIENT_PAYER_GUARDIAN_MARKER,
         "W1F_W1C_WRAPPER_GREEN_MISSING": "W1C_POSTGRES_GREEN",
     }
     for marker, token in required_tokens.items():
@@ -622,6 +653,226 @@ def test_w1f_w1c_wrapper_seals_0010_lifecycle_then_upgrades_to_head() -> None:
         _fail("W1F_W1C_WRAPPER_HEAD_UPGRADE_MARKER_NOT_BETWEEN_0010_AND_PYTEST")
 
 
+def test_w1f_w1b_wrapper_seals_0009_then_upgrades_to_current_head() -> None:
+    """Seal exact W1B 0009 + pre-postcheck before current-head ORM/E2E."""
+    if not W1B_WRAPPER.is_file():
+        _fail("W1F_W1B_WRAPPER_MISSING: scripts/test-w1b-postgres.ps1 absent")
+    source = W1B_WRAPPER.read_text(encoding="utf-8")
+
+    required_tokens = {
+        "W1F_W1B_WRAPPER_EXPECTED_REVISION_MISSING": f'$ExpectedRevision = "{W1B_REVISION}"',
+        "W1F_W1B_WRAPPER_CURRENT_HEAD_MISSING": f'$CurrentHead = "{CURRENT_HEAD}"',
+        "W1F_W1B_WRAPPER_HISTORICAL_UPGRADE_MISSING": "alembic-upgrade-w1b",
+        "W1F_W1B_WRAPPER_REVISION_MISMATCH_MISSING": "migration revision mismatch",
+        "W1F_W1B_WRAPPER_PRE_POSTCHECK_MISSING": 'Invoke-Postcheck -Stage "before"',
+        "W1F_W1B_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_MISSING": "W1B_HARNESS_HEAD_UPGRADE_FAILED",
+        "W1F_W1B_WRAPPER_HEAD_UPGRADE_MARKER_MISSING": "W1B_HEAD_UPGRADE_OK",
+        "W1F_W1B_WRAPPER_E2E_SPEC_MISSING": "e2e/w1b-recipients-real-pg.spec.ts",
+        "W1F_W1B_WRAPPER_POST_POSTCHECK_MISSING": 'Invoke-Postcheck -Stage "after"',
+        "W1F_W1B_WRAPPER_BEFORE_POSTCHECK_MARKER_MISSING": "W1B_DB_POSTCHECK_OK",
+        "W1F_W1B_WRAPPER_AFTER_POSTCHECK_CURRENT_HEAD_MARKER_MISSING": (
+            RECIPIENT_PAYER_GUARDIAN_MARKER
+        ),
+        "W1F_W1B_WRAPPER_POSTCHECK_STAGE_EVIDENCE_MISSING": "W1B_POSTCHECK_{0}=1",
+    }
+    for marker, token in required_tokens.items():
+        if token not in source:
+            _fail(f"{marker}: missing {token}")
+
+    # Argument-position seals (Invoke-Captured uses quoted argument arrays).
+    if re.search(r'"upgrade",\s*\$ExpectedRevision', source) is None:
+        _fail("W1F_W1B_WRAPPER_HISTORICAL_UPGRADE_CALL_MISSING")
+    if re.search(r'"upgrade",\s*\$CurrentHead', source) is None:
+        _fail("W1F_W1B_WRAPPER_HEAD_UPGRADE_CALL_MISSING")
+
+    historical_upgrade_at = source.find('"upgrade", $ExpectedRevision')
+    revision_mismatch_at = source.find("migration revision mismatch")
+    pre_postcheck_at = source.find('Invoke-Postcheck -Stage "before"')
+    head_upgrade_arg_at = source.find('"upgrade", $CurrentHead')
+    head_upgrade_fail_at = source.find("W1B_HARNESS_HEAD_UPGRADE_FAILED")
+    head_upgrade_ok_at = source.find('Write-Output "W1B_HEAD_UPGRADE_OK"')
+    # Call site only: Start-Backend after the success marker (function def is earlier).
+    backend_at = source.find("Start-Backend", head_upgrade_ok_at) if head_upgrade_ok_at >= 0 else -1
+    e2e_at = source.find("e2e/w1b-recipients-real-pg.spec.ts")
+    post_postcheck_at = source.find('Invoke-Postcheck -Stage "after"')
+    if (
+        min(
+            historical_upgrade_at,
+            revision_mismatch_at,
+            pre_postcheck_at,
+            head_upgrade_arg_at,
+            head_upgrade_fail_at,
+            head_upgrade_ok_at,
+            backend_at,
+            e2e_at,
+            post_postcheck_at,
+        )
+        < 0
+    ):
+        _fail("W1F_W1B_WRAPPER_STAGE_MARKERS_INCOMPLETE")
+    if not (
+        historical_upgrade_at
+        < revision_mismatch_at
+        < pre_postcheck_at
+        < head_upgrade_arg_at
+        < head_upgrade_fail_at
+        < head_upgrade_ok_at
+        < backend_at
+        < e2e_at
+        < post_postcheck_at
+    ):
+        _fail(
+            "W1F_W1B_WRAPPER_HEAD_UPGRADE_ORDER_INVALID: "
+            "exact 0009 upgrade/assert and pre-postcheck must precede fail-closed "
+            "current-head upgrade, W1B_HEAD_UPGRADE_OK, backend, E2E, and after postcheck"
+        )
+
+    head_block = source[pre_postcheck_at:backend_at]
+    if '"upgrade", $CurrentHead' not in head_block:
+        _fail("W1F_W1B_WRAPPER_HEAD_UPGRADE_NOT_BETWEEN_0009_AND_BACKEND")
+    if "W1B_HARNESS_HEAD_UPGRADE_FAILED" not in head_block:
+        _fail("W1F_W1B_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_NOT_BETWEEN_0009_AND_BACKEND")
+    if "W1B_HEAD_UPGRADE_OK" not in head_block:
+        _fail("W1F_W1B_WRAPPER_HEAD_UPGRADE_MARKER_NOT_BETWEEN_0009_AND_BACKEND")
+    # Exact current-head equality check must remain fail-closed in the same block.
+    if re.search(r"\$CurrentHead", head_block) is None:
+        _fail("W1F_W1B_WRAPPER_CURRENT_HEAD_NOT_USED_IN_HEAD_UPGRADE_BLOCK")
+
+    # Stage-specific postcheck markers inside Invoke-Postcheck only (static surface).
+    fn_start = source.find("function Invoke-Postcheck")
+    fn_end = source.find("\nfunction ", fn_start + 1) if fn_start >= 0 else -1
+    if fn_start < 0 or fn_end < 0:
+        _fail("W1F_W1B_WRAPPER_INVOKE_POSTCHECK_FN_MISSING")
+    fn_body = source[fn_start:fn_end]
+    before_branch_at = fn_body.find('Stage -eq "before"')
+    w1b_marker_at = fn_body.find("W1B_DB_POSTCHECK_OK")
+    head_marker_at = fn_body.find(RECIPIENT_PAYER_GUARDIAN_MARKER)
+    stage_evidence_at = fn_body.find("W1B_POSTCHECK_{0}=1")
+    if min(before_branch_at, w1b_marker_at, head_marker_at, stage_evidence_at) < 0:
+        _fail("W1F_W1B_WRAPPER_POSTCHECK_STAGE_MARKERS_INCOMPLETE")
+    if not (before_branch_at < w1b_marker_at < head_marker_at):
+        _fail(
+            "W1F_W1B_WRAPPER_POSTCHECK_STAGE_MARKER_ORDER_INVALID: "
+            "before branch must select W1B_DB_POSTCHECK_OK before "
+            "current-head after-postcheck marker"
+        )
+    if re.search(r"-notmatch\s+\$requiredMarker", fn_body) is None:
+        _fail("W1F_W1B_WRAPPER_POSTCHECK_FAIL_CLOSED_MATCH_MISSING")
+
+
+def test_w1f_w1d_wrapper_seals_0011_lifecycle_then_upgrades_to_current_head() -> None:
+    """W1D historical wrapper must seal 0010/0011 lifecycle, then head-upgrade before ORM/E2E."""
+    if not W1D_WRAPPER.is_file():
+        _fail("W1F_W1D_WRAPPER_MISSING: scripts/test-w1d-postgres.ps1 absent")
+    source = W1D_WRAPPER.read_text(encoding="utf-8")
+
+    required_tokens = {
+        "W1F_W1D_WRAPPER_EXPECTED_REVISION_MISSING": (f'$ExpectedW1dRevision = "{W1D_REVISION}"'),
+        "W1F_W1D_WRAPPER_W1C_HEAD_MISSING": f'$W1cHead = "{W1C_REVISION}"',
+        "W1F_W1D_WRAPPER_CURRENT_HEAD_MISSING": f'$CurrentHead = "{CURRENT_HEAD}"',
+        "W1F_W1D_WRAPPER_BASE_UPGRADE_MISSING": "W1D_HARNESS_BASE_UPGRADE_FAILED",
+        "W1F_W1D_WRAPPER_UPGRADE_MISSING": "W1D_MIGRATION_UPGRADE_FAILED",
+        "W1F_W1D_WRAPPER_DOWNGRADE_MISSING": "W1D_MIGRATION_DOWNGRADE_FAILED",
+        "W1F_W1D_WRAPPER_REUPGRADE_MISSING": "W1D_MIGRATION_REUPGRADE_FAILED",
+        "W1F_W1D_WRAPPER_REVISION_OBSERVED_MISSING": "W1D_REVISION_OBSERVED=",
+        "W1F_W1D_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_MISSING": "W1D_HARNESS_HEAD_UPGRADE_FAILED",
+        "W1F_W1D_WRAPPER_HEAD_UPGRADE_MARKER_MISSING": "W1D_HEAD_UPGRADE_OK",
+        "W1F_W1D_WRAPPER_RUNTIME_REVISION_ENV_MISSING": ("SSWCENTER_W1D_EXPECTED_RUNTIME_REVISION"),
+        "W1F_W1D_WRAPPER_PYTEST_MISSING": "tests/test_w1d_postgres.py",
+        "W1F_W1D_WRAPPER_E2E_LIVE_MISSING": "SSWCENTER_W1D_LIVE_E2E",
+        "W1F_W1D_WRAPPER_GREEN_MISSING": "W1D_POSTGRES_GREEN",
+    }
+    for marker, token in required_tokens.items():
+        if token not in source:
+            _fail(f"{marker}: missing {token}")
+
+    lifecycle_patterns = (
+        (
+            "W1F_W1D_WRAPPER_BASE_UPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+\$W1cHead",
+        ),
+        (
+            "W1F_W1D_WRAPPER_EXPECTED_UPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+\$ExpectedW1dRevision",
+        ),
+        (
+            "W1F_W1D_WRAPPER_DOWNGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+downgrade\s+\$W1cHead",
+        ),
+        (
+            "W1F_W1D_WRAPPER_REUPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+\$ExpectedW1dRevision",
+        ),
+        (
+            "W1F_W1D_WRAPPER_HEAD_UPGRADE_CALL_MISSING",
+            r"alembic\s+-c\s+alembic\.ini\s+upgrade\s+\$CurrentHead",
+        ),
+        (
+            "W1F_W1D_WRAPPER_HEAD_REVISION_EXACT_ASSERT_MISSING",
+            r"\$HeadRevisionText\s+-ne\s+\$CurrentHead",
+        ),
+        (
+            "W1F_W1D_WRAPPER_HISTORICAL_REVISION_MISMATCH_MISSING",
+            r"\$RevisionText\s+-ne\s+\$ExpectedW1dRevision",
+        ),
+    )
+    for marker, pattern in lifecycle_patterns:
+        if re.search(pattern, source) is None:
+            _fail(marker)
+
+    observed_at = source.find("W1D_REVISION_OBSERVED=")
+    head_upgrade_fail_at = source.find("W1D_HARNESS_HEAD_UPGRADE_FAILED")
+    head_upgrade_ok_at = source.find("W1D_HEAD_UPGRADE_OK")
+    runtime_env_at = source.find("SSWCENTER_W1D_EXPECTED_RUNTIME_REVISION")
+    pytest_at = source.find("tests/test_w1d_postgres.py")
+    e2e_at = source.find("SSWCENTER_W1D_LIVE_E2E")
+    if (
+        min(
+            observed_at,
+            head_upgrade_fail_at,
+            head_upgrade_ok_at,
+            runtime_env_at,
+            pytest_at,
+            e2e_at,
+        )
+        < 0
+    ):
+        _fail("W1F_W1D_WRAPPER_STAGE_MARKERS_INCOMPLETE")
+    if not (
+        observed_at
+        < head_upgrade_fail_at
+        < head_upgrade_ok_at
+        < runtime_env_at
+        < pytest_at
+        < e2e_at
+    ):
+        _fail(
+            "W1F_W1D_WRAPPER_HEAD_UPGRADE_ORDER_INVALID: "
+            "exact 0011 observation must precede fail-closed current-head upgrade, "
+            "W1D_HEAD_UPGRADE_OK, runtime revision export, ORM pytest, and live E2E"
+        )
+
+    head_block = source[observed_at:pytest_at]
+    if "upgrade $CurrentHead" not in head_block:
+        _fail("W1F_W1D_WRAPPER_HEAD_UPGRADE_NOT_BETWEEN_0011_AND_PYTEST")
+    if "W1D_HARNESS_HEAD_UPGRADE_FAILED" not in head_block:
+        _fail("W1F_W1D_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_NOT_BETWEEN_0011_AND_PYTEST")
+    if "W1D_HEAD_UPGRADE_OK" not in head_block:
+        _fail("W1F_W1D_WRAPPER_HEAD_UPGRADE_MARKER_NOT_BETWEEN_0011_AND_PYTEST")
+    if "SSWCENTER_W1D_EXPECTED_RUNTIME_REVISION" not in head_block:
+        _fail("W1F_W1D_WRAPPER_RUNTIME_ENV_NOT_BETWEEN_0011_AND_PYTEST")
+
+    # Runtime revision export must bind the exact current head (no soft default).
+    if (
+        re.search(
+            r"\$env:SSWCENTER_W1D_EXPECTED_RUNTIME_REVISION\s*=\s*\$CurrentHead",
+            source,
+        )
+        is None
+    ):
+        _fail("W1F_W1D_WRAPPER_RUNTIME_ENV_NOT_BOUND_TO_CURRENT_HEAD")
+
+
 def test_w1f_plan_notification_e2e_hides_detector_visible_resident_number() -> None:
     """0014 real-PG E2E must keep the fixture RRN without a detector-visible source candidate."""
     if not PLAN_NOTIFICATION_E2E.is_file():
@@ -661,7 +912,7 @@ def test_w1f_plan_notification_e2e_hides_detector_visible_resident_number() -> N
 
 
 def test_w1f_current_head_and_lineage_constants_contract() -> None:
-    """Current-head/marker contract: wrapper + restore/postcheck agree on 0015 head."""
+    """Current-head/marker contract: wrapper + restore/postcheck agree on 0016 head."""
     if not W1F_WRAPPER.is_file():
         _fail("W1F_WRAPPER_MISSING: scripts/test-w1f-postgres.ps1 absent")
     if not RESTORE_DRILL.is_file():
@@ -677,14 +928,19 @@ def test_w1f_current_head_and_lineage_constants_contract() -> None:
         _fail("W1F_CURRENT_HEAD_WRAPPER_MISMATCH")
     if CURRENT_HEAD not in restore:
         _fail("W1F_CURRENT_HEAD_RESTORE_SUPPORT_MISSING")
-    if f'RECIPIENT_STATUS_TAG_REVISION = "{CURRENT_HEAD}"' not in postcheck:
+    if f'RECIPIENT_PAYER_GUARDIAN_REVISION = "{CURRENT_HEAD}"' not in postcheck:
         _fail("W1F_CURRENT_HEAD_POSTCHECK_REVISION_MISSING")
-    if RECIPIENT_STATUS_TAG_MARKER not in postcheck:
+    if RECIPIENT_PAYER_GUARDIAN_MARKER not in postcheck:
         _fail("W1F_CURRENT_HEAD_POSTCHECK_MARKER_MISSING")
-    if RECIPIENT_STATUS_TAG_MARKER not in restore:
+    if RECIPIENT_PAYER_GUARDIAN_MARKER not in restore:
         _fail("W1F_CURRENT_HEAD_RESTORE_MARKER_MISSING")
-    if RECIPIENT_STATUS_TAG_MARKER not in wrapper:
+    if RECIPIENT_PAYER_GUARDIAN_MARKER not in wrapper:
         _fail("W1F_CURRENT_HEAD_WRAPPER_MARKER_MISSING")
+    # Historical 0015 marker/boundary remains available for prior restore manifests.
+    if RECIPIENT_STATUS_TAG_REVISION not in restore:
+        _fail("W1F_0015_RESTORE_SUPPORT_MISSING")
+    if RECIPIENT_STATUS_TAG_MARKER not in restore:
+        _fail("W1F_0015_RESTORE_MARKER_MISSING")
 
     # Lineage 0011~0014 constants remain present on the wrapper for preservation.
     for name, revision in (

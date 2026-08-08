@@ -32,6 +32,7 @@ $LeakGatePath = Join-Path $WorkspaceRoot "scripts\verify-w1a-vs1-leak-gate.ps1"
 $SpecPath = Join-Path $FrontendRoot "e2e\w1b-recipients-real-pg.spec.ts"
 $PlaywrightConfigPath = Join-Path $FrontendRoot "playwright.config.ts"
 $ExpectedRevision = "20260730_0009_w1b_recipient"
+$CurrentHead = "20260808_0016_recipient_payer_guardian"
 
 function Resolve-W1BTempParent {
     param(
@@ -754,12 +755,19 @@ function Invoke-Postcheck {
             -Arguments @("-m", "app.db.postcheck_w1a_vs1")
         Write-CommandCapture -Name ("postcheck-" + $Stage) -Result $result
         $text = Redact-Text ($result.Output -join "`n")
-        if ($result.TimedOut -or $result.ExitCode -ne 0 -or $text -notmatch "W1B_DB_POSTCHECK_OK") {
+        # Before head upgrade: historical 0009 marker. After exact head: current-head marker.
+        $requiredMarker = if ($Stage -eq "before") {
+            "W1B_DB_POSTCHECK_OK"
+        }
+        else {
+            "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK"
+        }
+        if ($result.TimedOut -or $result.ExitCode -ne 0 -or $text -notmatch $requiredMarker) {
             throw ("W1B_HARNESS_FAILURE: {0} postcheck failed" -f $Stage)
         }
         if ($Stage -eq "before") { $script:PostcheckBefore = $true }
         else { $script:PostcheckAfter = $true }
-        Write-Output "W1B_DB_POSTCHECK_OK=1"
+        Write-Output ("{0}=1" -f $requiredMarker)
         Write-Output ("W1B_POSTCHECK_{0}=1" -f $Stage.ToUpperInvariant())
     }
     finally {
@@ -1352,6 +1360,43 @@ CREATE ROLE erp_backup LOGIN PASSWORD '$BackupPassword';
     }
     Invoke-AppSessionSettingsProbe
     Invoke-Postcheck -Stage "before"
+
+    # Historical 0009 revision + pre-postcheck are sealed above. Current backend
+    # ORM/E2E require the live Alembic head (includes 0016 payer_guardian_id).
+    $headUpgrade = Invoke-Captured `
+        -FilePath $PythonExe `
+        -WorkingDirectory $BackendRoot `
+        -Environment @{ SSWCENTER_DATABASE_URL = $OwnerDatabaseUrl } `
+        -Arguments @("-m", "alembic", "-c", "alembic.ini", "upgrade", $CurrentHead)
+    Write-CommandCapture -Name "alembic-upgrade-head" -Result $headUpgrade
+    if ($headUpgrade.TimedOut -or $headUpgrade.ExitCode -ne 0) {
+        throw "W1B_HARNESS_HEAD_UPGRADE_FAILED"
+    }
+    $headRevisionResult = Invoke-ScalarPsql `
+        -Database $DatabaseName `
+        -Role "erp_owner" `
+        -Sql "SELECT version_num FROM erp.alembic_version"
+    Write-CommandCapture -Name "head-revision-check" -Result $headRevisionResult
+    if ($headRevisionResult.TimedOut -or $headRevisionResult.ExitCode -ne 0) {
+        throw "W1B_HARNESS_HEAD_UPGRADE_FAILED"
+    }
+    $headRevisionLines = @(
+        $headRevisionResult.Stdout |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    $headMatchesCurrent = $false
+    if ($headRevisionLines.Count -eq 1) {
+        $headMatchesCurrent = [string]::Compare(
+            [string]$headRevisionLines[0],
+            [string]$CurrentHead,
+            [System.StringComparison]::Ordinal
+        ) -eq 0
+    }
+    if (-not $headMatchesCurrent) {
+        throw "W1B_HARNESS_HEAD_UPGRADE_FAILED"
+    }
+    Write-Output "W1B_HEAD_UPGRADE_OK"
 
     Start-Backend
     $E2EStarted = $true

@@ -118,6 +118,9 @@ class W1DService:
             raise domain_error("UNEXPECTED_SERVER_ERROR", 500) from None
 
     def _commit(self) -> None:
+        if self.session.info.get("recipient_detail_batch_defer_commit"):
+            self.session.flush()
+            return
         try:
             self.session.commit()
         except IntegrityError as exc:

@@ -177,6 +177,12 @@ class RecipientService:
             return _domain_error("PRIMARY_GUARDIAN_PERIOD_CONFLICT", 409)
         if constraint_name == "ex_recipient_payer_snapshot_period":
             return _domain_error("CURRENT_PAYER_CONFLICT", 409)
+        # Composite same-recipient FK / missing guardian target.
+        if constraint_name in {
+            "fk_recipient_payer_guardian_same_recipient",
+            "fk_recipient_payer_guardian_same_recipient_fkey",
+        }:
+            return _domain_error("RECIPIENT_GUARDIAN_NOT_FOUND", 404)
         return _domain_error("UNEXPECTED_SERVER_ERROR", 500)
 
     def _flush(self) -> None:
@@ -190,6 +196,9 @@ class RecipientService:
             raise _domain_error("UNEXPECTED_SERVER_ERROR", 500) from None
 
     def _commit(self) -> None:
+        if self.database_session.info.get("recipient_detail_batch_defer_commit"):
+            self.database_session.flush()
+            return
         try:
             self.database_session.commit()
         except IntegrityError as exc:
@@ -299,6 +308,7 @@ class RecipientService:
             home_phone=recipient.home_phone,
             mobile_phone=recipient.mobile_phone,
             memo=recipient.memo,
+            payer_guardian_id=recipient.payer_guardian_id,
             row_version=recipient.row_version,
         )
 
@@ -387,6 +397,7 @@ class RecipientService:
             recipient_id=guardian.recipient_id,
             name=guardian.name,
             phone=guardian.phone,
+            email=guardian.email,
             address=guardian.address,
             relationship_text=guardian.relationship_text,
             row_version=guardian.row_version,
@@ -526,6 +537,7 @@ class RecipientService:
         recipient = self._require_recipient(recipient_id, for_update=True)
         self._require_version(recipient.row_version, payload.expected_row_version)
         before_version = recipient.row_version
+        before_payer_guardian_id = recipient.payer_guardian_id
         fields_set = payload.model_fields_set
         if "name" in fields_set:
             try:
@@ -551,6 +563,14 @@ class RecipientService:
                     field_name,
                     clean_optional_text(getattr(payload, field_name)),
                 )
+        # omit = unchanged; explicit null = self; positive id = same-recipient guardian.
+        if "payer_guardian_id" in fields_set:
+            if payload.payer_guardian_id is None:
+                recipient.payer_guardian_id = None
+            else:
+                # Domain-controlled check before DB: reject missing / cross-recipient guardian.
+                self._require_guardian(recipient_id, payload.payer_guardian_id)
+                recipient.payer_guardian_id = payload.payer_guardian_id
         now = _now()
         recipient.updated_by_account_id = current_account.id
         recipient.updated_at_utc = now
@@ -560,8 +580,14 @@ class RecipientService:
             action_code="RECIPIENT_UPDATE",
             entity_type="RECIPIENT",
             entity_pk=recipient.id,
-            before={"row_version": before_version},
-            after={"row_version": recipient.row_version},
+            before={
+                "row_version": before_version,
+                "payer_guardian_id": before_payer_guardian_id,
+            },
+            after={
+                "row_version": recipient.row_version,
+                "payer_guardian_id": recipient.payer_guardian_id,
+            },
             occurred_at_utc=now,
         )
         self._commit()
@@ -583,6 +609,7 @@ class RecipientService:
             recipient_id=recipient_id,
             name=name,
             phone=clean_optional_text(payload.phone),
+            email=clean_optional_text(payload.email),
             address=clean_optional_text(payload.address),
             relationship_text=clean_optional_text(payload.relationship_text),
             created_by_account_id=current_account.id,
@@ -632,7 +659,7 @@ class RecipientService:
                 guardian.name = clean_required_text(payload.name or "")
             except ValueError:
                 raise _domain_error("VALIDATION_ERROR", 422, field="name") from None
-        for field_name in ("phone", "address", "relationship_text"):
+        for field_name in ("phone", "email", "address", "relationship_text"):
             if field_name in fields_set:
                 setattr(
                     guardian,
