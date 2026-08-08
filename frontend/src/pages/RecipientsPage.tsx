@@ -14,16 +14,13 @@ import { listBenefitPeriods } from '../services/w1cApi';
 import '../styles/recipients.css';
 import { ApiError } from '../services/api';
 import {
-  createGuardian,
   createPlanNotification,
-  createRecipient,
   getRecipient,
   invalidatePlanNotification,
   isRecipientStatus,
   listGuardians,
   listPlanNotifications,
   listRecipients,
-  updateGuardian,
   updateRecipient,
 } from '../services/recipientApi';
 import type {
@@ -439,7 +436,6 @@ function recipientChangedFieldsPayload(
   baseline: Recipient,
   draft: RecipientFormState,
   expectedRowVersion: number,
-  options?: { payerGuardianId?: number | null; includePayer?: boolean },
 ): RecipientUpdateRequest {
   const payload: RecipientUpdateRequest = { expected_row_version: expectedRowVersion };
   const changed = changedRecipientFields(baseline, draft);
@@ -456,15 +452,7 @@ function recipientChangedFieldsPayload(
     else if (field === 'mobile_phone') payload.mobile_phone = next.mobile_phone;
     else if (field === 'memo') payload.memo = next.memo;
   }
-  if (options?.includePayer) {
-    // Explicit null = self; positive id = selected guardian. Always send when includePayer.
-    payload.payer_guardian_id = options.payerGuardianId ?? null;
-  }
   return payload;
-}
-
-function recipientPayloadHasFieldChanges(payload: RecipientUpdateRequest): boolean {
-  return Object.keys(payload).some((key) => key !== 'expected_row_version');
 }
 
 function recipientHasDraftChanges(baseline: Recipient, draft: RecipientFormState): boolean {
@@ -1498,61 +1486,6 @@ export const RecipientsPage = () => {
     }
   };
 
-  const handleCreateSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!createOpen) return;
-    setCreateMessage(null);
-    setCreateError(null);
-    if (!recipientForm.mobile_phone.trim()) {
-      window.alert('휴대전화를 입력해주세요.');
-      return;
-    }
-
-    setCreateSaving(true);
-    try {
-      const createdRaw = await createRecipient(recipientCreatePayload(recipientForm));
-      const createdEmbedded = createdRaw as EmbeddedRecipient;
-      const createdId = normalizeId(createdRaw.id);
-      const created =
-        createdId != null ? validateDetailRecipient(createdRaw, createdId) : null;
-      setCreateMessage('수급자를 저장했습니다.');
-      setRecipientForm(emptyRecipientForm());
-      if (created) {
-        setDetailRecipient(created);
-        setDetailForm(recipientFormFromRecipient(created));
-      } else {
-        setDetailRecipient(null);
-        setDetailForm(emptyRecipientForm());
-      }
-      const createdGuardians = createdEmbedded.guardians ?? [];
-      setGuardians(createdGuardians);
-      setGuardianForms(guardianFormsFromGuardians(createdGuardians));
-      setGuardianEditSnapshots(guardianFormsFromGuardians(createdGuardians));
-      setEditingGuardianIds([
-        createdGuardians[0] ? normalizeId(createdGuardians[0].id) : null,
-        createdGuardians[1] ? normalizeId(createdGuardians[1].id) : null,
-      ]);
-      setPayerGuardianSlot(null);
-      setPayerGuardianSlotSnapshot(null);
-      setBasicEditOpen(false);
-      updateQuery(
-        {
-          selected: createdId,
-          detail: createdId,
-        },
-        false,
-      );
-      setListReload((current) => current + 1);
-      setCreateOpen(false);
-    } catch (error: unknown) {
-      if (!isAbortError(error)) {
-        setCreateError(safeErrorMessage(error, '수급자를 저장하지 못했습니다.'));
-      }
-    } finally {
-      setCreateSaving(false);
-    }
-  };
-
   const captureRecipientStaleConflict = async (
     original: Recipient,
     draft: RecipientFormState,
@@ -2006,231 +1939,6 @@ export const RecipientsPage = () => {
     setCopayDraftStartDate(activeCopayPeriod?.start_date ?? currentDateText());
     setDetailExtrasOpen(false);
     setBasicEditOpen(true);
-  };
-
-  const handleBasicSave = async () => {
-    if (!detailRecipient || !activeId || detailLoading || basicSaving || !basicEditOpen) return;
-    if (!detailForm.mobile_phone.trim()) {
-      window.alert('휴대전화를 입력해주세요.');
-      return;
-    }
-    const baselineAtSave = detailRecipient;
-    const draftAtSave = detailForm;
-    const formsAtSave = guardianForms;
-    const payerSlotAtSave = payerGuardianSlot;
-    const idsAtSave = editingGuardianIds;
-
-    // New non-empty guardian slots require a name; empty slots are not saved.
-    for (const slot of [0, 1] as GuardianSlot[]) {
-      const form = formsAtSave[slot];
-      const existingId = idsAtSave[slot];
-      if (!existingId && guardianSlotHasContent(form) && !form.name.trim()) {
-        setGuardianError(`보호자${slot + 1} 이름을 입력해주세요.`);
-        return;
-      }
-      if (payerSlotAtSave === slot && !existingId && !form.name.trim()) {
-        setGuardianError(`납부자로 선택한 보호자${slot + 1} 이름을 입력해주세요.`);
-        return;
-      }
-    }
-
-    setDetailError(null);
-    setDetailMessage(null);
-    setGuardianError(null);
-    setGuardianMessage(null);
-    setBasicSaving(true);
-    setDetailSaving(true);
-    try {
-      // Working copies: clone after each successful guardian write so React state
-      // commits cannot be mutated by later loop iterations.
-      let nextGuardians: Guardian[] = guardians.map((g) => ({ ...g }));
-      let nextIds: [string | null, string | null] = [idsAtSave[0], idsAtSave[1]];
-      let nextForms: GuardianFormSlots = [{ ...formsAtSave[0] }, { ...formsAtSave[1] }];
-      // Snapshots advance only for slots that actually saved; a later sibling
-      // failure must leave the unsaved slot dirty so Save stays enabled.
-      let nextSnapshots: GuardianFormSlots = [
-        { ...guardianEditSnapshots[0] },
-        { ...guardianEditSnapshots[1] },
-      ];
-
-      // --- Guardian phase (do not route conflicts to recipient stale panel) ---
-      try {
-        for (const slot of [0, 1] as GuardianSlot[]) {
-          const form = formsAtSave[slot];
-          const existingId = idsAtSave[slot];
-          // Empty brand-new slots are not persisted.
-          if (!existingId && !form.name.trim()) {
-            continue;
-          }
-          if (!form.name.trim()) {
-            setGuardianError(`보호자${slot + 1} 이름을 입력해주세요.`);
-            return;
-          }
-          const existing = nextGuardians.find((g) => normalizeId(g.id) === existingId);
-          const baselineForm = existing
-            ? guardianFormFromGuardian(existing)
-            : emptyGuardianForm();
-          // Skip unchanged existing guardians (also covers retry after partial success).
-          if (existing && guardianFormsEqual(form, baselineForm)) {
-            nextForms[slot] = guardianFormFromGuardian(existing);
-            nextIds[slot] = normalizeId(existing.id);
-            continue;
-          }
-          const payload = guardianPayload(form);
-          const saved = existing
-            ? await updateGuardian(activeId, existing.id, {
-                ...payload,
-                expected_row_version: existing.row_version,
-              })
-            : await createGuardian(activeId, payload);
-          if (existing) {
-            const idx = nextGuardians.findIndex((g) => normalizeId(g.id) === existingId);
-            if (idx >= 0) nextGuardians[idx] = saved;
-            else nextGuardians.push(saved);
-          } else {
-            nextGuardians.push(saved);
-          }
-          nextIds[slot] = normalizeId(saved.id);
-          nextForms[slot] = guardianFormFromGuardian(saved);
-          nextSnapshots[slot] = guardianFormFromGuardian(saved);
-
-          // Commit server-confirmed guardian state immediately so a later failure
-          // (sibling guardian or recipient) does not lose id/row_version on retry.
-          // Only the successful slot's snapshot advances; unsaved sibling stays dirty.
-          const guardiansCommit = nextGuardians.map((g) => ({ ...g }));
-          const formsCommit: GuardianFormSlots = [{ ...nextForms[0] }, { ...nextForms[1] }];
-          const snapshotsCommit: GuardianFormSlots = [
-            { ...nextSnapshots[0] },
-            { ...nextSnapshots[1] },
-          ];
-          const idsCommit: [string | null, string | null] = [nextIds[0], nextIds[1]];
-          setGuardians(guardiansCommit);
-          setGuardianForms(formsCommit);
-          setGuardianEditSnapshots(snapshotsCommit);
-          setEditingGuardianIds(idsCommit);
-          nextGuardians = guardiansCommit.map((g) => ({ ...g }));
-          nextForms = [{ ...formsCommit[0] }, { ...formsCommit[1] }];
-          nextSnapshots = [{ ...snapshotsCommit[0] }, { ...snapshotsCommit[1] }];
-          nextIds = [idsCommit[0], idsCommit[1]];
-        }
-      } catch (error: unknown) {
-        if (!isAbortError(error)) {
-          if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
-            // Server-wins for guardians only; never open recipient stale panel.
-            try {
-              const response = await listGuardians(activeId);
-              const resolvedGuardians = response.items ?? [];
-              const reloadedIds: [string | null, string | null] = [
-                resolvedGuardians[0] ? normalizeId(resolvedGuardians[0].id) : null,
-                resolvedGuardians[1] ? normalizeId(resolvedGuardians[1].id) : null,
-              ];
-              const reloadedForms = guardianFormsFromGuardians(resolvedGuardians);
-              const nextPayerSlot = payerSlotFromRecipient(baselineAtSave, reloadedIds);
-              setGuardians(resolvedGuardians.map((g) => ({ ...g })));
-              setGuardianForms([{ ...reloadedForms[0] }, { ...reloadedForms[1] }]);
-              setGuardianEditSnapshots([{ ...reloadedForms[0] }, { ...reloadedForms[1] }]);
-              setEditingGuardianIds([reloadedIds[0], reloadedIds[1]]);
-              setPayerGuardianSlot(nextPayerSlot);
-              setPayerGuardianSlotSnapshot(nextPayerSlot);
-              setDetailStaleConflict(null);
-              setGuardianError(
-                '보호자 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.',
-              );
-            } catch (reloadError: unknown) {
-              if (!isAbortError(reloadError)) {
-                setGuardianError(
-                  safeErrorMessage(
-                    reloadError,
-                    '보호자 정보가 다른 곳에서 변경되었습니다. 최신 정보를 불러오지 못했습니다.',
-                  ),
-                );
-              }
-            }
-          } else {
-            setDetailError(safeErrorMessage(error, '수급자·보호자 정보를 저장하지 못했습니다.'));
-          }
-        }
-        return;
-      }
-
-      // --- Recipient phase ---
-      let resolvedPayerId: number | null = null;
-      let skipPayer = false;
-      if (payerSlotAtSave === 'unlisted') {
-        skipPayer = true;
-      } else if (payerSlotAtSave !== null) {
-        const idText = nextIds[payerSlotAtSave];
-        const parsed = idText ? Number.parseInt(idText, 10) : NaN;
-        if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-          setGuardianError('납부자로 선택한 보호자를 먼저 저장할 수 없습니다.');
-          return;
-        }
-        resolvedPayerId = parsed;
-      }
-
-      const baselinePayer = baselineAtSave.payer_guardian_id ?? null;
-      const payerChanged = !skipPayer && baselinePayer !== resolvedPayerId;
-      const payload = recipientChangedFieldsPayload(
-        baselineAtSave,
-        draftAtSave,
-        baselineAtSave.row_version,
-        { includePayer: payerChanged, payerGuardianId: resolvedPayerId },
-      );
-
-      try {
-        let updated = baselineAtSave;
-        if (recipientPayloadHasFieldChanges(payload)) {
-          const updatedRaw = await updateRecipient(activeId, payload);
-          const validated = validateDetailRecipient(updatedRaw, activeId);
-          if (!validated) {
-            setDetailError('저장 응답이 올바르지 않습니다. 다시 불러와 주세요.');
-            return;
-          }
-          updated = validated;
-        }
-
-        setDetailRecipient(updated);
-        setDetailForm(recipientFormFromRecipient(updated));
-        setGuardians(nextGuardians.map((g) => ({ ...g })));
-        const formsFinal: GuardianFormSlots = [{ ...nextForms[0] }, { ...nextForms[1] }];
-        setGuardianForms(formsFinal);
-        // Snapshots match server so Save disables until the next draft change.
-        setGuardianEditSnapshots([{ ...formsFinal[0] }, { ...formsFinal[1] }]);
-        setEditingGuardianIds([nextIds[0], nextIds[1]]);
-        const nextPayerSlot = payerSlotFromRecipient(updated, nextIds);
-        setPayerGuardianSlot(nextPayerSlot);
-        setPayerGuardianSlotSnapshot(nextPayerSlot);
-        setDetailStaleConflict(null);
-        // Stay in edit mode after save so row_version baseline stays editable without reopening.
-        setBasicEditOpen(true);
-        setListData((current) =>
-          current
-            ? {
-                ...current,
-                items: current.items.map((item) =>
-                  normalizeId(item.id) === activeId
-                    ? mergeRecipientIntoListItem(item, updated)
-                    : item,
-                ),
-              }
-            : current,
-        );
-        setDetailMessage('수급자·보호자 정보를 저장했습니다.');
-        setGuardianMessage(null);
-        setListReload((current) => current + 1);
-      } catch (error: unknown) {
-        if (!isAbortError(error)) {
-          if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
-            await captureRecipientStaleConflict(baselineAtSave, draftAtSave);
-          } else {
-            setDetailError(safeErrorMessage(error, '수급자·보호자 정보를 저장하지 못했습니다.'));
-          }
-        }
-      }
-    } finally {
-      setBasicSaving(false);
-      setDetailSaving(false);
-    }
   };
 
   const openDetail = (recipientId: number | string) => {
