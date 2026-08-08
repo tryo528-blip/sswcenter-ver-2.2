@@ -25,11 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _REV_0015 = "20260806_0015_recipient_status_tag"
 _REV_0016 = "20260808_0016_recipient_payer_guardian"
 _MIGRATION = (
-    REPO_ROOT
-    / "backend"
-    / "alembic"
-    / "versions"
-    / "20260808_0016_recipient_payer_guardian.py"
+    REPO_ROOT / "backend" / "alembic" / "versions" / "20260808_0016_recipient_payer_guardian.py"
 )
 
 
@@ -40,7 +36,7 @@ def test_migration_0016_source_is_linked_and_not_silently_skippable() -> None:
     assert f'down_revision: str | None = "{_REV_0015}"' in source
     assert "payer_guardian_id" in source
     assert "fk_recipient_payer_guardian_same_recipient" in source
-    assert "ON DELETE RESTRICT" in source or "ondelete=\"RESTRICT\"" in source
+    assert "ON DELETE RESTRICT" in source or 'ondelete="RESTRICT"' in source
     assert "recipient_guardian" in source
     # Downgrade only drops FK + column (no historical data wipe of other tables).
     assert "drop_constraint" in source
@@ -60,9 +56,7 @@ def test_model_has_payer_guardian_id_and_composite_fk() -> None:
     )
     src = [col.name for col in composite.columns]
     assert src == ["id", "payer_guardian_id"]
-    ref = sorted(
-        (elem.column.table.name, elem.column.name) for elem in composite.elements
-    )
+    ref = sorted((elem.column.table.name, elem.column.name) for elem in composite.elements)
     assert ("recipient_guardian", "id") in ref
     assert ("recipient_guardian", "recipient_id") in ref
 
@@ -78,19 +72,13 @@ def test_update_request_omit_null_and_positive_payer_guardian_id() -> None:
     assert "payer_guardian_id" in as_self.model_fields_set
     assert as_self.payer_guardian_id is None
 
-    as_guardian = RecipientUpdateRequest(
-        expected_row_version=1, payer_guardian_id=42
-    )
+    as_guardian = RecipientUpdateRequest(expected_row_version=1, payer_guardian_id=42)
     assert as_guardian.payer_guardian_id == 42
 
     with pytest.raises(ValidationError):
-        RecipientUpdateRequest.model_validate(
-            {"expected_row_version": 1, "payer_guardian_id": 0}
-        )
+        RecipientUpdateRequest.model_validate({"expected_row_version": 1, "payer_guardian_id": 0})
     with pytest.raises(ValidationError):
-        RecipientUpdateRequest.model_validate(
-            {"expected_row_version": 1, "payer_guardian_id": -1}
-        )
+        RecipientUpdateRequest.model_validate({"expected_row_version": 1, "payer_guardian_id": -1})
 
 
 def test_response_maps_payer_guardian_id() -> None:
@@ -170,9 +158,7 @@ def _service_with_recipient(
 
     guardians = guardians or {}
 
-    def get_guardian(
-        rid: int, gid: int, for_update: bool = False
-    ) -> SimpleNamespace | None:
+    def get_guardian(rid: int, gid: int, for_update: bool = False) -> SimpleNamespace | None:
         guardian = guardians.get(gid)
         if guardian is None:
             return None
@@ -210,11 +196,14 @@ def test_update_recipient_self_null_guardian1_guardian2_and_cross_reject() -> No
     assert recipient.row_version == 4
     assert result.row_version == 4
     session.commit.assert_called()
-    assert any(
-        getattr(item, "action_code", None) == "RECIPIENT_UPDATE"
-        or (isinstance(item, SimpleNamespace) is False and hasattr(item, "after_json"))
-        for item in audits
-    ) or audits  # audit event recorded via repository.add
+    assert (
+        any(
+            getattr(item, "action_code", None) == "RECIPIENT_UPDATE"
+            or (isinstance(item, SimpleNamespace) is False and hasattr(item, "after_json"))
+            for item in audits
+        )
+        or audits
+    )  # audit event recorded via repository.add
 
     # guardian1
     recipient = _recipient(payer_guardian_id=None, row_version=1)
@@ -240,9 +229,7 @@ def test_update_recipient_self_null_guardian1_guardian2_and_cross_reject() -> No
 
     # cross-recipient rejection (foreign guardian id not under this recipient)
     recipient = _recipient(payer_guardian_id=None, row_version=1)
-    service, session, _ = _service_with_recipient(
-        recipient, guardians={11: g1, 99: foreign}
-    )
+    service, session, _ = _service_with_recipient(recipient, guardians={11: g1, 99: foreign})
     with pytest.raises(RecipientDomainError) as exc_info:
         service.update_recipient(
             1,
@@ -271,9 +258,9 @@ def test_update_recipient_omit_payer_guardian_id_leaves_unchanged() -> None:
 
 
 def test_postcheck_0016_source_and_marker_contract() -> None:
-    postcheck = (
-        REPO_ROOT / "backend" / "app" / "db" / "postcheck_w1a_vs1.py"
-    ).read_text(encoding="utf-8")
+    postcheck = (REPO_ROOT / "backend" / "app" / "db" / "postcheck_w1a_vs1.py").read_text(
+        encoding="utf-8"
+    )
     assert f'RECIPIENT_PAYER_GUARDIAN_REVISION = "{_REV_0016}"' in postcheck
     assert "def _verify_recipient_payer_guardian_contract" in postcheck
     assert "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK" in postcheck

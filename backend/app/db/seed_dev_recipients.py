@@ -356,9 +356,7 @@ def _build_batch_request(index: int, *, today: date) -> RecipientBasicCreateBatc
 def _count_seed_recipients(database_session: Session) -> int:
     return int(
         database_session.scalar(
-            select(func.count())
-            .select_from(Recipient)
-            .where(Recipient.memo == SEED_MARKER)
+            select(func.count()).select_from(Recipient).where(Recipient.memo == SEED_MARKER)
         )
         or 0
     )
@@ -495,8 +493,7 @@ def seed_dev_recipients() -> dict[str, int | str]:
             final_count = _count_seed_recipients(database_session)
             if final_count < TARGET_COUNT:
                 raise RuntimeError(
-                    "seed ended with "
-                    f"marker_count={final_count} < TARGET_COUNT={TARGET_COUNT}"
+                    f"seed ended with marker_count={final_count} < TARGET_COUNT={TARGET_COUNT}"
                 )
 
             return {
