@@ -199,12 +199,12 @@ class W1CService:
             raise _domain_error("UNEXPECTED_SERVER_ERROR", 500) from None
 
     @staticmethod
-    def _require_version(actual: int, expected: int) -> None:
+    def _require_version(actual: int, expected: int, *, entity: str) -> None:
         if actual != expected:
             raise _domain_error(
                 "ROW_VERSION_CONFLICT",
                 409,
-                details={"current_row_version": actual},
+                details={"current_row_version": actual, "entity": entity},
             )
 
     def _require_recipient(
@@ -249,7 +249,10 @@ class W1CService:
                 raise _domain_error(
                     "ROW_VERSION_CONFLICT",
                     409,
-                    details={"current_row_version": historical.row_version},
+                    details={
+                        "current_row_version": historical.row_version,
+                        "entity": "certification_period",
+                    },
                 )
             raise _domain_error("CERTIFICATION_PERIOD_NOT_FOUND", 404)
         return period
@@ -274,7 +277,10 @@ class W1CService:
                 raise _domain_error(
                     "ROW_VERSION_CONFLICT",
                     409,
-                    details={"current_row_version": historical.row_version},
+                    details={
+                        "current_row_version": historical.row_version,
+                        "entity": "grade_period",
+                    },
                 )
             raise _domain_error("GRADE_PERIOD_NOT_FOUND", 404)
         return period
@@ -299,7 +305,10 @@ class W1CService:
                 raise _domain_error(
                     "ROW_VERSION_CONFLICT",
                     409,
-                    details={"current_row_version": historical.row_version},
+                    details={
+                        "current_row_version": historical.row_version,
+                        "entity": "benefit_period",
+                    },
                 )
             raise _domain_error("BENEFIT_PERIOD_NOT_FOUND", 404)
         return period
@@ -324,7 +333,10 @@ class W1CService:
                 raise _domain_error(
                     "ROW_VERSION_CONFLICT",
                     409,
-                    details={"current_row_version": historical.row_version},
+                    details={
+                        "current_row_version": historical.row_version,
+                        "entity": "approval_amount_period",
+                    },
                 )
             raise _domain_error("APPROVAL_AMOUNT_PERIOD_NOT_FOUND", 404)
         return period
@@ -510,7 +522,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(period.row_version, payload.expected_row_version)
+        self._require_version(
+            period.row_version,
+            payload.expected_row_version,
+            entity="certification_period",
+        )
         before = self._certification_response(period).model_dump(mode="json")
         period.invalidated_at_utc = _now()
         period.updated_at_utc = period.invalidated_at_utc
@@ -547,7 +563,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(original.row_version, payload.expected_row_version)
+        self._require_version(
+            original.row_version,
+            payload.expected_row_version,
+            entity="certification_period",
+        )
         before = self._certification_response(original).model_dump(mode="json")
         changed_at = _now()
         original.invalidated_at_utc = changed_at
@@ -661,7 +681,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(period.row_version, payload.expected_row_version)
+        self._require_version(
+            period.row_version,
+            payload.expected_row_version,
+            entity="grade_period",
+        )
         before = self._grade_response(period).model_dump(mode="json")
         period.invalidated_at_utc = _now()
         period.updated_at_utc = period.invalidated_at_utc
@@ -709,7 +733,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(original.row_version, payload.expected_row_version)
+        self._require_version(
+            original.row_version,
+            payload.expected_row_version,
+            entity="grade_period",
+        )
         before = self._grade_response(original).model_dump(mode="json")
         changed_at = _now()
         original.invalidated_at_utc = changed_at
@@ -825,7 +853,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(period.row_version, payload.expected_row_version)
+        self._require_version(
+            period.row_version,
+            payload.expected_row_version,
+            entity="benefit_period",
+        )
         before = self._benefit_response(period).model_dump(mode="json")
         period.invalidated_at_utc = _now()
         period.updated_at_utc = period.invalidated_at_utc
@@ -862,7 +894,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(original.row_version, payload.expected_row_version)
+        self._require_version(
+            original.row_version,
+            payload.expected_row_version,
+            entity="benefit_period",
+        )
         before = self._benefit_response(original).model_dump(mode="json")
         changed_at = _now()
         original.invalidated_at_utc = changed_at
@@ -968,7 +1004,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(period.row_version, payload.expected_row_version)
+        self._require_version(
+            period.row_version,
+            payload.expected_row_version,
+            entity="approval_amount_period",
+        )
         before = self._approval_response(period).model_dump(mode="json")
         period.invalidated_at_utc = _now()
         period.updated_at_utc = period.invalidated_at_utc
@@ -1005,7 +1045,11 @@ class W1CService:
             for_update=True,
             active_only=True,
         )
-        self._require_version(original.row_version, payload.expected_row_version)
+        self._require_version(
+            original.row_version,
+            payload.expected_row_version,
+            entity="approval_amount_period",
+        )
         before = self._approval_response(original).model_dump(mode="json")
         changed_at = _now()
         original.invalidated_at_utc = changed_at

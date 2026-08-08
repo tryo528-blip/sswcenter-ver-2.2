@@ -3558,6 +3558,363 @@ describe('recipient payer guardian UI contract', () => {
     expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('서버최신보호자');
   });
 
+  test('entity=guardian conflict routes to guardian reload even when only recipient draft changed', async () => {
+    // Local draft inference would pick recipient (recipient draft dirty, guardian clean),
+    // but server entity must win and reload guardians instead of the recipient stale panel.
+    let guardianListGets = 0;
+    let detailGets = 0;
+    let batchCount = 0;
+    let serverGuardianName = '엔티티가드원본';
+    let serverGuardianRowVersion = 1;
+    let serverRecipientName = '엔티티가드수신';
+    let serverRecipientRowVersion = 1;
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(
+          listResponse([
+            listItem({
+              id: 520,
+              name: serverRecipientName,
+              row_version: serverRecipientRowVersion,
+            }),
+          ]),
+        );
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        guardianListGets += 1;
+        return jsonResponse({
+          items: [
+            {
+              id: 70,
+              recipient_id: 520,
+              name: serverGuardianName,
+              phone: null,
+              address: null,
+              relationship_text: '자녀',
+              row_version: serverGuardianRowVersion,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/520' && method === 'GET') {
+        detailGets += 1;
+        return jsonResponse({
+          id: 520,
+          name: serverRecipientName,
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: serverRecipientRowVersion,
+        });
+      }
+      if (isBasicUpdateBatch(url, method)) {
+        batchCount += 1;
+        return jsonResponse(
+          {
+            error: {
+              code: 'ROW_VERSION_CONFLICT',
+              message: '다른 사용자가 먼저 변경했습니다. 최신 정보를 다시 불러오세요.',
+            },
+            field_errors: [],
+            details: { current_row_version: serverGuardianRowVersion, entity: 'guardian' },
+            request_id: 'entity-guardian-conflict',
+          },
+          409,
+        );
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /엔티티가드수신/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('엔티티가드수신'),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('엔티티가드원본'),
+    );
+    const detailGetsBefore = detailGets;
+    const guardianGetsBefore = guardianListGets;
+
+    // Concurrent guardian change on server; user only edits recipient (local inference opposite).
+    serverGuardianName = '서버최신가드엔티티';
+    serverGuardianRowVersion = 8;
+
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('recipient-detail-name-input'), {
+      target: { value: '수신자만수정' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+
+    await waitFor(() => expect(batchCount).toBe(1));
+    await waitFor(() => expect(guardianListGets).toBe(guardianGetsBefore + 1));
+    await waitFor(() =>
+      expect(
+        screen.getAllByText('보호자 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.').length,
+      ).toBeGreaterThan(0),
+    );
+    // Must not take recipient stale path despite recipient-only draft.
+    expect(detailGets).toBe(detailGetsBefore);
+    expect(screen.queryByTestId('recipient-stale-conflict-message')).toBeNull();
+    expect(screen.queryByTestId('recipient-stale-reapply')).toBeNull();
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('서버최신가드엔티티');
+    // Recipient draft is left as-is (guardian path does not overwrite recipient form).
+    expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('수신자만수정');
+  });
+
+  test('entity=recipient conflict routes to recipient stale panel even when only guardian draft changed', async () => {
+    // Local draft inference would pick guardian (guardian draft dirty, recipient clean),
+    // but server entity must win and open the recipient stale panel.
+    let guardianListGets = 0;
+    let detailGets = 0;
+    let batchCount = 0;
+    let serverGuardianName = '엔티티수신가드';
+    let serverRecipientName = '엔티티수신원본';
+    let serverRecipientRowVersion = 1;
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(
+          listResponse([
+            listItem({
+              id: 521,
+              name: serverRecipientName,
+              row_version: serverRecipientRowVersion,
+            }),
+          ]),
+        );
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        guardianListGets += 1;
+        return jsonResponse({
+          items: [
+            {
+              id: 71,
+              recipient_id: 521,
+              name: serverGuardianName,
+              phone: null,
+              address: null,
+              relationship_text: '자녀',
+              row_version: 1,
+            },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods')) return jsonResponse({ items: [] });
+      if (url.pathname === '/api/v1/recipients/521' && method === 'GET') {
+        detailGets += 1;
+        return jsonResponse({
+          id: 521,
+          name: serverRecipientName,
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: serverRecipientRowVersion,
+        });
+      }
+      if (isBasicUpdateBatch(url, method)) {
+        batchCount += 1;
+        return jsonResponse(
+          {
+            error: {
+              code: 'ROW_VERSION_CONFLICT',
+              message: '다른 사용자가 먼저 변경했습니다. 최신 정보를 다시 불러오세요.',
+            },
+            field_errors: [],
+            details: { current_row_version: serverRecipientRowVersion, entity: 'recipient' },
+            request_id: 'entity-recipient-conflict',
+          },
+          409,
+        );
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /엔티티수신원본/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('엔티티수신원본'),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('엔티티수신가드'),
+    );
+    const detailGetsBefore = detailGets;
+    const guardianGetsBefore = guardianListGets;
+
+    // Concurrent recipient change on server; user only edits guardian (local inference opposite).
+    serverRecipientName = '서버최신수신엔티티';
+    serverRecipientRowVersion = 7;
+
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('guardian-1-name-input'), {
+      target: { value: '가드만수정' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+
+    await waitFor(() => expect(batchCount).toBe(1));
+    await waitFor(() => expect(detailGets).toBe(detailGetsBefore + 1));
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-stale-latest-value')).toHaveTextContent(
+        '서버최신수신엔티티',
+      ),
+    );
+    // Must not take guardian reload path despite guardian-only draft.
+    expect(guardianListGets).toBe(guardianGetsBefore);
+    expect(
+      screen.queryByText('보호자 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.'),
+    ).toBeNull();
+    // Recipient form shows server latest; guardian draft left as user typed (stale path is recipient-only).
+    expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('서버최신수신엔티티');
+    expect(screen.getByTestId('guardian-1-name-input')).toHaveValue('가드만수정');
+  });
+
+  test('entity=benefit_period conflict reloads copay periods not recipient/guardian paths', async () => {
+    let guardianListGets = 0;
+    let detailGets = 0;
+    let benefitListGets = 0;
+    let batchCount = 0;
+    let serverBenefitCode = 'GENERAL';
+    let serverBenefitRowVersion = 1;
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
+      const url = new URL(rawUrl, 'http://localhost');
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname === '/api/v1/recipients' && method === 'GET') {
+        return jsonResponse(
+          listResponse([
+            listItem({
+              id: 522,
+              name: '본인부담충돌',
+              benefit_code: serverBenefitCode,
+              copayment_rate: 15,
+            }),
+          ]),
+        );
+      }
+      if (url.pathname.endsWith('/guardians') && method === 'GET') {
+        guardianListGets += 1;
+        return jsonResponse({ items: [] });
+      }
+      if (url.pathname.endsWith('/plan-notifications')) return jsonResponse({ items: [] });
+      if (url.pathname.endsWith('/benefit-periods') && method === 'GET') {
+        benefitListGets += 1;
+        return jsonResponse({
+          items: [
+            {
+              id: 90,
+              recipient_id: 522,
+              benefit_code: serverBenefitCode,
+              start_date: '2020-01-01',
+              end_date: null,
+              invalidated_at_utc: null,
+              row_version: serverBenefitRowVersion,
+            },
+          ],
+        });
+      }
+      if (url.pathname === '/api/v1/recipients/522' && method === 'GET') {
+        detailGets += 1;
+        return jsonResponse({
+          id: 522,
+          name: '본인부담충돌',
+          birth_date: '1950-03-15',
+          sex_code: 'FEMALE',
+          recipient_status: 'ACTIVE',
+          recipient_no: null,
+          postal_code: null,
+          address: null,
+          home_phone: null,
+          mobile_phone: '010-1111-2222',
+          memo: null,
+          payer_guardian_id: null,
+          row_version: 1,
+        });
+      }
+      if (isBasicUpdateBatch(url, method)) {
+        batchCount += 1;
+        return jsonResponse(
+          {
+            error: {
+              code: 'ROW_VERSION_CONFLICT',
+              message: '다른 사용자가 먼저 변경했습니다. 최신 정보를 다시 불러오세요.',
+            },
+            field_errors: [],
+            details: { current_row_version: serverBenefitRowVersion, entity: 'benefit_period' },
+            request_id: 'entity-benefit-conflict',
+          },
+          409,
+        );
+      }
+      return jsonResponse({ detail: { code: 'not_found' } }, 404);
+    }) as typeof globalThis.fetch;
+
+    render(<RecipientsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /본인부담충돌/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId('recipient-detail-name-input')).toHaveValue('본인부담충돌'),
+    );
+    await waitFor(() => expect(screen.getByTestId('recipient-detail-copay')).toHaveValue('GENERAL'));
+    const detailGetsBefore = detailGets;
+    const guardianGetsBefore = guardianListGets;
+    const benefitGetsBefore = benefitListGets;
+
+    // Concurrent benefit change on server; user only changes copay draft.
+    serverBenefitCode = 'BASIC_LIVELIHOOD';
+    serverBenefitRowVersion = 4;
+
+    enterBasicEdit();
+    fireEvent.change(screen.getByTestId('recipient-detail-copay'), {
+      target: { value: 'REDUCTION_6' },
+    });
+    fireEvent.click(screen.getByTestId('recipient-basic-save'));
+
+    await waitFor(() => expect(batchCount).toBe(1));
+    await waitFor(() => expect(benefitListGets).toBe(benefitGetsBefore + 1));
+    await waitFor(() =>
+      expect(
+        screen.getByText('본인부담금 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.'),
+      ).toBeInTheDocument(),
+    );
+    // Must not open recipient stale panel or reload guardians.
+    expect(detailGets).toBe(detailGetsBefore);
+    expect(guardianListGets).toBe(guardianGetsBefore);
+    expect(screen.queryByTestId('recipient-stale-conflict-message')).toBeNull();
+    expect(screen.queryByTestId('recipient-stale-reapply')).toBeNull();
+    expect(
+      screen.queryByText('보호자 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.'),
+    ).toBeNull();
+    // Copay control reflects latest server benefit period, not the rejected draft.
+    expect(screen.getByTestId('recipient-detail-copay')).toHaveValue('BASIC_LIVELIHOOD');
+  });
+
   test('atomic batch failure with two guardians keeps both drafts dirty; retry resends both', async () => {
     // Atomic semantics: no partial guardian save. Failure keeps both drafts; retry sends both.
     const batchBodies: Array<Record<string, unknown>> = [];

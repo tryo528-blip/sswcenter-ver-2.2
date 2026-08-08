@@ -774,6 +774,8 @@ export const RecipientsPage = () => {
   /** In-flight append guard (sync) so the same next page is not requested twice. */
   const listLoadingMoreRef = useRef(false);
   const listLoadMoreAbortRef = useRef<AbortController | null>(null);
+  /** Tracks active detail id so late benefit-period responses do not clobber another recipient. */
+  const activeIdRef = useRef<string | null>(null);
   const [recipientForm, setRecipientForm] = useState<RecipientFormState>(emptyRecipientForm);
   const [createOpen, setCreateOpen] = useState(false);
   const [detailExtrasOpen, setDetailExtrasOpen] = useState(false);
@@ -833,6 +835,7 @@ export const RecipientsPage = () => {
   const selectedId = query.get('selected');
   const detailId = query.get('detail');
   const activeId = detailId ?? selectedId;
+  activeIdRef.current = activeId;
 
   const persistCopayBenefit = useCallback(
     async (recipientId: string, draft: PendingCopaySave) => {
@@ -1936,8 +1939,12 @@ export const RecipientsPage = () => {
       // recipient/guardians/payer. A full workspace reload would clear detailMessage and
       // wipe the just-applied state (and leave empty guardians if the follow-up GET fails).
       // Benefit periods are not returned by basic-batch; refresh that baseline only.
-      void listBenefitPeriods(activeId)
+      // Guard against race: if user navigates to another recipient before this lands,
+      // do not overwrite that recipient's copay baseline (same pattern as the activeId effect).
+      const benefitRefreshId = activeId;
+      void listBenefitPeriods(benefitRefreshId)
         .then((items) => {
+          if (activeIdRef.current !== benefitRefreshId) return;
           setActiveCopayPeriod(effectiveCopayPeriod(items, currentDateText()));
         })
         .catch(() => {
@@ -1949,8 +1956,8 @@ export const RecipientsPage = () => {
       }
       if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
         // Prefer server-provided details.entity so basic-batch can distinguish
-        // recipient vs guardian conflicts. Fall back to draft inference when
-        // entity is absent (older servers) or an unexpected value.
+        // recipient vs guardian vs benefit_period conflicts. Fall back to draft
+        // inference when entity is absent (older servers) or an unexpected value.
         const conflictEntity =
           error instanceof ApiError && typeof error.details?.entity === 'string'
             ? error.details.entity
@@ -1981,10 +1988,35 @@ export const RecipientsPage = () => {
           }
         };
 
+        const reloadBenefitPeriodAfterConflict = async () => {
+          const conflictId = activeId;
+          try {
+            const items = await listBenefitPeriods(conflictId);
+            if (activeIdRef.current !== conflictId) return;
+            const latest = effectiveCopayPeriod(items, currentDateText());
+            setActiveCopayPeriod(latest);
+            setCopayDraftCode(normalizeCopayBenefitCode(latest?.benefit_code));
+            setCopayDraftStartDate(latest?.start_date ?? currentDateText());
+            setDetailError(
+              '본인부담금 정보가 다른 곳에서 변경되어 최신 정보를 불러왔습니다.',
+            );
+          } catch (reloadError: unknown) {
+            if (activeIdRef.current !== conflictId) return;
+            setDetailError(
+              safeErrorMessage(
+                reloadError,
+                '본인부담금 충돌 후 최신 정보를 불러오지 못했습니다. 입력은 유지됩니다.',
+              ),
+            );
+          }
+        };
+
         if (entity === 'recipient') {
           await captureRecipientStaleConflict(baselineRecipient, draftAtSave);
         } else if (entity === 'guardian') {
           await reloadGuardiansAfterConflict();
+        } else if (entity === 'benefit_period') {
+          await reloadBenefitPeriodAfterConflict();
         } else {
           const hadRecipientChanges = recipientHasDraftChanges(
             baselineRecipient,
