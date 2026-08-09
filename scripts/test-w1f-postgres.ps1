@@ -24,7 +24,7 @@ $W1dHead = "20260730_0011_w1d_recipient_contract"
 $W1eHead = "20260801_0012_w1e_care_assignment"
 $ContinuingEducationHead = "20260802_0013_staff_continuing_education"
 $RecipientPlanNotificationHead = "20260803_0014_recipient_plan_notification"
-$CurrentHead = "20260808_0016_recipient_payer_guardian"
+$CurrentHead = "20260808_0017_recipient_guardian_email"
 
 function Write-W1fHarnessFailure {
     param([string]$Marker, [string]$Detail = "")
@@ -1119,7 +1119,7 @@ try {
     ).FullName
 
     # Restore into a fresh review database and data root; restore-drill.ps1
-    # enforces the 0016 payer-guardian postcheck marker fail-closed.
+    # enforces the 0017 guardian-email postcheck marker fail-closed.
     $RestoreRun = Invoke-W1fTimedCommand `
         -FilePath $PowerShellExe `
         -TimeoutSec 300 `
@@ -1142,8 +1142,8 @@ try {
             "exit={0}" -f $RestoreRun.ExitCode
         )
     }
-    if (([string]$RestoreRun.Stdout) -notmatch "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK") {
-        Write-W1fProductFailure "W1F_0016_POSTCHECK_MARKER_MISSING"
+    if (([string]$RestoreRun.Stdout) -notmatch "RECIPIENT_GUARDIAN_EMAIL_DB_POSTCHECK_OK") {
+        Write-W1fProductFailure "W1F_0017_POSTCHECK_MARKER_MISSING"
     }
     Write-Output "W1F_STAGE_RESTORE=ok"
 

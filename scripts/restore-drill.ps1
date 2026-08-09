@@ -65,7 +65,8 @@ $SupportedRevisions = @(
     "20260802_0013_staff_continuing_education",
     "20260803_0014_recipient_plan_notification",
     "20260806_0015_recipient_status_tag",
-    "20260808_0016_recipient_payer_guardian"
+    "20260808_0016_recipient_payer_guardian",
+    "20260808_0017_recipient_guardian_email"
 )
 if ($SupportedRevisions -notcontains $ManifestRevision) {
     throw "Unsupported backup Alembic revision: $ManifestRevision"
@@ -200,7 +201,8 @@ try {
         "20260802_0013_staff_continuing_education",
         "20260803_0014_recipient_plan_notification",
         "20260806_0015_recipient_status_tag",
-        "20260808_0016_recipient_payer_guardian"
+        "20260808_0016_recipient_payer_guardian",
+        "20260808_0017_recipient_guardian_email"
     )) {
         $PostcheckOutput = @(
             & (Join-Path $PSScriptRoot "verify-w1a-vs1-db.ps1") -DatabaseUrl $ReviewUrl
@@ -287,6 +289,12 @@ try {
             $PostcheckOutput -notcontains "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK"
         ) {
             throw "Restored recipient-payer-guardian database postcheck marker is missing"
+        }
+        if (
+            $ManifestRevision -eq "20260808_0017_recipient_guardian_email" -and
+            $PostcheckOutput -notcontains "RECIPIENT_GUARDIAN_EMAIL_DB_POSTCHECK_OK"
+        ) {
+            throw "Restored recipient-guardian-email database postcheck marker is missing"
         }
     }
 

@@ -32,7 +32,7 @@ $LeakGatePath = Join-Path $WorkspaceRoot "scripts\verify-w1a-vs1-leak-gate.ps1"
 $SpecPath = Join-Path $FrontendRoot "e2e\w1b-recipients-real-pg.spec.ts"
 $PlaywrightConfigPath = Join-Path $FrontendRoot "playwright.config.ts"
 $ExpectedRevision = "20260730_0009_w1b_recipient"
-$CurrentHead = "20260808_0016_recipient_payer_guardian"
+$CurrentHead = "20260808_0017_recipient_guardian_email"
 
 function Resolve-W1BTempParent {
     param(
@@ -760,7 +760,7 @@ function Invoke-Postcheck {
             "W1B_DB_POSTCHECK_OK"
         }
         else {
-            "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK"
+            "RECIPIENT_GUARDIAN_EMAIL_DB_POSTCHECK_OK"
         }
         if ($result.TimedOut -or $result.ExitCode -ne 0 -or $text -notmatch $requiredMarker) {
             throw ("W1B_HARNESS_FAILURE: {0} postcheck failed" -f $Stage)

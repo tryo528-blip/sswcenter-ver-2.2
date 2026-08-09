@@ -25,6 +25,7 @@ from app.domains.recipient.service import RecipientService
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _REV_0015 = "20260806_0015_recipient_status_tag"
 _REV_0016 = "20260808_0016_recipient_payer_guardian"
+_REV_0017 = "20260808_0017_recipient_guardian_email"
 _MIGRATION = (
     REPO_ROOT / "backend" / "alembic" / "versions" / "20260808_0016_recipient_payer_guardian.py"
 )
@@ -273,7 +274,11 @@ def test_postcheck_0016_source_and_marker_contract() -> None:
     assert "RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK" in postcheck
 
 
-def test_wrappers_and_restore_drill_reference_0016_head() -> None:
+def test_wrappers_and_restore_drill_reference_0016_or_descendant_head() -> None:
+    # restore-drill.ps1 keeps the exact 0016 revision in its historical allowlist.
+    # test-w1b/w1d/w1f wrappers advance $CurrentHead to descendant heads over time
+    # (currently 0017); either the exact 0016 marker or its 0017 descendant proves
+    # the payer_guardian lineage remains reachable.
     for relative in (
         "scripts/test-w1b-postgres.ps1",
         "scripts/test-w1d-postgres.ps1",
@@ -281,4 +286,6 @@ def test_wrappers_and_restore_drill_reference_0016_head() -> None:
         "scripts/restore-drill.ps1",
     ):
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
-        assert _REV_0016 in source, f"{relative} must reference 0016"
+        assert _REV_0016 in source or _REV_0017 in source, (
+            f"{relative} must reference 0016 or its 0017 descendant head"
+        )

@@ -1,10 +1,11 @@
 """W1F HIGH integration/recovery RED-first contract.
 
 Sealed nodes bind the W1F backup/restore recovery boundary at the current
-Alembic head ``20260808_0016_recipient_payer_guardian``. Probes for W1D/W1E/0013/
-0014/0015/0016 are dynamic; postcheck/wrapper/W1C checks are static source evidence.
+Alembic head ``20260808_0017_recipient_guardian_email``. Probes for W1D/W1E/0013/
+0014/0015/0016/0017 are dynamic; postcheck/wrapper/W1C checks are static source
+evidence.
 
-Preserve W1D downgrade and existing 0011~0015 restore support/markers. Current-
+Preserve W1D downgrade and existing 0011~0016 restore support/markers. Current-
 head synthetic backup/restore must seed and full-row-hash 0013 continuing
 education and 0014 plan notification, and include recipient 0015 status plus
 0016 payer_guardian_id via to_jsonb(recipient) full-row canonical evidence.
@@ -45,7 +46,8 @@ CONTINUING_EDUCATION_REVISION = "20260802_0013_staff_continuing_education"
 RECIPIENT_PLAN_NOTIFICATION_REVISION = "20260803_0014_recipient_plan_notification"
 RECIPIENT_STATUS_TAG_REVISION = "20260806_0015_recipient_status_tag"
 RECIPIENT_PAYER_GUARDIAN_REVISION = "20260808_0016_recipient_payer_guardian"
-CURRENT_HEAD = RECIPIENT_PAYER_GUARDIAN_REVISION
+RECIPIENT_GUARDIAN_EMAIL_REVISION = "20260808_0017_recipient_guardian_email"
+CURRENT_HEAD = RECIPIENT_GUARDIAN_EMAIL_REVISION
 
 UNSUPPORTED_REVISION_MARKER = "Unsupported backup Alembic revision"
 ARTIFACT_STAGE_MARKER = "Backup dump file is missing"
@@ -56,6 +58,7 @@ CONTINUING_EDUCATION_MARKER = "STAFF_CONTINUING_EDUCATION_DB_POSTCHECK_OK"
 RECIPIENT_PLAN_NOTIFICATION_MARKER = "RECIPIENT_PLAN_NOTIFICATION_DB_POSTCHECK_OK"
 RECIPIENT_STATUS_TAG_MARKER = "RECIPIENT_STATUS_TAG_DB_POSTCHECK_OK"
 RECIPIENT_PAYER_GUARDIAN_MARKER = "RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK"
+RECIPIENT_GUARDIAN_EMAIL_MARKER = "RECIPIENT_GUARDIAN_EMAIL_DB_POSTCHECK_OK"
 
 # Exact historical E2E fixture value, constructed only from fragments so this
 # contract file itself never embeds a detector-visible contiguous RRN candidate.
@@ -284,7 +287,7 @@ def test_w1f_restore_drill_accepts_recipient_status_tag_manifest_revision() -> N
 
 
 def test_w1f_restore_drill_accepts_recipient_payer_guardian_manifest_revision() -> None:
-    """Node 2d: restore-drill must accept the 0016 current-head revision before artifacts."""
+    """Node 2d: restore-drill must still accept the historical 0016 revision before artifacts."""
     returncode, output = _run_restore_drill_manifest_probe(RECIPIENT_PAYER_GUARDIAN_REVISION)
     if returncode == 0:
         _fail("W1F_RESTORE_0016_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
@@ -301,8 +304,26 @@ def test_w1f_restore_drill_accepts_recipient_payer_guardian_manifest_revision() 
         )
 
 
+def test_w1f_restore_drill_accepts_recipient_guardian_email_manifest_revision() -> None:
+    """Node 2e: restore-drill must accept the 0017 current-head revision before artifacts."""
+    returncode, output = _run_restore_drill_manifest_probe(RECIPIENT_GUARDIAN_EMAIL_REVISION)
+    if returncode == 0:
+        _fail("W1F_RESTORE_0017_PROBE_UNEXPECTED_SUCCESS: probe must fail on missing dump")
+    if UNSUPPORTED_REVISION_MARKER in output:
+        _fail(
+            "W1F_RESTORE_0017_REVISION_REJECTED: restore-drill rejects "
+            + RECIPIENT_GUARDIAN_EMAIL_REVISION
+            + " before artifact validation"
+        )
+    if ARTIFACT_STAGE_MARKER not in output:
+        _fail(
+            "W1F_RESTORE_0017_ARTIFACT_STAGE_NOT_REACHED: restore-drill did not reach "
+            "artifact validation for " + RECIPIENT_GUARDIAN_EMAIL_REVISION
+        )
+
+
 def test_w1f_postcheck_declares_w1d_w1e_revision_contract() -> None:
-    """Node 3: postcheck must supply exact W1D/W1E/0013/0014/0015/0016 verifiers and markers."""
+    """Node 3: postcheck must supply exact W1D/W1E/0013/0014/0015/0016/0017 verifiers/markers."""
     if not POSTCHECK.is_file():
         _fail("W1F_POSTCHECK_MODULE_MISSING: backend/app/db/postcheck_w1a_vs1.py absent")
     source = POSTCHECK.read_text(encoding="utf-8")
@@ -341,14 +362,18 @@ def test_w1f_postcheck_declares_w1d_w1e_revision_contract() -> None:
         "W1F_POSTCHECK_0016_MARKER_MISSING": RECIPIENT_PAYER_GUARDIAN_MARKER,
         "W1F_POSTCHECK_0016_VERIFIER_MISSING": "def _verify_recipient_payer_guardian_contract",
         "W1F_POSTCHECK_0016_COLUMN_MISSING": "payer_guardian_id",
+        "W1F_POSTCHECK_0017_REVISION_MISSING": f'"{RECIPIENT_GUARDIAN_EMAIL_REVISION}"',
+        "W1F_POSTCHECK_0017_MARKER_MISSING": RECIPIENT_GUARDIAN_EMAIL_MARKER,
+        "W1F_POSTCHECK_0017_VERIFIER_MISSING": "def _verify_recipient_guardian_email_contract",
+        "W1F_POSTCHECK_0017_COLUMN_MISSING": "recipient_guardian.email",
     }
     for marker, token in required_tokens.items():
         if token not in source:
             _fail(f"{marker}: missing {token}")
 
 
-def test_w1f_restore_drill_fail_closed_markers_for_0011_through_0016() -> None:
-    """Preserve exact-revision fail-closed postcheck markers for 0011~0016."""
+def test_w1f_restore_drill_fail_closed_markers_for_0011_through_0017() -> None:
+    """Preserve exact-revision fail-closed postcheck markers for 0011~0017."""
     if not RESTORE_DRILL.is_file():
         _fail("W1F_HARNESS_RESTORE_DRILL_MISSING: scripts/restore-drill.ps1 absent")
     source = RESTORE_DRILL.read_text(encoding="utf-8")
@@ -375,6 +400,11 @@ def test_w1f_restore_drill_fail_closed_markers_for_0011_through_0016() -> None:
             RECIPIENT_PAYER_GUARDIAN_MARKER,
             "W1F_RESTORE_0016_MARKER_FAIL_CLOSED_MISSING",
         ),
+        (
+            RECIPIENT_GUARDIAN_EMAIL_REVISION,
+            RECIPIENT_GUARDIAN_EMAIL_MARKER,
+            "W1F_RESTORE_0017_MARKER_FAIL_CLOSED_MISSING",
+        ),
     )
     for revision, marker, fail_marker in required:
         if revision not in source:
@@ -392,6 +422,25 @@ def test_w1f_restore_drill_fail_closed_markers_for_0011_through_0016() -> None:
                 f"{marker} for {revision}"
             )
 
+    # A revision's fail-closed marker check is dead code unless the revision is
+    # also a member of the ``-in @( ... )`` allowlist that gates postcheck
+    # execution. Verify each revision above is inside that specific array, not
+    # merely present somewhere else in the file (e.g. only in $SupportedRevisions).
+    membership_match = re.search(
+        r"elseif\s*\(\s*\$ManifestRevision\s+-in\s+@\((?P<list>.*?)\)\s*\)\s*\{",
+        source,
+        flags=re.DOTALL,
+    )
+    if membership_match is None:
+        _fail("W1F_RESTORE_POSTCHECK_MEMBERSHIP_BLOCK_MISSING")
+    membership_list = membership_match.group("list")
+    for revision, _marker, fail_marker in required:
+        if revision not in membership_list:
+            _fail(
+                f"{fail_marker}: {revision} is not a member of the -in @(...) "
+                "allowlist that triggers postcheck execution"
+            )
+
 
 def test_w1f_postgres_gate_contract_is_sealed() -> None:
     """Node 4: the exact-SHA synthetic backup/restore live gate must be sealed."""
@@ -404,7 +453,7 @@ def test_w1f_postgres_gate_contract_is_sealed() -> None:
         "W1F_WRAPPER_BACKUP_STEP_MISSING": "backup-postgres.ps1",
         "W1F_WRAPPER_RESTORE_STEP_MISSING": "restore-drill.ps1",
         "W1F_WRAPPER_W1D_MARKER_MISSING": W1D_MARKER,
-        "W1F_WRAPPER_0016_MARKER_MISSING": RECIPIENT_PAYER_GUARDIAN_MARKER,
+        "W1F_WRAPPER_0017_MARKER_MISSING": RECIPIENT_GUARDIAN_EMAIL_MARKER,
         "W1F_WRAPPER_CURRENT_HEAD_MISSING": f'$CurrentHead = "{CURRENT_HEAD}"',
         "W1F_WRAPPER_W1D_HEAD_MISSING": f'$W1dHead = "{W1D_REVISION}"',
         "W1F_WRAPPER_DOWNGRADE_STEP_MISSING": "W1F_STAGE_DOWNGRADE",
@@ -588,7 +637,7 @@ def test_w1f_w1c_wrapper_seals_0010_lifecycle_then_upgrades_to_head() -> None:
         "W1F_W1C_WRAPPER_HEAD_UPGRADE_FAIL_CLOSED_MISSING": "W1C_HARNESS_HEAD_UPGRADE_FAILED",
         "W1F_W1C_WRAPPER_HEAD_UPGRADE_MARKER_MISSING": "W1C_HEAD_UPGRADE_OK",
         "W1F_W1C_WRAPPER_PYTEST_MISSING": "tests/test_w1c_postgres.py",
-        "W1F_W1C_WRAPPER_HEAD_POSTCHECK_MARKER_MISSING": RECIPIENT_PAYER_GUARDIAN_MARKER,
+        "W1F_W1C_WRAPPER_HEAD_POSTCHECK_MARKER_MISSING": RECIPIENT_GUARDIAN_EMAIL_MARKER,
         "W1F_W1C_WRAPPER_GREEN_MISSING": "W1C_POSTGRES_GREEN",
     }
     for marker, token in required_tokens.items():
@@ -671,7 +720,7 @@ def test_w1f_w1b_wrapper_seals_0009_then_upgrades_to_current_head() -> None:
         "W1F_W1B_WRAPPER_POST_POSTCHECK_MISSING": 'Invoke-Postcheck -Stage "after"',
         "W1F_W1B_WRAPPER_BEFORE_POSTCHECK_MARKER_MISSING": "W1B_DB_POSTCHECK_OK",
         "W1F_W1B_WRAPPER_AFTER_POSTCHECK_CURRENT_HEAD_MARKER_MISSING": (
-            RECIPIENT_PAYER_GUARDIAN_MARKER
+            RECIPIENT_GUARDIAN_EMAIL_MARKER
         ),
         "W1F_W1B_WRAPPER_POSTCHECK_STAGE_EVIDENCE_MISSING": "W1B_POSTCHECK_{0}=1",
     }
@@ -746,7 +795,7 @@ def test_w1f_w1b_wrapper_seals_0009_then_upgrades_to_current_head() -> None:
     fn_body = source[fn_start:fn_end]
     before_branch_at = fn_body.find('Stage -eq "before"')
     w1b_marker_at = fn_body.find("W1B_DB_POSTCHECK_OK")
-    head_marker_at = fn_body.find(RECIPIENT_PAYER_GUARDIAN_MARKER)
+    head_marker_at = fn_body.find(RECIPIENT_GUARDIAN_EMAIL_MARKER)
     stage_evidence_at = fn_body.find("W1B_POSTCHECK_{0}=1")
     if min(before_branch_at, w1b_marker_at, head_marker_at, stage_evidence_at) < 0:
         _fail("W1F_W1B_WRAPPER_POSTCHECK_STAGE_MARKERS_INCOMPLETE")
@@ -912,7 +961,7 @@ def test_w1f_plan_notification_e2e_hides_detector_visible_resident_number() -> N
 
 
 def test_w1f_current_head_and_lineage_constants_contract() -> None:
-    """Current-head/marker contract: wrapper + restore/postcheck agree on 0016 head."""
+    """Current-head/marker contract: wrapper + restore/postcheck agree on 0017 head."""
     if not W1F_WRAPPER.is_file():
         _fail("W1F_WRAPPER_MISSING: scripts/test-w1f-postgres.ps1 absent")
     if not RESTORE_DRILL.is_file():
@@ -928,19 +977,24 @@ def test_w1f_current_head_and_lineage_constants_contract() -> None:
         _fail("W1F_CURRENT_HEAD_WRAPPER_MISMATCH")
     if CURRENT_HEAD not in restore:
         _fail("W1F_CURRENT_HEAD_RESTORE_SUPPORT_MISSING")
-    if f'RECIPIENT_PAYER_GUARDIAN_REVISION = "{CURRENT_HEAD}"' not in postcheck:
+    if f'RECIPIENT_GUARDIAN_EMAIL_REVISION = "{CURRENT_HEAD}"' not in postcheck:
         _fail("W1F_CURRENT_HEAD_POSTCHECK_REVISION_MISSING")
-    if RECIPIENT_PAYER_GUARDIAN_MARKER not in postcheck:
+    if RECIPIENT_GUARDIAN_EMAIL_MARKER not in postcheck:
         _fail("W1F_CURRENT_HEAD_POSTCHECK_MARKER_MISSING")
-    if RECIPIENT_PAYER_GUARDIAN_MARKER not in restore:
+    if RECIPIENT_GUARDIAN_EMAIL_MARKER not in restore:
         _fail("W1F_CURRENT_HEAD_RESTORE_MARKER_MISSING")
-    if RECIPIENT_PAYER_GUARDIAN_MARKER not in wrapper:
+    if RECIPIENT_GUARDIAN_EMAIL_MARKER not in wrapper:
         _fail("W1F_CURRENT_HEAD_WRAPPER_MARKER_MISSING")
     # Historical 0015 marker/boundary remains available for prior restore manifests.
     if RECIPIENT_STATUS_TAG_REVISION not in restore:
         _fail("W1F_0015_RESTORE_SUPPORT_MISSING")
     if RECIPIENT_STATUS_TAG_MARKER not in restore:
         _fail("W1F_0015_RESTORE_MARKER_MISSING")
+    # Historical 0016 marker/boundary remains available for prior restore manifests.
+    if RECIPIENT_PAYER_GUARDIAN_REVISION not in restore:
+        _fail("W1F_0016_RESTORE_SUPPORT_MISSING")
+    if RECIPIENT_PAYER_GUARDIAN_MARKER not in restore:
+        _fail("W1F_0016_RESTORE_MARKER_MISSING")
 
     # Lineage 0011~0014 constants remain present on the wrapper for preservation.
     for name, revision in (

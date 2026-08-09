@@ -21,7 +21,7 @@ $CreateDbExe = Join-Path $PostgresBin "createdb.exe"
 $PsqlExe = Join-Path $PostgresBin "psql.exe"
 $ExpectedW1dRevision = "20260730_0011_w1d_recipient_contract"
 $W1cHead = "20260730_0010_w1c_certification_ledgers"
-$CurrentHead = "20260808_0016_recipient_payer_guardian"
+$CurrentHead = "20260808_0017_recipient_guardian_email"
 
 function Write-W1dHarnessFailure {
     param([string]$Marker, [string]$Detail = "")
