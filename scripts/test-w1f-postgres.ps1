@@ -1111,6 +1111,29 @@ try {
         Write-W1fProductFailure "W1F_SYNTHETIC_SEED_FAILED"
     }
 
+    # Runtime invariant: the seeded recipient must actually be linked to a
+    # guardian with a non-null email, no matter what SQL syntax the seed used
+    # to (not) set it. This checks materialized data, not source text, so it
+    # cannot be evaded by any INSERT/UPDATE syntax variation.
+    $GuardianInvariantSql = @'
+SELECT count(*)
+FROM erp.recipient AS r
+JOIN erp.recipient_guardian AS g
+    ON g.id = r.payer_guardian_id AND g.recipient_id = r.id
+WHERE r.name = 'W1F RECIPIENT'
+  AND g.email IS NOT NULL
+  AND btrim(g.email) <> ''
+'@
+    $GuardianInvariantCount = Invoke-W1fPsqlScalar `
+        -User "erp_owner" -Database $DatabaseName `
+        -Sql $GuardianInvariantSql -Marker "W1F_HARNESS_GUARDIAN_INVARIANT_QUERY_FAILED"
+    if ($GuardianInvariantCount -ne "1") {
+        Write-W1fProductFailure "W1F_GUARDIAN_SEED_INVARIANT_FAILED" (
+            "expected=1;actual={0}" -f $GuardianInvariantCount
+        )
+    }
+    Write-Output "W1F_STAGE_GUARDIAN_INVARIANT=ok"
+
     # Synthetic file bundle with a recorded SHA-256 for restore comparison.
     $SyntheticFile = Join-Path (Join-Path $RuntimeDataRoot "blobs") "w1f-synthetic.bin"
     [System.IO.File]::WriteAllText(

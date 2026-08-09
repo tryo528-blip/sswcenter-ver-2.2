@@ -590,10 +590,118 @@ def test_w1f_postgres_gate_contract_is_sealed() -> None:
         is None
     ):
         _fail("W1F_WRAPPER_0015_RECIPIENT_STATUS_NOT_IN_INSERT")
-    if "recipient_guardian" not in seed_sql:
-        _fail("W1F_WRAPPER_0016_GUARDIAN_SEED_TABLE_MISSING")
-    if "payer_guardian_id" not in seed_sql:
-        _fail("W1F_WRAPPER_0016_PAYER_GUARDIAN_ID_NOT_SEEDED")
+    guardian_insert_match = re.search(
+        r"INSERT\s+INTO\s+erp\.recipient_guardian\s*"
+        r"\(\s*recipient_id\s*,\s*name\s*,\s*phone\s*,\s*address\s*,\s*"
+        r"relationship_text\s*,\s*email\s*,\s*created_by_account_id\s*,\s*"
+        r"updated_by_account_id\s*,\s*row_version\s*\)\s*"
+        r"VALUES\s*\(\s*recipient_id\s*,\s*'[^']*'\s*,\s*'[^']*'\s*,\s*'[^']*'\s*,\s*"
+        r"'[^']*'\s*,\s*'w1f-guardian@example\.test'\s*,\s*"
+        r"account_id\s*,\s*account_id\s*,\s*1\s*\)\s*"
+        r"RETURNING\s+id\s+INTO\s+guardian_id\s*;",
+        seed_sql,
+        flags=re.IGNORECASE,
+    )
+    if guardian_insert_match is None:
+        _fail(
+            "W1F_WRAPPER_0016_GUARDIAN_INSERT_NOT_STRUCTURAL: "
+            "recipient_guardian insert must carry a non-null email literal "
+            "in the email column position and RETURNING id INTO guardian_id"
+        )
+    guardian_link_match = re.search(
+        r"UPDATE\s+erp\.recipient\s+SET\s+payer_guardian_id\s*=\s*guardian_id\s+"
+        r"WHERE\s+id\s*=\s*recipient_id\s*;",
+        seed_sql,
+        flags=re.IGNORECASE,
+    )
+    if guardian_link_match is None:
+        _fail(
+            "W1F_WRAPPER_0016_PAYER_GUARDIAN_ID_LINK_NOT_STRUCTURAL: "
+            "recipient.payer_guardian_id must be linked to the seeded guardian_id"
+        )
+    if seed_sql[guardian_insert_match.end() : guardian_link_match.start()].strip() != "":
+        _fail(
+            "W1F_WRAPPER_0016_GUARDIAN_ID_REASSIGNED: nothing may sit between "
+            "RETURNING id INTO guardian_id and the payer_guardian_id UPDATE that "
+            "consumes it"
+        )
+    # Table-level statement counting (not column/SET-syntax matching) so quoted
+    # identifiers, multi-column tuple SET targets, etc. cannot hide an extra
+    # write: any additional UPDATE naming these tables anywhere in the seed is
+    # rejected outright, regardless of what it sets.
+    # Relation matching tolerates optional double-quoting of either identifier
+    # part and an optional ONLY keyword, since both are valid PostgreSQL syntax
+    # that a plain unquoted-name regex would otherwise miss.
+    recipient_relation = r'"?erp"?\s*\.\s*"?recipient"?(?!_)'
+    guardian_relation = r'"?erp"?\s*\.\s*"?recipient_guardian"?'
+    recipient_updates = re.findall(
+        rf"UPDATE\s+(?:ONLY\s+)?{recipient_relation}",
+        seed_sql,
+        flags=re.IGNORECASE,
+    )
+    if len(recipient_updates) != 1:
+        _fail(
+            "W1F_WRAPPER_0016_RECIPIENT_UPDATE_COUNT_UNEXPECTED: exactly one "
+            "UPDATE erp.recipient statement (the payer_guardian_id link) is "
+            f"allowed in the seed (found {len(recipient_updates)})"
+        )
+    guardian_updates = re.findall(
+        rf"UPDATE\s+(?:ONLY\s+)?{guardian_relation}",
+        seed_sql,
+        flags=re.IGNORECASE,
+    )
+    if guardian_updates:
+        _fail(
+            "W1F_WRAPPER_0016_GUARDIAN_UPDATE_FORBIDDEN: erp.recipient_guardian "
+            "must only be written by the seed INSERT, never by an UPDATE"
+        )
+    recipient_insert_at = seed_sql.find("INSERT INTO erp.recipient\n")
+    guardian_insert_at = guardian_insert_match.start()
+    guardian_link_at = guardian_link_match.start()
+    contract_insert_at = seed_sql.find("INSERT INTO erp.recipient_contract")
+    if (
+        min(
+            recipient_insert_at,
+            guardian_insert_at,
+            guardian_link_at,
+            contract_insert_at,
+        )
+        < 0
+    ):
+        _fail("W1F_WRAPPER_0016_GUARDIAN_ORDER_MARKERS_INCOMPLETE")
+    if not (recipient_insert_at < guardian_insert_at < guardian_link_at < contract_insert_at):
+        _fail(
+            "W1F_WRAPPER_0016_GUARDIAN_ORDER_INVALID: guardian insert and the "
+            "payer_guardian_id link must occur strictly between the recipient "
+            "insert and the recipient_contract insert"
+        )
+
+    # Beyond the static seed-text checks above (which raw regex can never make
+    # fully airtight against arbitrary SQL syntax), the wrapper must also
+    # verify the *materialized* database state right after seeding: a runtime
+    # query that fails closed if the guardian link or email ends up null no
+    # matter how the seed produced that result.
+    guardian_invariant_failclosed_pattern = (
+        r"if\s*\(\s*\$GuardianInvariantCount\s+-ne\s+\"1\"\s*\)\s*\{\s*"
+        r"Write-W1fProductFailure\s+\"W1F_GUARDIAN_SEED_INVARIANT_FAILED\""
+    )
+    if re.search(guardian_invariant_failclosed_pattern, source) is None:
+        _fail("W1F_WRAPPER_GUARDIAN_INVARIANT_FAIL_CLOSED_MISSING")
+    guardian_invariant_sql_match = re.search(
+        r"\$GuardianInvariantSql\s*=\s*@'\r?\n(?P<sql>.*?)\r?\n'@",
+        source,
+        flags=re.DOTALL,
+    )
+    if guardian_invariant_sql_match is None:
+        _fail("W1F_WRAPPER_GUARDIAN_INVARIANT_SQL_BLOCK_MISSING")
+    guardian_invariant_sql = guardian_invariant_sql_match.group("sql")
+    for required_fragment in (
+        "g.id = r.payer_guardian_id",
+        "g.recipient_id = r.id",
+        "g.email IS NOT NULL",
+    ):
+        if required_fragment not in guardian_invariant_sql:
+            _fail(f"W1F_WRAPPER_GUARDIAN_INVARIANT_SQL_INCOMPLETE: missing {required_fragment!r}")
 
     canonical_match = re.search(
         r"(?ms)^\$CanonicalSql = @'\r?\n(?P<sql>.*?)\r?\n'@$",
