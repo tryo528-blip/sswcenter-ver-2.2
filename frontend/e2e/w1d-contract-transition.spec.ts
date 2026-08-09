@@ -99,7 +99,7 @@ async function openNamedRecipient(
  * Expand via the real accessible control (role+name primary; testid secondary).
  */
 async function expandDetailExtras(page: Page) {
-  const toggle = page.getByRole('button', { name: /세부정보|추가정보/ });
+  const toggle = page.getByRole('button', { name: /상세|기본정보/ });
   await expect(toggle, 'W1D_E2E_DETAIL_EXTRAS_TOGGLE_MISSING').toBeVisible({
     timeout: 10000,
   });
@@ -140,6 +140,11 @@ test.describe('W1D live contract transition E2E', () => {
     const name = projectRecipientName(testInfo.project.name, scenario);
     await openNamedRecipient(page, name, testInfo.project.name, scenario);
     await expandDetailExtras(page);
+    // contract-create-form's fields are non-interactive (opacity + pointer-
+    // events:none) until detailBatchEditing is entered via recipient-basic-edit;
+    // the form's own submit button stays suppressed regardless of that state
+    // (see the note further below where it is submitted via the batch toolbar).
+    await page.getByTestId('recipient-basic-edit').click();
 
     const panel = page.getByTestId('recipient-contract-panel');
     await expect(panel, 'W1D_E2E_CONTRACT_PANEL_MISSING').toBeVisible({ timeout: 10000 });
@@ -155,7 +160,14 @@ test.describe('W1D live contract transition E2E', () => {
     ).toBeVisible();
     await form.getByTestId('contract-service-type-select').selectOption({ index: 1 });
     await form.getByTestId('contract-start-date-input').fill('2026-07-01');
-    await form.locator('button[type="submit"]').click();
+    // The form's own submit is intentionally suppressed while detail batch-edit
+    // mode is active (CSS + a document-level capture handler both block it);
+    // contract creation goes through the consolidated batch save button, which
+    // reads these same field values (see handleDetailBatchSave).
+    await page
+      .getByTestId('recipient-detail-batch-toolbar')
+      .getByRole('button', { name: '저장' })
+      .click();
 
     await expect
       .poll(
@@ -455,17 +467,33 @@ test.describe('W1D live contract transition E2E', () => {
     const name = projectRecipientName(testInfo.project.name, scenario);
     await openNamedRecipient(page, name, testInfo.project.name, scenario);
     await expandDetailExtras(page);
+    // contract-create-form's fields are non-interactive (opacity + pointer-
+    // events:none) until detailBatchEditing is entered via recipient-basic-edit;
+    // the form's own submit button stays suppressed regardless of that state.
+    await page.getByTestId('recipient-basic-edit').click();
 
     const panel = page.getByTestId('recipient-contract-panel');
     await expect(panel, 'W1D_E2E_CONTRACT_PANEL_MISSING').toBeVisible({ timeout: 10000 });
+    // Wait for the seeded ended contract (2025-01-01~2025-06-30) to actually
+    // load before asserting on reactivate/new-contract affordances — the
+    // create form's fields render unconditionally regardless of list-load
+    // state, so asserting on them alone would pass even if the ended-contract
+    // row never arrived.
+    await expect(
+      panel.getByTestId('contract-list').getByText('2025-01-01 ~ 2025-06-30'),
+      'W1D_E2E_CON03_ENDED_CONTRACT_ROW_MISSING',
+    ).toBeVisible({ timeout: 10000 });
     await expect(
       panel.getByTestId('contract-reactivate-button'),
       'W1D_E2E_CON03_REACTIVATE',
     ).toHaveCount(0);
+    // The individual submit button (contract-new-button) stays suppressed
+    // regardless of detail batch-edit mode (see scenario-contract-create);
+    // the new-contract affordance is the create form's own fields, which
+    // detailBatchEditing makes interactive and which submit through the
+    // consolidated batch save button.
     await expect(
-      panel
-        .getByTestId('contract-new-button')
-        .or(panel.getByRole('button', { name: /새 계약/ })),
+      panel.getByTestId('contract-create-form').getByTestId('contract-service-type-select'),
       'W1D_E2E_CON03_NEW_CONTRACT_FLOW',
     ).toBeVisible();
   });
