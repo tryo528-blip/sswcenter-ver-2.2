@@ -590,6 +590,10 @@ def test_w1f_postgres_gate_contract_is_sealed() -> None:
         is None
     ):
         _fail("W1F_WRAPPER_0015_RECIPIENT_STATUS_NOT_IN_INSERT")
+    if "recipient_guardian" not in seed_sql:
+        _fail("W1F_WRAPPER_0016_GUARDIAN_SEED_TABLE_MISSING")
+    if "payer_guardian_id" not in seed_sql:
+        _fail("W1F_WRAPPER_0016_PAYER_GUARDIAN_ID_NOT_SEEDED")
 
     canonical_match = re.search(
         r"(?ms)^\$CanonicalSql = @'\r?\n(?P<sql>.*?)\r?\n'@$",
@@ -608,6 +612,7 @@ def test_w1f_postgres_gate_contract_is_sealed() -> None:
         "staff_onboarding_training",
         "staff_periodic_training_status",
         "recipient",
+        "recipient_guardian",
         "recipient_contract",
         "care_assignment",
         "recipient_plan_notification",

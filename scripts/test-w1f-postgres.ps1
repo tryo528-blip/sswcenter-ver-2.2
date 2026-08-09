@@ -687,6 +687,7 @@ DECLARE
     nurse_license_type_id bigint;
     source_license_id bigint;
     recipient_id bigint;
+    guardian_id bigint;
     contract_id bigint;
     seq bigint;
 BEGIN
@@ -783,6 +784,18 @@ BEGIN
             account_id, account_id, 1)
     RETURNING id INTO recipient_id;
 
+    -- 0016/0017 guardian: payer_guardian_id composite FK + guardian.email column.
+    INSERT INTO erp.recipient_guardian
+        (recipient_id, name, phone, address, relationship_text, email,
+         created_by_account_id, updated_by_account_id, row_version)
+    VALUES (recipient_id, 'W1F GUARDIAN', '010-0000-0000', 'W1F ADDRESS',
+            'PARENT', 'w1f-guardian@example.test',
+            account_id, account_id, 1)
+    RETURNING id INTO guardian_id;
+
+    UPDATE erp.recipient SET payer_guardian_id = guardian_id
+    WHERE id = recipient_id;
+
     INSERT INTO erp.recipient_contract
         (recipient_id, service_type_id, start_date, end_date,
          invalidated_at_utc, replacement_contract_id,
@@ -841,6 +854,9 @@ WITH rows AS (
     UNION ALL
     SELECT 'recipient:' || to_jsonb(r)::text AS line
     FROM erp.recipient AS r
+    UNION ALL
+    SELECT 'recipient_guardian:' || to_jsonb(rg)::text AS line
+    FROM erp.recipient_guardian AS rg
     UNION ALL
     SELECT 'recipient_contract:' || to_jsonb(rc)::text AS line
     FROM erp.recipient_contract AS rc
