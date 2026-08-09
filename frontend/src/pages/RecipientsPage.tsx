@@ -776,6 +776,7 @@ export const RecipientsPage = () => {
   const listLoadMoreAbortRef = useRef<AbortController | null>(null);
   /** Tracks active detail id so late benefit-period responses do not clobber another recipient. */
   const activeIdRef = useRef<string | null>(null);
+  const createOpenRef = useRef(false);
   const [recipientForm, setRecipientForm] = useState<RecipientFormState>(emptyRecipientForm);
   const [createOpen, setCreateOpen] = useState(false);
   const [detailExtrasOpen, setDetailExtrasOpen] = useState(false);
@@ -836,6 +837,7 @@ export const RecipientsPage = () => {
   const detailId = query.get('detail');
   const activeId = detailId ?? selectedId;
   activeIdRef.current = activeId;
+  createOpenRef.current = createOpen;
 
   const persistCopayBenefit = useCallback(
     async (recipientId: string, draft: PendingCopaySave) => {
@@ -1065,6 +1067,7 @@ export const RecipientsPage = () => {
     setCreateError(null);
     setCreateMessage(null);
     setRecipientForm(emptyRecipientForm());
+    setWorkspaceReload((current) => current + 1);
   }, [createSaving]);
 
   useEffect(() => {
@@ -1285,6 +1288,7 @@ export const RecipientsPage = () => {
   }, [detailId, location.search, visibleRecipients.length]);
 
   useEffect(() => {
+    if (createOpen) return;
     setBasicEditOpen(false);
     setBasicSaving(false);
     setDetailStaleConflict(null);
@@ -1295,6 +1299,13 @@ export const RecipientsPage = () => {
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
+    if (createOpen) {
+      setDetailLoading(false);
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
     if (!activeId) {
       setDetailRecipient(null);
       setDetailForm(emptyRecipientForm());
@@ -1347,7 +1358,7 @@ export const RecipientsPage = () => {
       getRecipient(activeId, controller.signal),
       listGuardians(activeId, controller.signal),
     ]).then(([recipientResult, guardianResult]) => {
-      if (cancelled) return;
+      if (cancelled) return; if (createOpenRef.current) { setDetailLoading(false); return; }
 
       const rawRecipient = valueFromResult(recipientResult);
       const embedded = (valueFromResult(recipientResult) as EmbeddedRecipient | undefined) ?? null;
@@ -1494,11 +1505,12 @@ export const RecipientsPage = () => {
   const captureRecipientStaleConflict = async (
     original: Recipient,
     draft: RecipientFormState,
+    targetId: string,
   ): Promise<void> => {
     try {
-      const rawLatest = await getRecipient(activeId ?? '');
-      const latest =
-        activeId != null ? validateDetailRecipient(rawLatest, activeId) : null;
+      const rawLatest = await getRecipient(targetId);
+      if (activeIdRef.current !== targetId || createOpenRef.current) return;
+      const latest = validateDetailRecipient(rawLatest, targetId);
       if (!latest) {
         setDetailError('저장 충돌 후 대상 수급자의 최신 정보를 확인하지 못했습니다. 입력은 유지됩니다.');
         return;
@@ -1562,6 +1574,7 @@ export const RecipientsPage = () => {
 
   const handleDetailReapply = async () => {
     if (!detailStaleConflict || !activeId || !detailStaleConflict.canAutoReapply) return;
+    const reapplyTargetId = activeId;
     // Always diff the live form against the latest active baseline — never a stale pre-edit snapshot.
     const baseline = detailRecipient ?? detailStaleConflict.latest;
     const draft = detailForm;
@@ -1583,6 +1596,7 @@ export const RecipientsPage = () => {
         activeId,
         recipientChangedFieldsPayload(baseline, draft, baseline.row_version),
       );
+      if (activeIdRef.current !== reapplyTargetId || createOpenRef.current) return;
       const updated = validateDetailRecipient(updatedRaw, activeId);
       if (!updated) {
         setDetailError('다시 적용 응답이 올바르지 않습니다. 다시 불러와 주세요.');
@@ -1609,7 +1623,7 @@ export const RecipientsPage = () => {
     } catch (error: unknown) {
       if (!isAbortError(error)) {
         if (isApiErrorCode(error, 'ROW_VERSION_CONFLICT')) {
-          await captureRecipientStaleConflict(baseline, draft);
+          await captureRecipientStaleConflict(baseline, draft, reapplyTargetId);
         } else {
           setDetailError(safeErrorMessage(error, '변경 내용을 다시 적용하지 못했습니다.'));
         }
@@ -1843,6 +1857,7 @@ export const RecipientsPage = () => {
 
   const handleAtomicBasicSave = async () => {
     if (!detailRecipient || !activeId || detailLoading || basicSaving || !basicEditOpen) return;
+    const saveTargetId = activeId;
     setPendingBasicCopaySave(null);
     if (!detailForm.mobile_phone.trim()) {
       window.alert('휴대전화를 입력해주세요.');
@@ -1920,6 +1935,7 @@ export const RecipientsPage = () => {
             })
           : [],
       });
+      if (activeIdRef.current !== saveTargetId || createOpenRef.current) return;
       const updated = validateDetailRecipient(result.recipient, activeId);
       if (updated) {
         setDetailRecipient(updated);
@@ -1976,6 +1992,7 @@ export const RecipientsPage = () => {
         const reloadGuardiansAfterConflict = async () => {
           try {
             const response = await listGuardians(activeId);
+            if (activeIdRef.current !== saveTargetId || createOpenRef.current) return;
             const items = response.items ?? [];
             const nextGuardianIds: [string | null, string | null] = [
               items[0] ? normalizeId(items[0].id) : null,
@@ -2020,7 +2037,7 @@ export const RecipientsPage = () => {
         };
 
         if (entity === 'recipient') {
-          await captureRecipientStaleConflict(baselineRecipient, draftAtSave);
+          await captureRecipientStaleConflict(baselineRecipient, draftAtSave, saveTargetId);
         } else if (entity === 'guardian') {
           await reloadGuardiansAfterConflict();
         } else if (entity === 'benefit_period') {
@@ -2031,7 +2048,7 @@ export const RecipientsPage = () => {
             draftAtSave,
           );
           if (hadRecipientChanges) {
-            await captureRecipientStaleConflict(baselineRecipient, draftAtSave);
+            await captureRecipientStaleConflict(baselineRecipient, draftAtSave, saveTargetId);
           } else {
             await reloadGuardiansAfterConflict();
           }
@@ -2389,6 +2406,8 @@ export const RecipientsPage = () => {
                   setPayerGuardianSlot(null);
                   setDetailExtrasOpen(false);
                   setBasicEditOpen(false);
+                  setDetailStaleConflict(null);
+                  setDetailLoading(false);
                   setCreateOpen(true);
                 }}
                 disabled={basicEditOpen || basicSaving}
