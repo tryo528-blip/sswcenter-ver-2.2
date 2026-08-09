@@ -453,6 +453,7 @@ def test_w1f_postgres_gate_contract_is_sealed() -> None:
         "W1F_WRAPPER_BACKUP_STEP_MISSING": "backup-postgres.ps1",
         "W1F_WRAPPER_RESTORE_STEP_MISSING": "restore-drill.ps1",
         "W1F_WRAPPER_W1D_MARKER_MISSING": W1D_MARKER,
+        "W1F_WRAPPER_W1E_MARKER_MISSING": W1E_MARKER,
         "W1F_WRAPPER_0017_MARKER_MISSING": RECIPIENT_GUARDIAN_EMAIL_MARKER,
         "W1F_WRAPPER_CURRENT_HEAD_MISSING": f'$CurrentHead = "{CURRENT_HEAD}"',
         "W1F_WRAPPER_W1D_HEAD_MISSING": f'$W1dHead = "{W1D_REVISION}"',
@@ -507,6 +508,63 @@ def test_w1f_postgres_gate_contract_is_sealed() -> None:
         is None
     ):
         _fail("W1F_WRAPPER_W1D_DOWNGRADE_LOST")
+
+    # W1D marker presence alone (checked via required_tokens above) does not
+    # prove the comparison is fail-closed. Pin the whole if-condition/brace/
+    # failure-call structure, mirroring the W1E lock below.
+    w1d_failclosed_pattern = (
+        r"if\s*\(\s*"
+        r"\[int\]\$W1dPostcheckRun\.ExitCode\s+-ne\s+0\s+-or\s+"
+        r"\(\[string\]\$W1dPostcheckRun\.Stdout\)\s+-notmatch\s+\""
+        + re.escape(W1D_MARKER)
+        + r"\"\s*\)\s*\{\s*"
+        r"Write-W1fProductFailure\s+\"W1F_W1D_POSTCHECK_MARKER_MISSING\"\s*\}"
+    )
+    if re.search(w1d_failclosed_pattern, source) is None:
+        _fail("W1F_WRAPPER_W1D_MARKER_FAIL_CLOSED_MISSING")
+
+    # W1E exact-revision boundary must be visited (with its marker fail-closed
+    # observed) strictly after the W1D downgrade and before the re-upgrade to
+    # $CurrentHead -- otherwise W1E_DB_POSTCHECK_OK is never exercised live.
+    if (
+        re.search(
+            r'Invoke-W1fAlembic\s+-AlembicArgs\s+@\("upgrade",\s*\$W1eHead\)',
+            source,
+        )
+        is None
+    ):
+        _fail("W1F_WRAPPER_W1E_UPGRADE_LOST")
+
+    w1d_downgrade_at = source.find('@("downgrade", $W1dHead)')
+    w1e_upgrade_at = source.find('@("upgrade", $W1eHead)')
+    w1e_marker_at = source.find(W1E_MARKER)
+    reupgrade_at = source.find('-Marker "W1F_HARNESS_REUPGRADE_FAILED"')
+    if min(w1d_downgrade_at, w1e_upgrade_at, w1e_marker_at, reupgrade_at) < 0:
+        _fail("W1F_WRAPPER_W1E_OBSERVATION_STAGE_MARKERS_INCOMPLETE")
+    if not (w1d_downgrade_at < w1e_upgrade_at < w1e_marker_at < reupgrade_at):
+        _fail(
+            "W1F_WRAPPER_W1E_OBSERVATION_ORDER_INVALID: W1E exact-revision visit "
+            "and marker check must come after the W1D downgrade and before the "
+            "re-upgrade to $CurrentHead"
+        )
+
+    # The W1E marker presence/order checks above only prove the token exists
+    # somewhere in the right region; they do not prove the comparison is
+    # fail-closed. A loose "marker ... eventually a failure call" pattern can
+    # be defeated by inserting an extra always-false condition (e.g. "-and
+    # $false") between the marker check and "{" without tripping it. Pin the
+    # whole if-condition/brace/failure-call structure and allow only
+    # whitespace between tokens so no extra condition can slip in unnoticed.
+    w1e_failclosed_pattern = (
+        r"if\s*\(\s*"
+        r"\[int\]\$W1ePostcheckRun\.ExitCode\s+-ne\s+0\s+-or\s+"
+        r"\(\[string\]\$W1ePostcheckRun\.Stdout\)\s+-notmatch\s+\""
+        + re.escape(W1E_MARKER)
+        + r"\"\s*\)\s*\{\s*"
+        r"Write-W1fProductFailure\s+\"W1F_W1E_POSTCHECK_MARKER_MISSING\"\s*\}"
+    )
+    if re.search(w1e_failclosed_pattern, source) is None:
+        _fail("W1F_WRAPPER_W1E_MARKER_FAIL_CLOSED_MISSING")
 
     seed_match = re.search(
         r"(?ms)^\$SeedSql = @'\r?\n(?P<sql>.*?)\r?\n'@$",
