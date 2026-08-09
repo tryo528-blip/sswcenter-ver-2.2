@@ -1006,6 +1006,32 @@ try {
     }
     Write-Output "W1F_STAGE_DOWNGRADE=ok"
 
+    # W1E boundary exact-revision observation of the W1E postcheck marker.
+    [void](Invoke-W1fAlembic -AlembicArgs @("upgrade", $W1eHead) -Marker "W1F_HARNESS_W1E_UPGRADE_FAILED")
+    $W1eRevision = Get-W1fRevision -Database $DatabaseName
+    if ($W1eRevision -ne $W1eHead) {
+        Write-W1fProductFailure "W1F_MIGRATION_W1E_REVISION_MISMATCH" (
+            "expected={0};actual={1}" -f $W1eHead, $W1eRevision
+        )
+    }
+    $W1ePostcheckRun = Invoke-W1fTimedCommand `
+        -FilePath $PowerShellExe `
+        -TimeoutSec 120 `
+        -TimeoutMarker "W1F_HARNESS_W1E_POSTCHECK_TIMEOUT" `
+        -ArgumentList @(
+            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $PSScriptRoot "verify-w1a-vs1-db.ps1"),
+            "-DatabaseUrl", $OwnerDatabaseUrl
+        )
+    Write-W1fCommandEvidence $W1ePostcheckRun
+    if (
+        [int]$W1ePostcheckRun.ExitCode -ne 0 -or
+        ([string]$W1ePostcheckRun.Stdout) -notmatch "W1E_DB_POSTCHECK_OK"
+    ) {
+        Write-W1fProductFailure "W1F_W1E_POSTCHECK_MARKER_MISSING"
+    }
+    Write-Output "W1F_STAGE_W1E_OBSERVED=ok"
+
     # Re-upgrade back to current head (0015).
     [void](Invoke-W1fAlembic -AlembicArgs @("upgrade", $CurrentHead) -Marker "W1F_HARNESS_REUPGRADE_FAILED")
     $ReupgradeRevision = Get-W1fRevision -Database $DatabaseName
