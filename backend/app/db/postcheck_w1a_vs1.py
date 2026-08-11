@@ -19,6 +19,12 @@ RECIPIENT_PLAN_NOTIFICATION_REVISION = "20260803_0014_recipient_plan_notificatio
 RECIPIENT_STATUS_TAG_REVISION = "20260806_0015_recipient_status_tag"
 RECIPIENT_PAYER_GUARDIAN_REVISION = "20260808_0016_recipient_payer_guardian"
 RECIPIENT_GUARDIAN_EMAIL_REVISION = "20260808_0017_recipient_guardian_email"
+W2_SERVICE_PLAN_NOTICE_REVISION = "20260809_0018_w2_service_plan_notice"
+R0_W2_READ_ONLY_REVISION = "20260812_0019_r0_w2_read_only"
+W2_LINEAGE_REVISIONS = {
+    W2_SERVICE_PLAN_NOTICE_REVISION,
+    R0_W2_READ_ONLY_REVISION,
+}
 W1E_LINEAGE_REVISIONS = {
     W1E_REVISION,
     CONTINUING_EDUCATION_REVISION,
@@ -26,6 +32,40 @@ W1E_LINEAGE_REVISIONS = {
     RECIPIENT_STATUS_TAG_REVISION,
     RECIPIENT_PAYER_GUARDIAN_REVISION,
     RECIPIENT_GUARDIAN_EMAIL_REVISION,
+    *W2_LINEAGE_REVISIONS,
+}
+W2_FUNCTIONS = {
+    "fn_service_plan_notice_before_contract_start",
+    "fn_service_plan_notice_within_contract",
+    "fn_service_plan_notice_within_certification",
+    "fn_recipient_contract_service_plan_reverse_guard",
+    "fn_recipient_certification_period_service_plan_reverse_guard",
+    "fn_recipient_contract_recipient_id_immutable",
+    "fn_recipient_certification_period_recipient_id_immutable",
+}
+W2_GUARD_TRIGGER_CONTRACTS = {
+    "ct_service_plan_notice_before_contract_start": "recipient_service_plan_notice",
+    "ct_service_plan_notice_within_contract": "recipient_service_plan_notice",
+    "ct_service_plan_notice_within_certification": "recipient_service_plan_notice",
+    "ct_recipient_contract_service_plan_reverse_guard": "recipient_contract",
+    "ct_recipient_certification_period_service_plan_reverse_guard": (
+        "recipient_certification_period"
+    ),
+}
+W2_IMMUTABLE_TRIGGER_CONTRACTS = {
+    "ct_recipient_contract_recipient_id_immutable": "recipient_contract",
+    "ct_recipient_certification_period_recipient_id_immutable": (
+        "recipient_certification_period"
+    ),
+}
+W2_CONSTRAINTS = {
+    "pk_recipient_service_plan_notice",
+    "fk_service_plan_notice_recipient_contract",
+    "fk_service_plan_notice_replacement",
+    "fk_service_plan_notice_created_by_account",
+    "fk_service_plan_notice_updated_by_account",
+    "ck_service_plan_notice_date_order",
+    "ck_service_plan_notice_row_version_positive",
 }
 W1A_PERMISSION_CODES = {
     "COPAY_USE",
@@ -340,7 +380,9 @@ def _column_contract(
     return {str(row.column_name): (str(row.data_type), str(row.is_nullable)) for row in rows}
 
 
-def _verify_role_acl_fingerprint(connection: Connection) -> None:
+def _verify_role_acl_fingerprint(
+    connection: Connection, *, current_revision: str | None = None
+) -> None:
     sensitive = connection.execute(
         text(
             """
@@ -375,6 +417,9 @@ def _verify_role_acl_fingerprint(connection: Connection) -> None:
     if tuple(sensitive) != expected_sensitive:
         raise SystemExit(f"Unexpected W1A sensitive ACL fingerprint: {tuple(sensitive)}")
 
+    # 0019 revokes erp_app USAGE on the W2 identity sequence; exclude it here and
+    # verify that sequence's SELECT-only ACL in the W2 revision postcheck.
+    exclude_w2_seq = current_revision == R0_W2_READ_ONLY_REVISION
     sequences = connection.execute(
         text(
             """
@@ -401,8 +446,13 @@ def _verify_role_acl_fingerprint(connection: Connection) -> None:
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = 'erp' AND c.relkind = 'S'
+              AND (
+                  CAST(:exclude_w2_seq AS boolean) IS NOT TRUE
+                  OR c.relname <> 'recipient_service_plan_notice_id_seq'
+              )
             """
-        )
+        ),
+        {"exclude_w2_seq": exclude_w2_seq},
     ).one()
     if sequences.app_exact is not True or sequences.backup_exact is not True:
         raise SystemExit("Unexpected W1A sequence ACL fingerprint")
@@ -855,6 +905,8 @@ def main() -> None:
                 RECIPIENT_STATUS_TAG_REVISION,
                 RECIPIENT_PAYER_GUARDIAN_REVISION,
                 RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                W2_SERVICE_PLAN_NOTICE_REVISION,
+                R0_W2_READ_ONLY_REVISION,
             }:
                 raise SystemExit("Unexpected W1A migration revision")
             verify_wave0_invariants(
@@ -872,7 +924,9 @@ def main() -> None:
                     else W1A_PERMISSION_CODES
                 ),
             )
-            _verify_role_acl_fingerprint(connection)
+            _verify_role_acl_fingerprint(
+                connection, current_revision=str(current_revision)
+            )
 
             sensitive_columns = _column_contract(
                 connection,
@@ -1012,6 +1066,7 @@ def main() -> None:
                 | W1C_FUNCTIONS
                 | W1D_FUNCTIONS
                 | W1E_FUNCTIONS
+                | (W2_FUNCTIONS if current_revision in W2_LINEAGE_REVISIONS else set())
                 if current_revision in W1E_LINEAGE_REVISIONS
                 else W1A_FUNCTIONS
                 | VS2_FUNCTIONS
@@ -1116,6 +1171,7 @@ def main() -> None:
                             RECIPIENT_STATUS_TAG_REVISION,
                             RECIPIENT_PAYER_GUARDIAN_REVISION,
                             RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                            *W2_LINEAGE_REVISIONS,
                         }
                     ),
                 )
@@ -1131,23 +1187,34 @@ def main() -> None:
                     RECIPIENT_STATUS_TAG_REVISION,
                     RECIPIENT_PAYER_GUARDIAN_REVISION,
                     RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                    *W2_LINEAGE_REVISIONS,
                 }:
                     _verify_recipient_plan_notification_contract(connection)
                 if current_revision in {
                     RECIPIENT_STATUS_TAG_REVISION,
                     RECIPIENT_PAYER_GUARDIAN_REVISION,
                     RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                    *W2_LINEAGE_REVISIONS,
                 }:
-                    # 0015 status tag remains required through the 0017 head.
+                    # 0015 status tag remains required through the W2 head.
                     _verify_recipient_status_tag_contract(connection)
                 if current_revision in {
                     RECIPIENT_PAYER_GUARDIAN_REVISION,
                     RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                    *W2_LINEAGE_REVISIONS,
                 }:
-                    # 0016 payer guardian remains required through the 0017 head.
+                    # 0016 payer guardian remains required through the W2 head.
                     _verify_recipient_payer_guardian_contract(connection)
-                if current_revision == RECIPIENT_GUARDIAN_EMAIL_REVISION:
+                if current_revision in {
+                    RECIPIENT_GUARDIAN_EMAIL_REVISION,
+                    *W2_LINEAGE_REVISIONS,
+                }:
                     _verify_recipient_guardian_email_contract(connection)
+                if current_revision in W2_LINEAGE_REVISIONS:
+                    _verify_w2_service_plan_notice_contract(
+                        connection,
+                        read_only=(current_revision == R0_W2_READ_ONLY_REVISION),
+                    )
 
             sensitive_indexes = set(
                 connection.execute(
@@ -1234,7 +1301,11 @@ def main() -> None:
     finally:
         engine.dispose()
 
-    if current_revision == RECIPIENT_GUARDIAN_EMAIL_REVISION:
+    if current_revision == R0_W2_READ_ONLY_REVISION:
+        print("R0_W2_READ_ONLY_DB_POSTCHECK_OK")
+    elif current_revision == W2_SERVICE_PLAN_NOTICE_REVISION:
+        print("W2_SERVICE_PLAN_NOTICE_DB_POSTCHECK_OK")
+    elif current_revision == RECIPIENT_GUARDIAN_EMAIL_REVISION:
         print("RECIPIENT_GUARDIAN_EMAIL_DB_POSTCHECK_OK")
     elif current_revision == RECIPIENT_PAYER_GUARDIAN_REVISION:
         print("RECIPIENT_PAYER_GUARDIAN_DB_POSTCHECK_OK")
@@ -3591,6 +3662,283 @@ def _verify_recipient_plan_notification_contract(connection: Connection) -> None
     ).one()
     if tuple(backup_seq) != (False, True):
         raise SystemExit("recipient-plan-notification backup sequence ACL is invalid")
+
+
+def _verify_w2_service_plan_notice_contract(
+    connection: Connection, *, read_only: bool
+) -> None:
+    """Revision-aware W2 history checks for 0018 (writable) and 0019 (read-only)."""
+    if (
+        connection.execute(
+            text("SELECT to_regclass(:qualified) IS NOT NULL"),
+            {"qualified": "erp.recipient_service_plan_notice"},
+        ).scalar()
+        is not True
+    ):
+        raise SystemExit("Missing W2 recipient_service_plan_notice table")
+
+    sequence_exists = connection.execute(
+        text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'erp'
+                  AND c.relname = 'recipient_service_plan_notice_id_seq'
+                  AND c.relkind = 'S'
+            )
+            """
+        )
+    ).scalar()
+    if sequence_exists is not True:
+        raise SystemExit("Missing W2 recipient_service_plan_notice identity sequence")
+
+    ownership = connection.execute(
+        text(
+            """
+            SELECT
+                pg_get_userbyid(tbl.relowner) AS table_owner,
+                pg_get_userbyid(seq.relowner) AS sequence_owner,
+                pg_get_serial_sequence(
+                    'erp.recipient_service_plan_notice', 'id'
+                ) AS owned_sequence
+            FROM pg_class tbl
+            JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+            LEFT JOIN pg_class seq ON seq.relnamespace = ns.oid
+                AND seq.relname = 'recipient_service_plan_notice_id_seq'
+                AND seq.relkind = 'S'
+            WHERE ns.nspname = 'erp'
+              AND tbl.relname = 'recipient_service_plan_notice'
+              AND tbl.relkind = 'r'
+            """
+        )
+    ).one()
+    if not ownership.table_owner or not ownership.sequence_owner:
+        raise SystemExit("W2 table/sequence owner is missing")
+    if ownership.table_owner != ownership.sequence_owner:
+        raise SystemExit("W2 table and sequence owners must match")
+    if ownership.owned_sequence != "erp.recipient_service_plan_notice_id_seq":
+        raise SystemExit("W2 identity ownership link is invalid")
+
+    identity_dependency = connection.execute(
+        text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_depend d
+                JOIN pg_class seq ON seq.oid = d.objid AND seq.relkind = 'S'
+                JOIN pg_namespace n ON n.oid = seq.relnamespace
+                WHERE d.refobjid = 'erp.recipient_service_plan_notice'::regclass
+                  AND d.deptype = 'i'
+                  AND n.nspname = 'erp'
+                  AND seq.relname = 'recipient_service_plan_notice_id_seq'
+            )
+            """
+        )
+    ).scalar()
+    if identity_dependency is not True:
+        raise SystemExit("W2 identity dependency link is invalid")
+
+    identity_attr = connection.execute(
+        text(
+            """
+            SELECT a.attidentity
+            FROM pg_attribute a
+            WHERE a.attrelid = 'erp.recipient_service_plan_notice'::regclass
+              AND a.attname = 'id'
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            """
+        )
+    ).scalar_one_or_none()
+    if identity_attr != "d":
+        raise SystemExit(
+            "W2 recipient_service_plan_notice.id must be GENERATED BY DEFAULT AS IDENTITY"
+        )
+
+    constraints = set(
+        connection.execute(
+            text(
+                """
+                SELECT conname
+                FROM pg_constraint
+                WHERE connamespace = 'erp'::regnamespace
+                  AND conrelid = 'erp.recipient_service_plan_notice'::regclass
+                """
+            )
+        ).scalars()
+    )
+    missing_constraints = sorted(W2_CONSTRAINTS - constraints)
+    if missing_constraints:
+        raise SystemExit(f"Missing W2 constraints: {missing_constraints}")
+
+    functions = set(
+        connection.execute(
+            text(
+                """
+                SELECT proname
+                FROM pg_proc
+                WHERE pronamespace = 'erp'::regnamespace
+                  AND proname = ANY(:names)
+                """
+            ),
+            {"names": sorted(W2_FUNCTIONS)},
+        ).scalars()
+    )
+    missing_functions = sorted(W2_FUNCTIONS - functions)
+    if missing_functions:
+        raise SystemExit(f"Missing W2 functions: {missing_functions}")
+
+    trigger_rows = {
+        (str(row.tgname), str(row.relname))
+        for row in connection.execute(
+            text(
+                """
+                SELECT t.tgname, c.relname
+                FROM pg_trigger t
+                JOIN pg_class c ON c.oid = t.tgrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'erp'
+                  AND NOT t.tgisinternal
+                  AND t.tgname = ANY(:names)
+                """
+            ),
+            {
+                "names": sorted(
+                    set(W2_GUARD_TRIGGER_CONTRACTS) | set(W2_IMMUTABLE_TRIGGER_CONTRACTS)
+                )
+            },
+        )
+    }
+
+    expected_immutable = {
+        (name, table) for name, table in W2_IMMUTABLE_TRIGGER_CONTRACTS.items()
+    }
+    missing_immutable = sorted(expected_immutable - trigger_rows)
+    if missing_immutable:
+        raise SystemExit(f"Missing W2 immutable triggers: {missing_immutable}")
+
+    present_guards = {
+        (name, table)
+        for name, table in trigger_rows
+        if name in W2_GUARD_TRIGGER_CONTRACTS
+    }
+    expected_guards = {
+        (name, table) for name, table in W2_GUARD_TRIGGER_CONTRACTS.items()
+    }
+    if read_only:
+        if present_guards:
+            raise SystemExit(
+                f"W2 guard triggers must be absent after 0019: {sorted(present_guards)}"
+            )
+    elif present_guards != expected_guards:
+        missing_guards = sorted(expected_guards - present_guards)
+        unexpected_guards = sorted(present_guards - expected_guards)
+        raise SystemExit(
+            "W2 guard triggers mismatch for 0018: "
+            f"missing={missing_guards}; unexpected={unexpected_guards}"
+        )
+
+    app_table = connection.execute(
+        text(
+            """
+            SELECT has_table_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice', 'SELECT'
+                   ),
+                   has_table_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice', 'INSERT'
+                   ),
+                   has_table_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice', 'UPDATE'
+                   ),
+                   has_table_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice', 'DELETE'
+                   ),
+                   has_table_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice', 'TRUNCATE'
+                   )
+            """
+        )
+    ).one()
+    expected_app_table = (
+        (True, False, False, False, False)
+        if read_only
+        else (True, True, True, False, False)
+    )
+    if tuple(app_table) != expected_app_table:
+        raise SystemExit(
+            f"W2 erp_app table ACL is invalid (read_only={read_only}): {tuple(app_table)}"
+        )
+
+    backup_table = connection.execute(
+        text(
+            """
+            SELECT has_table_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice', 'SELECT'
+                   ),
+                   has_table_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice', 'INSERT'
+                   ),
+                   has_table_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice', 'UPDATE'
+                   ),
+                   has_table_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice', 'DELETE'
+                   ),
+                   has_table_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice', 'TRUNCATE'
+                   )
+            """
+        )
+    ).one()
+    if tuple(backup_table) != (True, False, False, False, False):
+        raise SystemExit(
+            f"W2 erp_backup table ACL is not SELECT-only: {tuple(backup_table)}"
+        )
+
+    app_seq = connection.execute(
+        text(
+            """
+            SELECT has_sequence_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice_id_seq', 'USAGE'
+                   ),
+                   has_sequence_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice_id_seq', 'SELECT'
+                   ),
+                   has_sequence_privilege(
+                       'erp_app', 'erp.recipient_service_plan_notice_id_seq', 'UPDATE'
+                   )
+            """
+        )
+    ).one()
+    expected_app_seq = (
+        (False, True, False) if read_only else (True, True, False)
+    )
+    if tuple(app_seq) != expected_app_seq:
+        raise SystemExit(
+            f"W2 erp_app sequence ACL is invalid (read_only={read_only}): {tuple(app_seq)}"
+        )
+
+    backup_seq = connection.execute(
+        text(
+            """
+            SELECT has_sequence_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice_id_seq', 'USAGE'
+                   ),
+                   has_sequence_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice_id_seq', 'SELECT'
+                   ),
+                   has_sequence_privilege(
+                       'erp_backup', 'erp.recipient_service_plan_notice_id_seq', 'UPDATE'
+                   )
+            """
+        )
+    ).one()
+    if tuple(backup_seq) != (False, True, False):
+        raise SystemExit(
+            f"W2 erp_backup sequence ACL is not SELECT-only: {tuple(backup_seq)}"
+        )
 
 
 if __name__ == "__main__":
