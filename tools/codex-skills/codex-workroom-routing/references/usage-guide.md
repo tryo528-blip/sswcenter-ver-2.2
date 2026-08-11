@@ -102,7 +102,14 @@ gpt-5.6-sol / ultra / fast off
 
 검증되지 않은 항목이 하나라도 있으면 실행 대신 `BLOCKED/UNKNOWN` 계획을 출력한다.
 
-## 6. 보고서 예시
+## 6. coordinator와 독립 방의 역할
+
+- coordinator/root는 작업을 직접 수행하는 방이 아니다. route·모델·등급·범위 지시, 새 방 생성, 메시지 전달, 보고 취합만 한다.
+- 제품 파일 수정, 테스트 실행, 재시도, DB canary는 해당 등급으로 지정된 독립 방이 자기 worktree에서 수행한다.
+- coordinator가 직접 결과를 만들거나 방의 재시도를 대신하지 않는다. 방이 결과·근거·changed_paths·미실행 게이트를 보고하면 다음 방을 지시한다.
+- 모델 변경, API/DB 계약 변경, 범위 확대, destructive action, credential/실계정, commit/push/merge만 coordinator가 형님께 중요 결정으로 묻는다.
+
+## 7. 보고서 예시
 
 ```text
 route: 집 / 코덱스 / 그록
@@ -121,7 +128,7 @@ unverified: office profile, wrapper grade flags
 
 실제 명령·경로·SHA·exit code를 확인하지 않았다면 `PASS`나 “테스트 완료”라고 쓰지 않는다.
 
-## 7. 현재 wrapper와의 차이 처리
+## 8. 현재 wrapper와의 차이 처리
 
 현재 wrapper가 `-SimpleTest`, `-Effort`, `-Fast`만 제공하고 `TestGrade`/`ReviewGrade` 스위치를 제공하지 않을 수 있다. 이 경우:
 
@@ -130,7 +137,7 @@ unverified: office profile, wrapper grade flags
 3. wrapper가 실제로 실행한 모델·effort·fast를 결과에서 다시 읽는다.
 4. 요청 조합과 실제 조합이 다르면 `FAIL` 또는 `BLOCKED`로 닫고 자동 보정하지 않는다.
 
-## 8. W2 소단위가 끝난 뒤 방을 새로 만드는 규칙
+## 9. W2 소단위가 끝난 뒤 방을 새로 만드는 규칙
 
 W2는 한 덩어리로 계속 같은 방을 쓰지 않는다. W1A/W1B/W1C/W1D처럼 명확한 소단위를 정의하고, 한 소단위가 테스트·독립검수·인수인계·승인까지 닫히면 다음 소단위용 새 방 세트를 만든다.
 

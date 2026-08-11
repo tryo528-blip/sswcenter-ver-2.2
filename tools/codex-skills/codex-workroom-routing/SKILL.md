@@ -61,6 +61,7 @@ description: Parse Korean route aliases such as 집-코덱스-그록 or 사무�
 
 - 방 1–6은 서로 별도의 Codex 관리 worktree/task로 만든다. 원본 checkout은 보존한다.
 - coordinator는 다른 방의 dirty WIP를 합치거나 정리하지 않는다.
+- coordinator/root는 직접 제품 파일을 수정하거나 테스트·재시도를 대신 실행하지 않는다. coordinator는 route·모델·등급·범위 지시, 방 생성/메시지 전달, 보고 취합만 맡고 실제 작업은 지정된 독립 방 owner가 수행한다.
 - 구현·테스트·검수의 writable owner를 분리하고, 검수 방은 read-only 경계를 유지한다.
 - 사용자가 명시하지 않은 stage, commit, push, dependency 설치, DB reset, destructive cleanup을 하지 않는다.
 - 실행 결과는 `PASS`, `FAIL`, `BLOCKED`, `UNKNOWN` 중 하나로 닫고, `BLOCKED`이면 원인·미실행 게이트·다음 필요한 입력을 적는다.
