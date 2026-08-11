@@ -105,7 +105,9 @@ gpt-5.6-sol / ultra / fast off
 ## 6. coordinator와 독립 방의 역할
 
 - coordinator/root는 작업을 직접 수행하는 방이 아니다. route·모델·등급·범위 지시, 새 방 생성, 메시지 전달, 보고 취합만 한다.
-- 제품 파일 수정, 테스트 실행, 재시도, DB canary는 해당 등급으로 지정된 독립 방이 자기 worktree에서 수행한다.
+- 방 1–3은 자기 등급 범위의 테스트 코드·fixture·harness 수정, 테스트 실행, 재시도를 자기 worktree에서 수행한다.
+- 제품 구현 코드·migration·API·frontend·영구 DB 계약 수정은 Grok writer가 수행한다. 테스트 방은 exact diff와 writer Task Packet을 남긴다.
+- 방 4–6은 read-only 독립검수만 수행한다.
 - coordinator가 직접 결과를 만들거나 방의 재시도를 대신하지 않는다. 방이 결과·근거·changed_paths·미실행 게이트를 보고하면 다음 방을 지시한다.
 - 모델 변경, API/DB 계약 변경, 범위 확대, destructive action, credential/실계정, commit/push/merge만 coordinator가 형님께 중요 결정으로 묻는다.
 
@@ -155,3 +157,4 @@ W2-A 완료(PASS) → 기존 방 1–6 보존 → W2-B용 새 방 1–6 생성
 - 이전 방은 결과·로그·diff·handoff 증거로 보존한다. 삭제 대신 필요할 때만 archive한다.
 - 첫 계획과 첫 보고에 `unit_id`, `previous_unit_id`, `base_sha`, `room_generation`, `fresh_worktree=true`를 적는다.
 - 소단위가 FAIL/BLOCKED이면 다음 소단위 방을 먼저 만들어 덮지 않는다. 현재 방에서 operator가 범위 안의 최소 수정·제한 재시도를 판단하고, 소단위 전환 여부만 중요 결정으로 분리한다.
+- 실패 원인이 테스트 코드·fixture·harness 자체이면 방 1–3이 수정하고 재검증한다. 제품 구현 원인이면 Grok writer에게 넘긴 뒤 방 1–3이 재검증한다.

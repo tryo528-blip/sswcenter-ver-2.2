@@ -46,6 +46,8 @@ description: Parse Korean route aliases such as 집-코덱스-그록 or 사무�
 
 - 라이터는 그록 또는 딥시크 중 하나만 사용한다.
 - 테스트 1–3과 검수 4–6을 각각 독립 worktree로 준비한다.
+- 방 1–3은 지정 등급의 테스트 코드·fixture·harness를 수정하고 실행할 수 있다. 수정은 자기 worktree의 테스트 범위로 제한하고 정확한 diff와 재검증 결과를 보고한다.
+- 제품 구현 코드·migration·API·frontend·영구 DB 계약 변경은 방 1–3이 직접 하지 않고 Grok writer에게 writable allowlist와 Task Packet으로 전달한다.
 - 각 방에는 [사용 설명서](references/usage-guide.md)의 grade/model/effort/fast 조합을 그대로 붙인다.
 - 최신 규칙상 방 3(5등급 테스트)은 `gpt-5.6-sol`, `max`, `fast on`이다.
 - 최종 독립검수의 Claude는 `invoke-opus.ps1` wrapper가 실제로 지정한 모델·effort·permission/safe mode를 그대로 사용한다. 현재 wrapper가 `claude-opus-4-8`, `xhigh`, plan/safe-mode를 지정한다면 그대로 실행하고, Opus 5/ultra를 별도로 강제하거나 버전 차이만으로 `BLOCKED` 처리하지 않는다.
@@ -62,6 +64,7 @@ description: Parse Korean route aliases such as 집-코덱스-그록 or 사무�
 - 방 1–6은 서로 별도의 Codex 관리 worktree/task로 만든다. 원본 checkout은 보존한다.
 - coordinator는 다른 방의 dirty WIP를 합치거나 정리하지 않는다.
 - coordinator/root는 직접 제품 파일을 수정하거나 테스트·재시도를 대신 실행하지 않는다. coordinator는 route·모델·등급·범위 지시, 방 생성/메시지 전달, 보고 취합만 맡고 실제 작업은 지정된 독립 방 owner가 수행한다.
+- 방 1–3의 테스트 코드·fixture·harness 변경은 해당 테스트 방 owner가 수행할 수 있다. 제품 구현 변경은 Grok writer가 수행하고, 방 4–6은 항상 read-only다.
 - 구현·테스트·검수의 writable owner를 분리하고, 검수 방은 read-only 경계를 유지한다.
 - 사용자가 명시하지 않은 stage, commit, push, dependency 설치, DB reset, destructive cleanup을 하지 않는다.
 - 실행 결과는 `PASS`, `FAIL`, `BLOCKED`, `UNKNOWN` 중 하나로 닫고, `BLOCKED`이면 원인·미실행 게이트·다음 필요한 입력을 적는다.
