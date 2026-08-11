@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex 작업방 라우팅"
+  short_description: "장소·오퍼레이터·라이터별 등급 작업방 라우팅 관리"
+  default_prompt: "Use $codex-workroom-routing to parse a route alias and prepare the correct grade-based workroom plan."

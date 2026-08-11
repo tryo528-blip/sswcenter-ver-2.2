@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSWCenter ERP 과거·현재·미래 설계도</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17233b;
+      --muted: #63708a;
+      --line: #dbe3ef;
+      --paper: #ffffff;
+      --canvas: #f3f6fb;
+      --navy: #13233f;
+      --blue: #2d63d4;
+      --blue-soft: #eaf1ff;
+      --green: #16775b;
+      --green-soft: #e8f7f1;
+      --orange: #a95a10;
+      --orange-soft: #fff2e4;
+      --red: #a33b42;
+      --red-soft: #fff0f1;
+      --purple: #7151b5;
+      --purple-soft: #f2edff;
+      --shadow: 0 12px 32px rgba(24, 39, 75, 0.09);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: "Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif;
+      line-height: 1.65;
+      word-break: keep-all;
+    }
+    button, a { font: inherit; }
+    a { color: inherit; }
+    .skip-link {
+      position: absolute;
+      left: 16px;
+      top: -80px;
+      z-index: 100;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--navy);
+    }
+    .skip-link:focus { top: 12px; }
+
+    .hero {
+      background:
+        radial-gradient(circle at 88% 18%, rgba(93, 143, 255, 0.27), transparent 28%),
+        linear-gradient(135deg, #101d36 0%, #1a3158 58%, #234b7b 100%);
+      color: #fff;
+      padding: 52px 24px 46px;
+    }
+    .hero-inner, .page { width: min(1180px, 100%); margin: 0 auto; }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: #bcd2ff;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      max-width: 850px;
+      font-size: clamp(32px, 5vw, 58px);
+      line-height: 1.12;
+      letter-spacing: -0.04em;
+    }
+    .hero-copy {
+      max-width: 900px;
+      margin: 20px 0 0;
+      color: #e6edfb;
+      font-size: clamp(17px, 2vw, 21px);
+    }
+    .hero-copy strong { color: #fff; }
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 24px;
+    }
+    .hero-meta span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 5px 11px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #f5f8ff;
+      font-size: 13px;
+    }
+
+    .quick-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(10px);
+    }
+    .quick-nav-inner {
+      display: flex;
+      gap: 6px;
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      padding: 9px 18px;
+      overflow-x: auto;
+    }
+    .quick-nav a {
+      flex: 0 0 auto;
+      padding: 7px 10px;
+      border-radius: 8px;
+      color: #41506b;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .quick-nav a:hover, .quick-nav a:focus-visible {
+      background: var(--blue-soft);
+      color: var(--blue);
+      outline: none;
+    }
+
+    .page { padding: 34px 20px 64px; }
+    section { scroll-margin-top: 70px; margin-top: 44px; }
+    section:first-child { margin-top: 0; }
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .section-kicker {
+      margin: 0 0 5px;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+    h2 {
+      margin: 0;
+      font-size: clamp(25px, 3vw, 36px);
+      line-height: 1.25;
+      letter-spacing: -0.03em;
+    }
+    h3 { margin: 0; font-size: 19px; line-height: 1.4; }
+    p { margin: 0; }
+    .section-desc { max-width: 720px; margin-top: 8px; color: var(--muted); }
+
+    .simple-answer {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: stretch;
+      gap: 12px;
+    }
+    .era {
+      min-width: 0;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .era strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 21px;
+    }
+    .era p { color: var(--muted); }
+    .era.past { border-top: 5px solid var(--orange); }
+    .era.now { border-top: 5px solid var(--blue); }
+    .era.future { border-top: 5px solid var(--green); }
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      color: #91a0b9;
+      font-size: 28px;
+      font-weight: 800;
+    }
+    .plain-definition {
+      margin-top: 16px;
+      padding: 18px 20px;
+      border-left: 5px solid var(--blue);
+      border-radius: 0 12px 12px 0;
+      background: var(--blue-soft);
+      font-size: 18px;
+    }
+
+    .three-goals {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .goal-card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+    }
+    .goal-num {
+      display: inline-grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      margin-bottom: 12px;
+      border-radius: 9px;
+      background: var(--navy);
+      color: #fff;
+      font-weight: 800;
+    }
+    .goal-card p { margin-top: 7px; color: var(--muted); }
+
+    .status-legend, .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .status-legend { margin: 0 0 14px; }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+    }
+    .dot.ready { background: var(--green); }
+    .dot.partial { background: var(--orange); }
+    .dot.missing { background: var(--red); }
+    .dot.remove { background: var(--purple); }
+    .legend-item { color: var(--muted); font-size: 13px; }
+    .filters { margin-bottom: 16px; }
+    .filter-btn {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--paper);
+      color: #41506b;
+      padding: 7px 11px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .filter-btn[aria-pressed="true"] {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: #fff;
+    }
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .menu-card {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 18px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+    }
+    .menu-card[hidden] { display: none; }
+    .menu-title { display: flex; flex-direction: column; gap: 9px; }
+    .status-chip {
+      width: fit-content;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .status-chip.ready { background: var(--green-soft); color: var(--green); }
+    .status-chip.partial { background: var(--orange-soft); color: var(--orange); }
+    .status-chip.missing { background: var(--red-soft); color: var(--red); }
+    .status-chip.remove { background: var(--purple-soft); color: var(--purple); }
+    .state-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .state-box { min-width: 0; }
+    .state-label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .state-box p { font-size: 14px; }
+
+    .rule-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .rule-card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+    }
+    .rule-card h3 { margin-bottom: 10px; }
+    .rule-card ul { margin: 0; padding-left: 20px; }
+    .rule-card li + li { margin-top: 6px; }
+    .no-box {
+      border-color: #f0c7ca;
+      background: var(--red-soft);
+    }
+
+    .tag-flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 9px;
+      margin-bottom: 16px;
+    }
+    .tag-step {
+      position: relative;
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+    .tag-step b { display: block; margin-bottom: 5px; }
+    .tag-step p { color: var(--muted); font-size: 14px; }
+    .tag-tables {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .data-panel {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+    }
+    .data-panel h3 { padding: 16px 18px 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      padding: 11px 14px;
+      border-top: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f7f9fd; color: #465570; font-size: 13px; }
+    td { font-size: 14px; }
+    .formula {
+      margin: 14px 18px 18px;
+      padding: 13px 14px;
+      border-radius: 10px;
+      background: var(--green-soft);
+      color: #0d5944;
+      font-weight: 800;
+    }
+    .warning-line {
+      margin-top: 14px;
+      padding: 15px 18px;
+      border: 1px solid #f2c9cc;
+      border-radius: 12px;
+      background: var(--red-soft);
+    }
+    .warning-line strong { color: var(--red); }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+    }
+    .permission-table { min-width: 780px; }
+    .permission-table td:first-child { font-weight: 800; }
+    .work-table { min-width: 860px; }
+    .work-table td:first-child { font-weight: 800; }
+    .work-table-wrap + .work-table-wrap { margin-top: 14px; }
+    .table-caption {
+      padding: 16px 18px 10px;
+      font-size: 19px;
+      font-weight: 800;
+    }
+    .privacy { color: var(--red); font-weight: 800; }
+
+    .retire-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .retire-item {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 12px;
+      padding: 17px;
+      border: 1px solid #eadcfb;
+      border-radius: 13px;
+      background: var(--purple-soft);
+    }
+    .stop-mark {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--purple);
+      color: #fff;
+      font-weight: 800;
+    }
+    .retire-item p { margin-top: 4px; color: #5e5277; font-size: 14px; }
+
+    .roadmap {
+      position: relative;
+      display: grid;
+      gap: 0;
+      margin-left: 11px;
+      border-left: 3px solid #cdd8eb;
+    }
+    .road-step {
+      position: relative;
+      padding: 0 0 24px 30px;
+    }
+    .road-step:last-child { padding-bottom: 0; }
+    .road-step::before {
+      content: "";
+      position: absolute;
+      left: -10px;
+      top: 3px;
+      width: 15px;
+      height: 15px;
+      border: 3px solid var(--paper);
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 0 2px #aebedf;
+    }
+    .road-step h3 { margin-bottom: 5px; }
+    .road-step p { color: var(--muted); }
+    .done-when {
+      display: inline-block;
+      margin-top: 7px;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .decision-list {
+      counter-reset: decision;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .decision-list li {
+      counter-increment: decision;
+      display: grid;
+      grid-template-columns: 30px 1fr;
+      gap: 10px;
+      padding: 16px;
+      border: 1px solid #f1d2ad;
+      border-radius: 12px;
+      background: var(--orange-soft);
+    }
+    .decision-list li::before {
+      content: counter(decision);
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--orange);
+      color: #fff;
+      font-weight: 800;
+    }
+    .decision-note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .footer-note {
+      margin-top: 50px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .footer-note a { color: var(--blue); font-weight: 700; }
+
+    @media (max-width: 900px) {
+      .simple-answer { grid-template-columns: 1fr; }
+      .flow-arrow { transform: rotate(90deg); min-height: 24px; }
+      .three-goals, .menu-grid, .tag-tables { grid-template-columns: 1fr; }
+      .tag-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .hero { padding: 40px 18px 36px; }
+      .page { padding: 28px 14px 48px; }
+      section { margin-top: 36px; }
+      .section-head { align-items: start; flex-direction: column; }
+      .menu-card { grid-template-columns: 1fr; gap: 12px; }
+      .state-pair, .rule-grid, .tag-flow, .retire-list, .decision-list { grid-template-columns: 1fr; }
+      .quick-nav-inner { padding-inline: 12px; }
+    }
+    @media print {
+      body { background: #fff; }
+      .quick-nav, .filters { display: none; }
+      .hero { background: #17233b; print-color-adjust: exact; }
+      .page { width: 100%; max-width: none; padding: 20px 0; }
+      .era, .goal-card, .menu-card, .rule-card, .data-panel, .table-wrap, .retire-item { box-shadow: none; break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 바로가기</a>
+
+  <header class="hero" id="top">
+    <div class="hero-inner">
+      <p class="eyebrow">SSWCenter ERP · 2026-08-12 결정 기준</p>
+      <h1>과거에 만든 것, 지금 있는 것,<br>앞으로 만들 것</h1>
+      <p class="hero-copy">
+        이 ERP는 공단 전산을 다시 만드는 프로그램이 아닙니다.
+        <strong>센터에서 사람과 일정을 관리하고, 해야 할 일을 안 잊게 해주는 프로그램</strong>입니다.
+      </p>
+      <div class="hero-meta" aria-label="문서 상태">
+        <span>최소기능 우선</span>
+        <span>과잉설계 금지</span>
+        <span>코드 수정 전 설계 기준</span>
+        <span>본인부담금·OCR·일반 입출력은 이번 상세범위 제외</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="quick-nav" aria-label="문서 바로가기">
+    <div class="quick-nav-inner">
+      <a href="#overview">한눈에</a>
+      <a href="#goals">목표 3개</a>
+      <a href="#menus">메뉴별 상태</a>
+      <a href="#rules">핵심 규칙</a>
+      <a href="#worklists">5개·6개 업무</a>
+      <a href="#staff-change">직원교체</a>
+      <a href="#tag">태그 보정</a>
+      <a href="#permission">권한</a>
+      <a href="#retire">그만둘 것</a>
+      <a href="#roadmap">구현 순서</a>
+      <a href="#decisions">남은 결정</a>
+    </div>
+  </nav>
+
+  <main class="page" id="main">
+    <section id="overview">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">한눈에 보는 변화</p>
+          <h2>복잡한 ERP에서, 안 잊게 해주는 ERP로</h2>
+        </div>
+      </div>
+      <div class="simple-answer" aria-label="과거 현재 미래 흐름">
+        <article class="era past">
+          <strong>과거</strong>
+          <p>공단에서 이미 검사하는 계약·인정·계획서까지 ERP가 다시 검사하려 했습니다. 표와 상태, 단계도 너무 많아졌습니다.</p>
+        </article>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <article class="era now">
+          <strong>현재</strong>
+          <p>수급자·직원·인정·계약의 기초는 있습니다. 하지만 설정·파일함·달력은 모양만 있고, 실제 일정과 계정별 업무는 없습니다.</p>
+        </article>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <article class="era future">
+          <strong>앞으로</strong>
+          <p>누가 대상인지, 완료했는지, 오늘 어떤 일정이 있는지만 정확히 알려줍니다. 공단 판단은 공단에 맡깁니다.</p>
+        </article>
+      </div>
+      <p class="plain-definition"><strong>최종 모습:</strong> 사람 자료 + 계획일정 + 실제 태그를 연결해, 놓치기 쉬운 업무를 자동으로 알려주고 완료 여부만 관리합니다.</p>
+    </section>
+
+    <section id="goals">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">프로젝트 중심축</p>
+          <h2>모든 기능은 이 세 가지 중 하나여야 합니다</h2>
+        </div>
+      </div>
+      <div class="three-goals">
+        <article class="goal-card">
+          <span class="goal-num">1</span>
+          <h3>대상자와 완료 확인</h3>
+          <p>수급자·직원 중 누가 해당 업무 대상인지 골라 보여주고, 완료했는지만 표시합니다.</p>
+        </article>
+        <article class="goal-card">
+          <span class="goal-num">2</span>
+          <h3>수급자–요양보호사 일정</h3>
+          <p>공단 계획 Excel을 가져오고 사람이 수정하며, 전날 태그 시간으로 정상 일정만 보정합니다.</p>
+        </article>
+        <article class="goal-card">
+          <span class="goal-num">3</span>
+          <h3>사회복지사 달력</h3>
+          <p>월 1회 방문, 자동 마감, 연차, 개인 일정을 한 달력에서 권한에 맞게 봅니다.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="menus">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">메뉴별 실제 상태</p>
+          <h2>지금 무엇이 진짜 있고, 무엇이 모양만 있나</h2>
+          <p class="section-desc">메뉴는 없애지 않습니다. 현재 상태가 달라도 앞으로 필요한 최소기능만 채웁니다.</p>
+        </div>
+      </div>
+      <div class="status-legend" aria-label="상태 설명">
+        <span class="legend-item"><i class="dot ready"></i>기반 있음</span>
+        <span class="legend-item"><i class="dot partial"></i>반쪽 구현</span>
+        <span class="legend-item"><i class="dot missing"></i>실제 기능 없음</span>
+        <span class="legend-item"><i class="dot remove"></i>제거·재작성</span>
+      </div>
+      <div class="filters" aria-label="메뉴 상태 필터">
+        <button class="filter-btn" type="button" data-filter="all" aria-pressed="true">전체</button>
+        <button class="filter-btn" type="button" data-filter="ready" aria-pressed="false">기반 있음</button>
+        <button class="filter-btn" type="button" data-filter="partial" aria-pressed="false">반쪽 구현</button>
+        <button class="filter-btn" type="button" data-filter="missing" aria-pressed="false">실제 기능 없음</button>
+        <button class="filter-btn" type="button" data-filter="remove" aria-pressed="false">제거·재작성</button>
+      </div>
+
+      <div class="menu-grid" id="menu-grid">
+        <article class="menu-card" data-status="ready">
+          <div class="menu-title"><h3>공통 기반</h3><span class="status-chip ready">기반 있음</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>PIN 로그인·세션·개인정보 보호·수급자·직원·인정·계약 DB와 감사로그 원장은 실제로 있습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>새 플랫폼을 만들지 않고 이 기반을 그대로 사용합니다. 필요한 화면과 최소 저장구조만 붙입니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="partial">
+          <div class="menu-title"><h3>대시보드</h3><span class="status-chip partial">반쪽 구현</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>화면과 정적 업무카드는 있습니다. 내 할 일은 이 PC 브라우저에만 저장되고 실제 업무 원장은 없습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>대시보드는 유지합니다. 내 할 일만 빼고, 계약·인정·통보일·실제근무에서 계산한 자동 업무카드를 실제 완료자료와 연결합니다. 별도 범용 카드 DB는 만들지 않습니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="partial">
+          <div class="menu-title"><h3>수급자</h3><span class="status-chip partial">기반 + 수정 필요</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>기본정보·보호자·인정·계약 원장은 있습니다. 인정번호 표시는 연결되지 않았고, 인정전환과 옛 W2는 과합니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>기본정보를 살리고 상담반영·반기평가·서류미비·인정만료·계약만료 대상자와 완료만 보여줍니다. 계약은 서비스·시작·종료·종료사유만 씁니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="partial">
+          <div class="menu-title"><h3>직원</h3><span class="status-chip partial">기반 + 수정 필요</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>신규등록·재직·자격·교육·검진·상담 자료는 있습니다. 기본정보 수정화면이 없고 세부 기록이 너무 많습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>수급자와 같은 기본정보 수정화면을 만듭니다. 보수교육·직원상담·인권교육·연간교육·건강검진·신규교육을 관리하고, 건강검진은 검진일만 씁니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="missing">
+          <div class="menu-title"><h3>사회복지사</h3><span class="status-chip missing">실제 기능 없음</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>담당 수급자 연결, 방문일정, 연차, 계정별 개인일정 저장 기능이 없습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>작업영역을 채우는 한 달 달력에 월 1회 방문·마감·연차·개인일정을 표시합니다. 월간 칸을 누르면 3주로 확대하고 우클릭하면 월간으로 돌아옵니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="missing">
+          <div class="menu-title"><h3>전체 일정</h3><span class="status-chip missing">달력 모양만 있음</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>빈 월간 달력 팝업만 있습니다. 계획 Excel 가져오기, 일정 저장·수정·변경로그가 없습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>모든 로그인 사용자가 계획 Excel을 가져오고 전체 수급자–요양보호사 일정을 생성·조회·수정·삭제합니다. 일시 대체는 요양보호사 일반 수정이며 모든 변경을 기록합니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="missing">
+          <div class="menu-title"><h3>설정</h3><span class="status-chip missing">고정 문구만 있음</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>센터 한마디·로그인 계정·감사기록 등이 글자로만 보입니다. 저장하거나 관리할 수 없습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>센터장 전용 계정관리·감사로그와 센터정보·센터 한마디를 만듭니다. ADMIN의 직원 연결은 최초 설치 때 이미 끝나므로 표시만 하고, 사용중지는 계정삭제가 아니라 로그인을 막고 기존 세션을 끝냅니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="missing">
+          <div class="menu-title"><h3>파일함</h3><span class="status-chip missing">가짜 목록만 있음</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>고정 폴더명과 가짜 파일 3개만 표시합니다. 실제 파일은 넣거나 열 수 없습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>폴더 만들기·업로드·열기/다운로드·이름변경·이동·휴지통·복원이 되는 실제 파일함을 만듭니다. 일반 파일은 모두 함께 관리하고 영구삭제는 1차에서 만들지 않습니다.</p></div>
+          </div>
+        </article>
+
+        <article class="menu-card" data-status="remove">
+          <div class="menu-title"><h3>옛 복잡기능</h3><span class="status-chip remove">제거·재작성</span></div>
+          <div class="state-pair">
+            <div class="state-box"><span class="state-label">지금</span><p>인정전환 일괄기능은 실제 구현돼 있고, 계약 연결형 급여계획서 테이블은 화면 없이 백엔드에 있습니다.</p></div>
+            <div class="state-box"><span class="state-label">앞으로</span><p>인정전환은 제거합니다. 옛 W2는 데이터 유무를 확인한 뒤 비활성화하고 반기 대상자·완료 기능으로 바꿉니다.</p></div>
+          </div>
+        </article>
+      </div>
+      <p class="decision-note">본인부담금·OCR·일반 입출력 메뉴는 없애는 것이 아니라 이번 상세 재설계에서 잠시 제외한 것입니다.</p>
+    </section>
+
+    <section id="rules">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">앞으로 지킬 최소 규칙</p>
+          <h2>화면에 필요한 것만 남깁니다</h2>
+        </div>
+      </div>
+      <div class="rule-grid">
+        <article class="rule-card">
+          <h3>대상자·완료 화면</h3>
+          <ul>
+            <li>업무분류를 누르면 해당 대상자만 보입니다.</li>
+            <li>대상자명과 완료 여부가 중심입니다.</li>
+            <li>완료 처리·완료 취소는 버튼으로 합니다.</li>
+            <li>누가 언제 바꿨는지는 화면이 아니라 감사로그에 남깁니다.</li>
+          </ul>
+        </article>
+        <article class="rule-card">
+          <h3>자동 업무카드</h3>
+          <ul>
+            <li>대상자·업무명·마감 또는 D-day·완료만 표시</li>
+            <li>계약만료·인정만료·반기평가·직원교체 네 종류부터</li>
+            <li>원천자료에서 계산하고 카드 전용 범용 원장은 만들지 않음</li>
+            <li>기한이 지나도 미완료이면 사라지지 않음</li>
+            <li>계약·인정·직원교체는 완료 버튼, 반기평가는 통보일 입력으로 완료</li>
+          </ul>
+        </article>
+        <article class="rule-card">
+          <h3>계약·인정·계획서</h3>
+          <ul>
+            <li>계약: 서비스 종류·시작일·종료일·종료사유</li>
+            <li>인정번호·인정기간·등급 기록은 유지</li>
+            <li>인정전환 일괄기능은 제거</li>
+            <li>반기평가 = 급여계획 대상자와 완료 관리</li>
+            <li>권장기한은 6개월 월말·인정만료·계약만료 중 가장 빠른 날</li>
+          </ul>
+        </article>
+        <article class="rule-card">
+          <h3>자동 알림</h3>
+          <ul>
+            <li>계약만료 D-45</li>
+            <li>인정만료 D-100</li>
+            <li>반기평가 실제 권장기한 D-45</li>
+            <li>직원교체 실제 첫 제공일부터 14일</li>
+            <li>업무카드 완료 시 달력 마감도 함께 완료</li>
+          </ul>
+        </article>
+        <article class="rule-card no-box">
+          <h3>만들지 않을 것</h3>
+          <ul>
+            <li>공단이 하는 계약·인정 적합성 재검증</li>
+            <li>상담내용·면제사유 같은 불필요한 상세기록</li>
+            <li>여러 단계·여러 상태를 가진 업무 절차</li>
+            <li>체크박스 — 보호자를 납부자로 고를 때만 예외</li>
+          </ul>
+        </article>
+      </div>
+      <p class="decision-note"><strong>리스트와 카드는 다릅니다.</strong> 수급자·직원 완료현황에는 대상자와 완료만 보여주고, 자동 업무카드에는 잊지 않기 위해 업무명과 마감일만 더 보여줍니다. 발생이유·담당자·단계·첨부·복수 상태는 만들지 않습니다.</p>
+      <p class="decision-note"><strong>중요:</strong> 업무상 계획적용기간은 시작일부터 다음 반기 말일까지이고 인정·계약이 먼저 끝나면 그날까지입니다. 하지만 공단에서 이미 작성·검증하므로 ERP는 그 텍스트를 다시 검사하거나 저장을 막지 않고, 반기평가를 잊지 않게 알리는 계산에만 만료 cap을 씁니다. 반기평가는 별도 완료버튼이 아니라 실제 통보일 입력이 완료 증거입니다.</p>
+    </section>
+
+    <section id="worklists">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">대시보드 이름과 실제 대상조건</p>
+          <h2>수급자 5개, 직원 6개는 이렇게 봅니다</h2>
+          <p class="section-desc">화면에는 긴 설명을 늘어놓지 않고 대상자와 완료만 보여줍니다. 아래 표는 시스템이 누구를 목록에 넣을지 정하는 내부 기준입니다.</p>
+        </div>
+      </div>
+
+      <div class="table-wrap work-table-wrap">
+        <div class="table-caption">수급자 업무 5개</div>
+        <table class="work-table">
+          <thead><tr><th>이름</th><th>누가 대상인가</th><th>언제 한 건으로 보는가</th></tr></thead>
+          <tbody>
+            <tr><td>상담반영</td><td>연 1회. 그해 중간에 계약종료 처리된 수급자는 제외</td><td>수급자 × 연도</td></tr>
+            <tr><td>반기평가</td><td>유효 통보 이력이 없으면 우선 미완료. 이력이 있으면 마지막 통보일에서 6개월 되는 달의 말일, 인정·계약 만료가 더 빠르면 그날까지</td><td>실제 통보일 입력 = 완료 · 별도 완료값 없음</td></tr>
+            <tr><td>서류미비</td><td>선택한 월에 수급자–요양보호사 서비스 일정이 하나라도 있는 모든 수급자</td><td>수급자 × 일정이 있는 월</td></tr>
+            <tr><td>인정만료</td><td>현재 적용할 인정 종료일이 100일 안으로 들어온 수급자</td><td>인정 회차</td></tr>
+            <tr><td>계약만료</td><td>현재 적용할 계약 종료일이 45일 안으로 들어온 수급자</td><td>계약 회차</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="table-wrap work-table-wrap">
+        <div class="table-caption">직원 업무 6개</div>
+        <table class="work-table">
+          <thead><tr><th>이름</th><th>회수한 최소 대상조건</th><th>완료 판단</th></tr></thead>
+          <tbody>
+            <tr><td>보수교육</td><td>현재 재직 요양보호사 중 대상연도와 출생연도 홀짝이 같고, 최초 요양보호사 자격 취득연도 뒤 2년을 초과한 사람</td><td>해당 연도 완료 버튼</td></tr>
+            <tr><td>직원상담</td><td>분기 첫날부터 말일까지 계속 재직한 요양보호사. 첫날 입사·말일 퇴사는 포함. 화면은 현재 분기를 기본으로 엶</td><td>해당 분기 완료 버튼</td></tr>
+            <tr><td>인권교육</td><td>반기 말일 재직자. 반기 중 입사해도 말일까지 있으면 포함, 말일 전 퇴사는 제외. 같은 반기 재입사는 완료를 이어 씀</td><td>해당 반기 완료 버튼</td></tr>
+            <tr><td>연간교육</td><td>12월 31일 재직자. 그해 중 입사해도 연말까지 있으면 포함. 같은 해 재입사는 기존 완료를 이어 씀. 장애인학대·노인학대·성희롱·직장내괴롭힘·개인정보보호 5과목</td><td>5과목이 모두 끝나야 완료</td></tr>
+            <tr><td>건강검진</td><td>그해 신규입사자는 중도퇴사해도 대상. 기존 직원은 12월 31일 재직 시 대상. 검진일이 입사일보다 1년 초과 오래됐으면 주의</td><td>검진일 있음 = 완료</td></tr>
+            <tr><td>신규교육</td><td>입사·재입사 때마다 새 재직에 1건. 이후 퇴사해도 대상 이력은 지우지 않고 예전 재직 완료도 재사용하지 않음</td><td>해당 신규 재직 건 완료 버튼</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="warning-line"><strong>한꺼번에 현재 재직자로 묶지 않습니다.</strong> 상담은 분기 전체, 인권교육은 반기 말일, 연간교육은 12월 31일, 건강검진은 신규입사 여부와 12월 31일을 각각 봅니다. 날짜의 첫날과 마지막 날은 모두 포함합니다.</p>
+      <p class="decision-note">이 조건은 삭제된 구 1.0 정본의 보존된 읽기 기록을 회수하고, 현재 노션의 <a href="https://app.notion.com/p/38870766b42f81459256c3a899516aed">교육확인</a>·<a href="https://app.notion.com/p/38870766b42f8179b4b7e66a7ede25fc">직원상담</a>·<a href="https://app.notion.com/p/38870766b42f81ef840cc6ea878b63fe">건강검진</a> 대상 뷰와 대조했습니다. 노션은 직원상담의 분기 첫날 입사자와 건강검진의 그해 입사 후 중도퇴사자를 빠뜨리므로 그대로 복사하지 않고, 구 정본의 포함 경계와 형님의 최신 결정을 적용합니다. 개인 이름이나 식별값은 넣지 않았습니다.</p>
+    </section>
+
+    <section id="staff-change">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">실제 급여 순서로 만드는 상담 대상</p>
+          <h2>하루 대체근무도 직원교체입니다</h2>
+          <p class="section-desc">배정표가 바뀌었다고 만드는 것이 아니라, 실제로 서비스를 제공한 요양보호사의 순서를 보고 만듭니다.</p>
+        </div>
+      </div>
+      <div class="rule-grid">
+        <article class="rule-card"><h3>언제 생기나</h3><ul><li>수급자·서비스별 직전 실제 제공자와 새 제공자를 비교</li><li>빈 날이 있어도 마지막 실제 제공자를 직전 사람으로 사용</li><li>하루 대체근무도 같은 규칙</li></ul></article>
+        <article class="rule-card"><h3>언제까지 하나</h3><ul><li>새 직원의 첫 실제 제공일이 Day 1</li><li>첫 제공일 +13일, 즉 14일 안에 완료</li><li>상담내용은 쓰지 않고 완료만 표시</li></ul></article>
+        <article class="rule-card"><h3>다시 바뀌면</h3><ul><li>Day 14 재교체는 앞 미완료 건을 예외 종결</li><li>Day 15 이후에는 예외를 적용하지 않음</li><li>실제근무 정정·무효화 시 다시 계산</li></ul></article>
+        <article class="rule-card"><h3>2인 근무는 이렇게</h3><ul><li>방문요양·방문목욕은 모두 1명 또는 2명 가능</li><li>직전 묶음과 비교해 새로 들어온 사람만 대상</li><li><strong>A+B → A+C이면 C만 직원교체</strong></li><li>빠진 사람이나 표시순서 변경만으로는 만들지 않음</li></ul></article>
+      </div>
+    </section>
+
+    <section id="tag">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">계획일정과 태그 Excel</p>
+          <h2>정상일 때만 고치고, 애매하면 “확인요망”</h2>
+          <p class="section-desc">태그를 가져왔다고 무조건 일정을 바꾸지 않습니다. 한 쌍이 분명하고 시간도 정상일 때만 시작·종료를 함께 바꿉니다.</p>
+        </div>
+      </div>
+
+      <div class="tag-flow" aria-label="태그 일정 보정 순서">
+        <div class="tag-step"><b>1. 후보 1개만</b><p>수급자 + 요양보호사 + 날짜·시간범위를 통과한 계획이 정확히 하나</p></div>
+        <div class="tag-step"><b>2. 시작시간 판정</b><p>계획시간 앞 30분·유지·뒤 30분 중 하나</p></div>
+        <div class="tag-step"><b>3. 서비스시간 계산</b><p>태그 종료 − 태그 시작, 30분 단위 내림</p></div>
+        <div class="tag-step"><b>4. 한 번에 반영</b><p>보정 시작 + 서비스시간 = 보정 종료</p></div>
+      </div>
+
+      <div class="tag-tables">
+        <div class="data-panel">
+          <h3>계획 시작이 09:00일 때</h3>
+          <table>
+            <thead><tr><th>태그 시작</th><th>계획 시작을</th></tr></thead>
+            <tbody>
+              <tr><td>08:01 ~ 08:30</td><td><strong>08:30</strong>으로 변경</td></tr>
+              <tr><td>08:31 ~ 09:29</td><td><strong>09:00</strong> 유지</td></tr>
+              <tr><td>09:30 ~ 09:59</td><td><strong>09:30</strong>으로 변경</td></tr>
+              <tr><td>08:00 이하 / 10:00 이상</td><td><strong>확인요망</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="data-panel">
+          <h3>서비스시간 인정</h3>
+          <table>
+            <thead><tr><th>태그 총시간</th><th>인정시간</th></tr></thead>
+            <tbody>
+              <tr><td>30 ~ 59분</td><td>30분</td></tr>
+              <tr><td>60 ~ 89분</td><td>60분</td></tr>
+              <tr><td>180 ~ 209분</td><td>180분</td></tr>
+              <tr><td>210 ~ 239분</td><td>210분</td></tr>
+              <tr><td>480분 이상</td><td>최대 480분</td></tr>
+            </tbody>
+          </table>
+          <p class="formula">종료시간 = 보정 시작시간 + 인정 서비스시간</p>
+        </div>
+      </div>
+
+      <p class="warning-line"><strong>달력에는 사유를 길게 쓰지 않습니다.</strong> 종료 태그 없음, 계획만 있음, 태그만 있음, 1시간 이상 차이, 후보 0개·2개 이상, 30분 미만 서비스는 모두 똑같이 <strong>확인요망</strong>으로 표시합니다. 두 후보 중 하나가 더 가까워도 자동으로 고르지 않습니다.</p>
+      <p class="decision-note"><strong>원본 보존:</strong> 가져온 태그 Excel은 바이트 그대로 두고, 원본 태그값과 일정 수정 전·후를 별도 변경기록으로 남깁니다. 아직 태그를 적용하지 않은 날짜라면 첫 가져오기가 사람이 고친 일정도 보정할 수 있고, 반영 뒤에는 사람이 다시 자유롭게 고칠 수 있습니다.</p>
+      <p class="decision-note"><strong>태그 다시 가져오기:</strong> 파일명이 달라도 같은 태그 내용은 중복 적용하지 않습니다. 같은 날짜의 태그가 이미 한 번 적용됐다면 수정된 태그 Excel에 그 날짜가 다시 있어도 건너뛰므로 사람의 이후 수정도 덮지 않습니다. 한 태그 파일에 섞인 새 날짜만 처리합니다.</p>
+    </section>
+
+    <section id="permission">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">누가 볼 수 있고 고칠 수 있나</p>
+          <h2>센터장도 볼 수 없는 개인 일정이 있습니다</h2>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="permission-table">
+          <thead><tr><th>항목</th><th>볼 수 있는 사람</th><th>고칠 수 있는 사람</th></tr></thead>
+          <tbody>
+            <tr><td>전체 수급자–요양보호사 일정</td><td>로그인 사용자 모두</td><td>로그인 사용자 모두 · 변경로그</td></tr>
+            <tr><td>계획일정·태그 Excel 가져오기</td><td>로그인 사용자 모두</td><td>로그인 사용자 모두 · 원본과 실행자 기록</td></tr>
+            <tr><td>수급자·직원 명단과 완료현황</td><td>로그인 사용자 모두</td><td>로그인 사용자 모두 · 변경로그</td></tr>
+            <tr><td>사회복지사 방문일정</td><td>사회복지사를 선택하면 모두 조회</td><td>해당 사회복지사와 센터장</td></tr>
+            <tr><td>사회복지사 담당 수급자 연결</td><td>로그인 사용자 모두</td><td>로그인 사용자 모두 · 변경로그</td></tr>
+            <tr><td>사회복지사 연차</td><td>본인과 센터장</td><td>작성자 본인만</td></tr>
+            <tr><td>개인 할 일·개인 일정</td><td class="privacy">작성자 본인만 · 센터장도 못 봄</td><td>작성자 본인만</td></tr>
+            <tr><td>일반 파일함</td><td>로그인 사용자 모두</td><td>로그인 사용자 모두 · 휴지통·복원·변경로그</td></tr>
+            <tr><td>센터정보·센터 한마디</td><td>로그인 사용자 모두</td><td>센터장만</td></tr>
+            <tr><td>감사·시스템·가져오기 로그</td><td>센터장만 · 설정에서 조회</td><td>파일함에서 수정 불가</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="decision-note"><strong>달력 동작:</strong> 같은 사회복지사·수급자·달력월에는 방문일정 1건만 둡니다. 달력은 남는 가로·세로를 채우고, 날짜 칸 클릭으로 해당 주 앞뒤를 포함한 3주를 보며 우클릭으로 같은 사람·같은 달의 월간화면으로 돌아갑니다. 자동 마감은 달력에서 완료하지 않고 업무카드 완료값만 읽습니다.</p>
+      <p class="decision-note">센터장 = ADMIN. USER 계정은 사회복지사 또는 간호사 직원과 연결합니다. 간호사는 이름만 다른 직군이며 사회복지사와 같은 방식으로 다룹니다. 공동기능은 별도 권한부여표가 없어도 로그인하면 사용할 수 있습니다. 개인 일정은 센터장 화면과 센터장용 감사로그에 기록 자체가 나오지 않습니다.</p>
+    </section>
+
+    <section id="retire">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">과거 설계 정리</p>
+          <h2>앞으로 기준으로 삼지 않을 기능</h2>
+        </div>
+      </div>
+      <div class="retire-list">
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>인정전환 일괄기능</h3><p>미리보기·최종확인·실행 경로는 제거하지만 이미 생긴 인정·등급·계약·감사자료는 지우지 않습니다.</p></div></article>
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>계약 연결형 W2 급여계획서</h3><p>저장을 막는 검증·권한만 새 migration으로 해제하고 기존 행은 읽기 전용으로 보존합니다. 통보일 원장은 반기평가 계산에 계속 씁니다.</p></div></article>
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>사회복지사·간호사 별도 탭</h3><p>간호사는 사회복지사와 같은 방식으로 다룹니다. 별도 탭·별도 담당배정은 만들지 않습니다.</p></div></article>
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>상담내용·면제사유 중심 기록</h3><p>분기상담은 대상자와 완료만, 건강검진은 검진일만 남깁니다.</p></div></article>
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>외부 WorkCadence 연동</h3><p>외부 인증·동기화·캐시·변경피드를 만들지 않습니다. ERP 안에서 끝냅니다.</p></div></article>
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>보이지 않는 거대 작업플랫폼</h3><p>태그 가져오기와 자동업무에 꼭 필요한 중복방지·실행기록만 내부에 둡니다.</p></div></article>
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>옛 장기 배정의 강제 재사용</h3><p>계약·재직기간·일반/가족을 묶은 CareAssignment를 새 계획일정의 필수조건으로 삼지 않습니다.</p></div></article>
+        <article class="retire-item"><span class="stop-mark">×</span><div><h3>옛 다단계 카드의 강제 재사용</h3><p>인정·계약·계획 갱신은 새 날짜형 카드로 흡수합니다. 신규·퇴사 관련 네 카드 종류는 형님 결정 전까지 되살리지 않습니다.</p></div></article>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">미래 구현계획</p>
+          <h2>기반부터 쌓아야 다시 뜯지 않습니다</h2>
+          <p class="section-desc">한 번에 모든 메뉴를 만들지 않습니다. 다음 단계가 실제로 의존하는 최소기능부터 순서대로 만듭니다.</p>
+        </div>
+      </div>
+      <div class="roadmap">
+        <article class="road-step"><h3>0. 옛 정본과 테스트 정리</h3><p>지금 결정과 충돌하는 W1·W2 계약, 체크박스, 다단계 업무 테스트를 먼저 새 기준으로 바꿉니다.</p><span class="done-when">끝 기준: 옛 기능이 테스트 때문에 되살아날 수 없음</span></article>
+        <article class="road-step"><h3>R0. 옛 기능 안전 폐기</h3><p>인정전환 실행경로와 W2 저장차단만 걷어내고 기존 데이터는 읽기 전용으로 보존합니다.</p><span class="done-when">끝 기준: 옛 기능은 실행되지 않고 역사자료는 남음</span></article>
+        <article class="road-step"><h3>1. 계정·설정·권한</h3><p>USER 계정, 직원 연결, 닉네임, PIN 재생성, 사용중지, 센터정보, 센터 한마디, 감사로그 조회를 만듭니다. 기존 ADMIN 연결은 보여주기만 합니다.</p><span class="done-when">끝 기준: 로그인 계정이 누구인지 서버가 확실히 앎</span></article>
+        <article class="road-step"><h3>2. 사람·완료·자동카드</h3><p>기본정보와 5개·6개 완료화면을 만들고 계약만료·인정만료·반기평가 세 카드를 원천자료에서 계산합니다. 서류미비 완료원장은 준비하되 대상자 계산은 4단계의 전체 일정 원장이 생긴 뒤 연결합니다.</p><span class="done-when">끝 기준: 대상자와 다가오는 일을 중복저장 없이 확인함</span></article>
+        <article class="road-step"><h3>3. 사회복지사 달력</h3><p>담당 수급자, 월 1회 방문, 자동 마감, 연차, 개인 일정을 계정별 권한으로 연결합니다.</p><span class="done-when">끝 기준: 사회복지사가 달력만 보고 자기 일을 놓치지 않음</span></article>
+        <article class="road-step"><h3>4. 계획일정</h3><p>먼저 전체 일정 원장과 수동 생성·수정·삭제를 만들고 서류미비 대상자를 연결합니다. 실제 Excel 표본이 오면 열과 식별값을 확정해 공단 계획 가져오기를 붙입니다.</p><span class="done-when">끝 기준: 이름을 추측하지 않고 실제 월 계획일정을 관리함</span></article>
+        <article class="road-step"><h3>5. 태그·직원교체</h3><p>원본 보존, 후보 1개만 자동보정, 확인요망, 실제 제공순서 판정과 네 번째 직원교체 카드를 만듭니다.</p><span class="done-when">끝 기준: 애매한 일정은 안 바뀌고 실제 교체를 안 놓침</span></article>
+        <article class="road-step"><h3>6. 실제 파일함</h3><p>모두가 지정된 파일함 안에서 폴더·파일을 관리하고 휴지통·복원할 수 있게 합니다.</p><span class="done-when">끝 기준: 실제 파일이 저장·열리고 실수로 지워도 복구 가능</span></article>
+      </div>
+    </section>
+
+    <section id="decisions">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">형님 결정 전에는 만들지 않음</p>
+          <h2>아직 남은 중요한 결정 2개, 실제 입력 2개</h2>
+        </div>
+      </div>
+      <ol class="decision-list">
+        <li><strong>형님 결정:</strong> 같은 요양보호사의 일정겹침, 같은 수급자의 일정겹침, 근무일 재직·서비스자격 불일치를 각각 주의로 둘지 저장을 막을지 · 정상 2인 급여는 충돌 아님</li>
+        <li><strong>형님 결정:</strong> 기존 신규수급자·신규직원·퇴사직원·수급자종료 자동카드를 각각 남길지</li>
+        <li><strong>실제 입력:</strong> 공단 계획·태그 Excel의 시트명·열 이름·식별값 표본</li>
+        <li><strong>실제 사례:</strong> 기본 ADMIN 연결이 정말 잘못된 경우에만 재연결 방법</li>
+      </ol>
+      <p class="decision-note">마지막 통보일이 없는 수급자는 반기평가 미완료로 먼저 보여줍니다. 형님이 과거 통보일을 입력하면 그 입력이 완료 증거가 되고 가장 최근 날짜로 다음 권장기한을 계산합니다. 위 결정 전에는 구현자가 경고·차단이나 옛 카드를 임의로 정하지 않습니다.</p>
+    </section>
+
+    <footer class="footer-note">
+      <p>이 문서는 <a href="SSWCENTER_ERP_MINIMUM_SCOPE_RECLASSIFICATION_20260812.md">SSWCenter ERP 최소기능 재분류 기준</a>을 쉬운 말과 그림 구조로 풀어쓴 현재 설계도입니다. 코드 구현이나 배포 승인을 뜻하지 않습니다.</p>
+      <p><a href="#top">맨 위로 돌아가기</a></p>
+    </footer>
+  </main>
+
+  <script>
+    (() => {
+      const buttons = Array.from(document.querySelectorAll('.filter-btn'));
+      const cards = Array.from(document.querySelectorAll('.menu-card'));
+      buttons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const filter = button.dataset.filter || 'all';
+          buttons.forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+          cards.forEach((card) => {
+            card.hidden = filter !== 'all' && card.dataset.status !== filter;
+          });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
