@@ -64,7 +64,16 @@ description: Parse Korean route aliases such as 집-코덱스-그록 or 사무�
 - 사용자가 명시하지 않은 stage, commit, push, dependency 설치, DB reset, destructive cleanup을 하지 않는다.
 - 실행 결과는 `PASS`, `FAIL`, `BLOCKED`, `UNKNOWN` 중 하나로 닫고, `BLOCKED`이면 원인·미실행 게이트·다음 필요한 입력을 적는다.
 
-## 6. 출력 형식
+## 6. 소단위 lifecycle과 새 독립방
+
+- W2를 W1A/W1B/W1C/W1D처럼 소단위로 나누어 관리한다. 소단위 완료는 코드 변경만 끝난 시점이 아니라 테스트·독립검수·인수인계·승인 게이트가 닫힌 시점이다.
+- 소단위가 `PASS`로 닫히면 다음 소단위 시작 전에 **새로운 독립 작업방 세트**를 만든다. 이전 room/thread/worktree를 다음 소단위에 재활용하거나 reset해서 쓰지 않는다.
+- 새 세트는 승인된 이전 소단위의 기준 SHA에서 새 worktree/thread ID로 만들고, 장소·오퍼레이터·라이터·등급별 model/effort/fast·보고 의무를 다시 주입한다.
+- 이전 소단위의 방은 삭제하거나 덮어쓰지 않는다. 결과·로그·diff·handoff의 증거로 보존하고, 필요하면 archive만 한다.
+- 다음 세트를 만들기 전에 `unit_id`, `previous_unit_id`, `base_sha`, `room_generation`, `fresh_worktree=true`를 계획과 각 방의 첫 보고에 적는다.
+- 소단위가 `FAIL`/`BLOCKED`이면 새 소단위 방을 만들어 문제를 숨기지 않는다. 현재 세트에서 operator 판단으로 범위 내 수정·제한 재시도를 진행하고, 다음 소단위로 넘어갈지 여부만 중요 결정으로 분리한다.
+
+## 7. 출력 형식
 
 항상 아래를 짧게 보고한다.
 
@@ -74,5 +83,6 @@ description: Parse Korean route aliases such as 집-코덱스-그록 or 사무�
 4. `final_review`: 모델, effort, fast, 실제 사용 가능 여부
 5. `evidence`: 확인한 경로·SHA·명령·exit code
 6. `status`: PASS/FAIL/BLOCKED/UNKNOWN 및 unverified 항목
+7. `unit_lifecycle`: unit_id, previous_unit_id, base_sha, room_generation, fresh_worktree
 
 계획이나 확인만 끝났다면 실제 실행·테스트·검수 완료라고 표현하지 않는다.

@@ -129,3 +129,22 @@ unverified: office profile, wrapper grade flags
 2. wrapper에 없는 flag를 전달하지 않는다.
 3. wrapper가 실제로 실행한 모델·effort·fast를 결과에서 다시 읽는다.
 4. 요청 조합과 실제 조합이 다르면 `FAIL` 또는 `BLOCKED`로 닫고 자동 보정하지 않는다.
+
+## 8. W2 소단위가 끝난 뒤 방을 새로 만드는 규칙
+
+W2는 한 덩어리로 계속 같은 방을 쓰지 않는다. W1A/W1B/W1C/W1D처럼 명확한 소단위를 정의하고, 한 소단위가 테스트·독립검수·인수인계·승인까지 닫히면 다음 소단위용 새 방 세트를 만든다.
+
+예시:
+
+```text
+W2-A 완료(PASS) → 기존 방 1–6 보존 → W2-B용 새 방 1–6 생성
+```
+
+새 세트의 규칙:
+
+- 이전 room/thread/worktree를 reset하거나 재활용하지 않는다.
+- 승인된 이전 소단위의 기준 SHA에서 새 독립 worktree/task를 만든다.
+- 새 방마다 장소·오퍼레이터·라이터, 등급표의 model/effort/fast, 보고 의무를 다시 전달한다.
+- 이전 방은 결과·로그·diff·handoff 증거로 보존한다. 삭제 대신 필요할 때만 archive한다.
+- 첫 계획과 첫 보고에 `unit_id`, `previous_unit_id`, `base_sha`, `room_generation`, `fresh_worktree=true`를 적는다.
+- 소단위가 FAIL/BLOCKED이면 다음 소단위 방을 먼저 만들어 덮지 않는다. 현재 방에서 operator가 범위 안의 최소 수정·제한 재시도를 판단하고, 소단위 전환 여부만 중요 결정으로 분리한다.
