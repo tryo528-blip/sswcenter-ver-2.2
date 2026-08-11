@@ -49,9 +49,43 @@ function Write-TestText {
     [System.IO.File]::WriteAllText($Path, $Text, $encoding)
 }
 
+function Write-TestBytes {
+    param(
+        [string]$Path,
+        [byte[]]$Bytes
+    )
+    $directory = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $directory)) {
+        [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+    }
+    if ($null -eq $Bytes) {
+        $Bytes = [byte[]]@()
+    }
+    [System.IO.File]::WriteAllBytes($Path, $Bytes)
+}
+
 function Read-TestText {
     param([string]$Path)
     return [System.IO.File]::ReadAllText($Path)
+}
+
+function Read-TestBytes {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllBytes($Path)
+}
+
+function Test-ByteArraysEqualLocal {
+    param(
+        [byte[]]$Left,
+        [byte[]]$Right
+    )
+    if ($null -eq $Left -and $null -eq $Right) { return $true }
+    if ($null -eq $Left -or $null -eq $Right) { return $false }
+    if ($Left.Length -ne $Right.Length) { return $false }
+    for ($i = 0; $i -lt $Left.Length; $i++) {
+        if ($Left[$i] -ne $Right[$i]) { return $false }
+    }
+    return $true
 }
 
 function New-ExternalCheckpoint {
@@ -130,7 +164,9 @@ function Invoke-Runner {
         [switch]$Dry,
         [switch]$Direct,
         [int]$ExpectedBytes = -1,
-        [int]$MaxReadToolCalls = 0
+        [int]$MaxReadToolCalls = 0,
+        [int]$MaxElapsedMinutes = 0,
+        [int]$MaxApiElapsedMinutes = 0
     )
     $processArgs = @(
         '-NoProfile',
@@ -151,6 +187,14 @@ function Invoke-Runner {
     if ($MaxReadToolCalls -gt 0) {
         $processArgs += '-MaxReadToolCalls'
         $processArgs += [string]$MaxReadToolCalls
+    }
+    if ($MaxElapsedMinutes -gt 0) {
+        $processArgs += '-MaxElapsedMinutes'
+        $processArgs += [string]$MaxElapsedMinutes
+    }
+    if ($MaxApiElapsedMinutes -gt 0) {
+        $processArgs += '-MaxApiElapsedMinutes'
+        $processArgs += [string]$MaxApiElapsedMinutes
     }
     # Pass multi-path allow/read lists as a single comma-joined argument so external
     # powershell.exe -File binding forms a string[] without positional spill.
@@ -247,11 +291,49 @@ try {
     ) 'final response optional tool_calls is guarded under StrictMode'
     Assert-True (
         $runnerSource.Contains('Never send diff --git format') -and
-        $runnerSource.Contains('apply_patch accepts one file only') -and
+        $runnerSource.Contains('apply_patch accepts one or more files in one batch') -and
+        $runnerSource.Contains('rollback-backed exception-atomic under exclusive workspace ownership; not crash/power-loss atomic') -and
         $runnerSource.Contains('Readable paths are:') -and
         $runnerSource.Contains('Writable paths are:') -and
         $runnerSource.Contains('literal leading plus is encoded as ++')
-    ) 'apply patch custom single-file format is explicit to model'
+    ) 'apply patch multi-file format and mutation contract are explicit to model'
+    Assert-True (
+        $runnerSource.Contains('function Get-ProgressMetric') -and
+        $runnerSource.Contains('function Test-HasPositiveProgress') -and
+        $runnerSource.Contains('function Test-ReadOnlyTerminalSuccess') -and
+        $runnerSource.Contains('function Test-WriterTerminalSuccess') -and
+        $runnerSource.Contains('function Resolve-TerminalCompletionState')
+    ) 'progress and terminal policy helpers are extracted'
+    Assert-True (
+        $runnerSource.Contains('function Seal-BaseWriteState') -and
+        $runnerSource.Contains('function Get-NetChangedPaths') -and
+        $runnerSource.Contains('function Get-RunnerStateObject') -and
+        $runnerSource.Contains('function Restore-RunnerState') -and
+        $runnerSource.Contains('NO_EFFECTIVE_CHANGE') -and
+        $runnerSource.Contains('runner_state') -and
+        $runnerSource.Contains('WRITER_COMPLETED_WITHOUT_NET_CHANGE') -and
+        $runnerSource.Contains('net_change_fingerprint')
+    ) 'runner state net-change contract helpers are present'
+    Assert-True (
+        $runnerSource.Contains('PATCH_BATCH_WRITE_FAILED') -and
+        $runnerSource.Contains('PATCH_BATCH_ROLLBACK_FAILED') -and
+        $runnerSource.Contains('DEEPSEEK_RUNNER_TEST_FAIL_WRITE') -and
+        $runnerSource.Contains('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK') -and
+        $runnerSource.Contains('function Write-AtomicBytes') -and
+        $runnerSource.Contains('rollback-backed exception-atomic under exclusive workspace ownership; not crash/power-loss atomic')
+    ) 'multi-file batch rollback path and contract wording are present'
+    Assert-True (
+        $runnerSource.Contains("RunnerVersion = '2.8.0'") -or
+        $runnerSource.Contains('RunnerVersion = "2.8.0"') -or
+        $runnerSource.Contains("`$script:RunnerVersion = '2.8.0'")
+    ) 'runner version bumped to 2.8.0'
+    Assert-True (
+        $runnerSource.Contains('MAX_ELAPSED_TIME_REACHED') -and
+        $runnerSource.Contains('MAX_API_ELAPSED_TIME_REACHED') -and
+        $runnerSource.Contains('function Resolve-TextFileEncoding') -and
+        $runnerSource.Contains('You are the single sequential workspace Reviewer in ReadOnly mode') -and
+        $runnerSource.Contains('You are the single sequential workspace Writer')
+    ) 'phase B budget encoding and role prompt markers present'
     $allowedFile = Join-Path $testRoot 'allowed.txt'
     $leadFile = Join-Path $testRoot 'leading.txt'
     $usageFile = Join-Path $testRoot 'usage.txt'
@@ -296,6 +378,7 @@ try {
     Assert-True ($null -ne $offline.json) 'offline JSON'
     Assert-Equal $offline.json.status 'OFFLINE_CONFIG' 'offline status'
     Assert-Equal $offline.json.max_turns 48 'default 48 turns'
+    Assert-equal $offline.json.runner_version '2.8.0' 'offline runner version 2.8.0'
     Assert-Equal $offline.json.extension_size 8 'extension size'
     Assert-Equal $offline.json.checkpoint_turn 64 'checkpoint turn'
     Assert-Equal $offline.json.soft_turn 80 'soft turn'
@@ -318,6 +401,16 @@ try {
     Assert-True ($offline.json.PSObject.Properties.Name -contains 'expected_write_bytes') 'offline expected_write_bytes field'
     Assert-True ($offline.json.PSObject.Properties.Name -contains 'effective_expected_write_bytes') 'offline effective_expected_write_bytes field'
     Assert-True ($offline.json.PSObject.Properties.Name -contains 'writer_budget_source') 'offline writer_budget_source field'
+    Assert-True ($offline.json.PSObject.Properties.Name -contains 'base_write_state') 'offline base_write_state field'
+    Assert-True ($offline.json.PSObject.Properties.Name -contains 'net_changed_paths') 'offline net_changed_paths field'
+    Assert-True ($offline.json.PSObject.Properties.Name -contains 'net_changed_file_hashes') 'offline net_changed_file_hashes field'
+    Assert-equal $offline.json.schema_version '2.3.0' 'offline schema version 2.3.0'
+    Assert-equal $offline.json.max_elapsed_minutes 60 'offline default max elapsed minutes'
+    Assert-equal $offline.json.max_api_elapsed_minutes 50 'offline default max api elapsed minutes'
+    Assert-True ($offline.json.PSObject.Properties.Name -contains 'mutation_atomicity_contract') 'offline mutation_atomicity_contract field'
+    Assert-True (
+        [string]$offline.json.mutation_atomicity_contract -match 'rollback-backed exception-atomic under exclusive workspace ownership'
+    ) 'offline mutation contract text'
 
     $offlineMaxOutput = Invoke-Runner -Root $testRoot -Offline -Tokens 32768
     Assert-Equal $offlineMaxOutput.json.output_reserve_tokens 32768 'maximum output reserve follows max tokens'
@@ -979,7 +1072,7 @@ try {
     Assert-Equal $outputStopRun.json.patch_count 0 'stop tool turns patch count'
     Assert-Equal (Read-TestText $outputStopFile) 'stop-after' 'stop tool turns final text'
 
-    # --- atomic tool preflight contracts (runner 2.4) ---
+    # --- all-or-nothing tool preflight contracts (runner 2.4) ---
 
     # 1. Missing required argument
     $missingArgResponses = Join-Path $testRoot 'missing-arg-responses.json'
@@ -1030,18 +1123,18 @@ try {
     )
     $mixedCheckpoint = New-ExternalCheckpoint 'mixed'
     $mixedRun = Invoke-Runner -Root $testRoot -Read @('allowed.txt') -ResponsesPath $mixedResponses -Checkpoint $mixedCheckpoint -Turns 2
-    Assert-Equal $mixedRun.rc 2 'atomic mixed batch exit'
-    Assert-True ($mixedRun.json.errors.code -contains 'TOOL_NOT_ALLOWED') 'atomic mixed batch primary error'
-    Assert-Equal $mixedRun.json.tool_call_sequence.Count 2 'atomic mixed batch sequence count'
-    Assert-Equal $mixedRun.json.tool_call_sequence[0].name 'read_file' 'atomic mixed batch first tool name'
-    Assert-Equal $mixedRun.json.tool_call_sequence[1].name 'delete_file' 'atomic mixed batch second tool name'
-    Assert-Equal $mixedRun.json.tool_call_sequence[0].ok $false 'atomic mixed batch first item not ok'
-    Assert-Equal $mixedRun.json.tool_call_sequence[1].ok $false 'atomic mixed batch second item not ok'
-    Assert-Equal $mixedRun.json.edit_count 0 'atomic mixed batch no edits'
+    Assert-Equal $mixedRun.rc 2 'all-or-nothing mixed batch exit'
+    Assert-True ($mixedRun.json.errors.code -contains 'TOOL_NOT_ALLOWED') 'all-or-nothing mixed batch primary error'
+    Assert-Equal $mixedRun.json.tool_call_sequence.Count 2 'all-or-nothing mixed batch sequence count'
+    Assert-Equal $mixedRun.json.tool_call_sequence[0].name 'read_file' 'all-or-nothing mixed batch first tool name'
+    Assert-Equal $mixedRun.json.tool_call_sequence[1].name 'delete_file' 'all-or-nothing mixed batch second tool name'
+    Assert-Equal $mixedRun.json.tool_call_sequence[0].ok $false 'all-or-nothing mixed batch first item not ok'
+    Assert-Equal $mixedRun.json.tool_call_sequence[1].ok $false 'all-or-nothing mixed batch second item not ok'
+    Assert-Equal $mixedRun.json.edit_count 0 'all-or-nothing mixed batch no edits'
     $mixedCheckpointRaw = Read-TestText $mixedCheckpoint
-    Assert-True ($mixedCheckpointRaw.Contains('TOOL_NOT_ALLOWED')) 'atomic mixed batch checkpoint contains error'
+    Assert-True ($mixedCheckpointRaw.Contains('TOOL_NOT_ALLOWED')) 'all-or-nothing mixed batch checkpoint contains error'
 
-    # 4. Multiple-write atomic rejection
+    # 4. Multiple-write all-or-nothing rejection
     $multiDirectory = Join-Path $testRoot 'multi'
     $multiA = Join-Path $multiDirectory 'multi-a.txt'
     $multiB = Join-Path $multiDirectory 'multi-b.txt'
@@ -1059,14 +1152,14 @@ try {
         }))
     )
     $multiWriteRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('multi') -ResponsesPath $multiWriteResponses -Checkpoint (New-ExternalCheckpoint 'multi-write') -Turns 2 -Strategy ReplaceText
-    Assert-Equal $multiWriteRun.rc 2 'multiple write atomic rejection exit'
-    Assert-True ($multiWriteRun.json.errors.code -contains 'MULTIPLE_WRITE_TOOLS_PER_TURN') 'multiple write atomic rejection error code'
-    Assert-Equal $multiWriteRun.json.tool_call_sequence.Count 2 'multiple write atomic rejection sequence count'
-    Assert-Equal $multiWriteRun.json.tool_call_sequence[0].ok $false 'multiple write atomic rejection first item not ok'
-    Assert-Equal $multiWriteRun.json.tool_call_sequence[1].ok $false 'multiple write atomic rejection second item not ok'
-    Assert-Equal $multiWriteRun.json.edit_count 0 'multiple write atomic rejection no edits'
-    Assert-Equal (Read-TestText $multiA) 'a0' 'multiple write atomic rejection preserves multi-a'
-    Assert-Equal (Read-TestText $multiB) 'b0' 'multiple write atomic rejection preserves multi-b'
+    Assert-Equal $multiWriteRun.rc 2 'multiple write all-or-nothing rejection exit'
+    Assert-True ($multiWriteRun.json.errors.code -contains 'MULTIPLE_WRITE_TOOLS_PER_TURN') 'multiple write all-or-nothing rejection error code'
+    Assert-Equal $multiWriteRun.json.tool_call_sequence.Count 2 'multiple write all-or-nothing rejection sequence count'
+    Assert-Equal $multiWriteRun.json.tool_call_sequence[0].ok $false 'multiple write all-or-nothing rejection first item not ok'
+    Assert-Equal $multiWriteRun.json.tool_call_sequence[1].ok $false 'multiple write all-or-nothing rejection second item not ok'
+    Assert-Equal $multiWriteRun.json.edit_count 0 'multiple write all-or-nothing rejection no edits'
+    Assert-Equal (Read-TestText $multiA) 'a0' 'multiple write all-or-nothing rejection preserves multi-a'
+    Assert-Equal (Read-TestText $multiB) 'b0' 'multiple write all-or-nothing rejection preserves multi-b'
 
     # --- fresh-read recovery before first edit ---
     $freshFirstFile = Join-Path $testRoot 'fresh-first.txt'
@@ -1164,16 +1257,6 @@ try {
             role = 'assistant'
             content = $null
             tool_calls = @((New-ToolCall 'pp-s2' 'search_text' ([ordered]@{ pattern = 'q2' })))
-        })),
-        (New-Response -Message ([ordered]@{
-            role = 'assistant'
-            content = $null
-            tool_calls = @((New-ToolCall 'pp-s3' 'search_text' ([ordered]@{ pattern = 'q3' })))
-        })),
-        (New-Response -Message ([ordered]@{
-            role = 'assistant'
-            content = $null
-            tool_calls = @((New-ToolCall 'pp-s4' 'search_text' ([ordered]@{ pattern = 'q4' })))
         }))
     )
     $postProgressRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('post-progress.txt') -ResponsesPath $postProgressResponses -Checkpoint (New-ExternalCheckpoint 'post-progress') -Turns 10
@@ -1182,7 +1265,7 @@ try {
     Assert-True ($postProgressRun.json.warnings.code -contains 'POST_EDIT_NO_PROGRESS_WARNING') 'post-edit no-progress warning'
     Assert-True ($postProgressRun.json.errors.code -contains 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED') 'post-edit no-progress error'
     Assert-Equal $postProgressRun.json.stop_reason 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED' 'post-edit no-progress stop reason'
-    Assert-Equal $postProgressRun.json.no_progress_rounds 4 'post-edit no-progress rounds'
+    Assert-Equal $postProgressRun.json.no_progress_rounds 2 'post-edit two-turn no-progress rounds'
     Assert-Equal $postProgressRun.json.edit_count 1 'post-edit no-progress edit count'
     Assert-Equal (Read-TestText $postProgressFile) 'after' 'post-edit no-progress final text'
 
@@ -1543,6 +1626,19 @@ access_token residual check is a pattern name, not a credential.
     Assert-True ($strategyAutoOffline.json.exposed_tool_names -contains 'replace_text') 'Auto exposed replace_text'
     Assert-True (-not ($strategyAutoOffline.json.exposed_tool_names -contains 'apply_patch')) 'Auto never exposes apply_patch'
 
+    # Auto with two existing exact leaves selects ApplyPatch while one-file stays ReplaceText
+    $autoTwoA = Join-Path $testRoot 'auto-two-a.txt'
+    $autoTwoB = Join-Path $testRoot 'auto-two-b.txt'
+    Write-TestText $autoTwoA 'leaf-a'
+    Write-TestText $autoTwoB 'leaf-b'
+    $strategyAutoTwo = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('auto-two-a.txt', 'auto-two-b.txt') -Offline -Strategy Auto -PromptText 'edit both files'
+    Assert-equal $strategyAutoTwo.rc 0 'Auto two existing leaves offline exit'
+    Assert-equal $strategyAutoTwo.json.effective_write_strategy 'ApplyPatch' 'Auto two existing leaves selects ApplyPatch'
+    Assert-True ($strategyAutoTwo.json.exposed_tool_names -contains 'apply_patch') 'Auto two leaves exposes apply_patch'
+    Assert-True (-not ($strategyAutoTwo.json.exposed_tool_names -contains 'replace_text')) 'Auto two leaves does not expose replace_text'
+    $strategyAutoOneStill = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('auto-two-a.txt') -Offline -Strategy Auto -PromptText 'edit one file'
+    Assert-equal $strategyAutoOneStill.json.effective_write_strategy 'ReplaceText' 'Auto single existing leaf still ReplaceText'
+
     # explicit ApplyPatch exposes read_file/search_text/apply_patch, never replace_text
     $strategyPatchOffline = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('allowed.txt') -Offline -Strategy ApplyPatch -PromptText 'add a new line'
     Assert-Equal $strategyPatchOffline.rc 0 'ApplyPatch offline exit'
@@ -1731,6 +1827,1334 @@ access_token residual check is a pattern name, not a credential.
     $textRun = Invoke-Runner -Root $testRoot -Offline -WithoutJson
     Assert-Equal $textRun.rc 0 'text output exit'
     Assert-True $textRun.raw.Contains('DEEPSEEK_WORKSPACE_RUNNER=OFFLINE_CONFIG') 'text compatibility summary'
+
+    # --- rollback-backed multi-file apply_patch batch contracts ---
+    $batchDir = Join-Path $testRoot 'batch'
+    $batchA = Join-Path $batchDir 'a.txt'
+    $batchB = Join-Path $batchDir 'b.txt'
+    $batchC = Join-Path $batchDir 'c.txt'
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    Write-TestText $batchC 'gamma-before'
+
+    $batchSuccessPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-after'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-after'
+        '*** End Patch'
+    ))
+    $batchSuccessResponses = Join-Path $testRoot 'batch-success-responses.json'
+    Save-Responses $batchSuccessResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bs-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'bs-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bs-patch' 'apply_patch' ([ordered]@{ patch = $batchSuccessPatch })))
+        })),
+        (New-Response -Message ([ordered]@{ role = 'assistant'; content = 'batch complete'; tool_calls = @() }) -FinishReason 'stop')
+    )
+    $batchSuccessRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchSuccessResponses -Checkpoint (New-ExternalCheckpoint 'batch-success') -Turns 5 -Strategy ApplyPatch
+    Assert-equal $batchSuccessRun.rc 0 'rollback-backed multi-file batch success exit'
+    Assert-equal $batchSuccessRun.json.status 'PASS' 'rollback-backed multi-file batch success status'
+    Assert-equal $batchSuccessRun.json.edit_count 2 'rollback-backed multi-file batch success edit count'
+    Assert-equal $batchSuccessRun.json.patch_count 2 'rollback-backed multi-file batch success patch count'
+    Assert-equal (Read-TestText $batchA) 'alpha-after' 'rollback-backed multi-file batch success a'
+    Assert-equal (Read-TestText $batchB) 'beta-after' 'rollback-backed multi-file batch success b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchOosPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-partial'
+        '*** Update File: outside-scope.txt'
+        '@@'
+        '-x'
+        '+y'
+        '*** End Patch'
+    ))
+    $batchOosResponses = Join-Path $testRoot 'batch-oos-responses.json'
+    Save-Responses $batchOosResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bo-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bo-patch' 'apply_patch' ([ordered]@{ patch = $batchOosPatch })))
+        }))
+    )
+    $batchOosRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchOosResponses -Checkpoint (New-ExternalCheckpoint 'batch-oos') -Turns 4 -Strategy ApplyPatch
+    Assert-equal $batchOosRun.rc 2 'rollback-backed multi-file out-of-scope exit'
+    Assert-True ($batchOosRun.json.errors.code -contains 'PATH_NOT_WRITE_ALLOWLISTED') 'rollback-backed multi-file out-of-scope error'
+    Assert-equal $batchOosRun.json.edit_count 0 'rollback-backed multi-file out-of-scope no edits'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'rollback-backed multi-file out-of-scope preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'rollback-backed multi-file out-of-scope preserves b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchStalePatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-stale'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-stale'
+        '*** End Patch'
+    ))
+    $batchStaleResponses = Join-Path $testRoot 'batch-stale-responses.json'
+    Save-Responses $batchStaleResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bst-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bst-patch' 'apply_patch' ([ordered]@{ patch = $batchStalePatch })))
+        }))
+    )
+    $batchStaleRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchStaleResponses -Checkpoint (New-ExternalCheckpoint 'batch-stale') -Turns 4 -Strategy ApplyPatch
+    Assert-True ($batchStaleRun.rc -ne 0) 'rollback-backed multi-file stale preimage nonzero exit'
+    Assert-True ($batchStaleRun.json.warnings.code -contains 'WRITE_REQUIRES_FRESH_READ') 'rollback-backed multi-file stale preimage warning'
+    Assert-equal $batchStaleRun.json.edit_count 0 'rollback-backed multi-file stale preimage no edits'
+    Assert-equal $batchStaleRun.json.patch_count 0 'rollback-backed multi-file stale preimage no patches'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'rollback-backed multi-file stale preimage preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'rollback-backed multi-file stale preimage preserves b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchBadHunkPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-bad'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-not-the-real-content'
+        '+beta-bad'
+        '*** End Patch'
+    ))
+    $batchBadHunkResponses = Join-Path $testRoot 'batch-bad-hunk-responses.json'
+    Save-Responses $batchBadHunkResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bbh-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'bbh-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bbh-patch' 'apply_patch' ([ordered]@{ patch = $batchBadHunkPatch })))
+        }))
+    )
+    $batchBadHunkRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchBadHunkResponses -Checkpoint (New-ExternalCheckpoint 'batch-bad-hunk') -Turns 4 -Strategy ApplyPatch
+    Assert-equal $batchBadHunkRun.rc 2 'rollback-backed multi-file bad hunk exit'
+    Assert-True ($batchBadHunkRun.json.errors.code -contains 'PATCH_CONTEXT_NOT_FOUND') 'rollback-backed multi-file bad hunk error'
+    Assert-equal $batchBadHunkRun.json.edit_count 0 'rollback-backed multi-file bad hunk no edits'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'rollback-backed multi-file bad hunk preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'rollback-backed multi-file bad hunk preserves b'
+
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchRollbackPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-rolled'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-rolled'
+        '*** End Patch'
+    ))
+    $batchRollbackResponses = Join-Path $testRoot 'batch-rollback-responses.json'
+    Save-Responses $batchRollbackResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'br-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'br-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'br-patch' 'apply_patch' ([ordered]@{ patch = $batchRollbackPatch })))
+        }))
+    )
+    $prevFailWrite = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        $batchRollbackRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchRollbackResponses -Checkpoint (New-ExternalCheckpoint 'batch-rollback') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevFailWrite)
+    }
+    Assert-equal $batchRollbackRun.rc 2 'rollback-backed multi-file rollback exit'
+    Assert-True ($batchRollbackRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'rollback-backed multi-file rollback error'
+    Assert-equal $batchRollbackRun.json.edit_count 0 'rollback-backed multi-file rollback no edits'
+    Assert-equal (Read-TestText $batchA) 'alpha-before' 'rollback-backed multi-file rollback restores a'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'rollback-backed multi-file rollback preserves b'
+
+    # byte-exact rollback preserves UTF-8 BOM preimage
+    $batchBom = Join-Path $batchDir 'bom.txt'
+    $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+    [System.IO.File]::WriteAllText($batchBom, 'bom-before', $bomEncoding)
+    $bomBytesBefore = [System.IO.File]::ReadAllBytes($batchBom)
+    Write-TestText $batchB 'beta-before'
+    $batchBomPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/bom.txt'
+        '@@'
+        '-bom-before'
+        '+bom-after'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-bom-fail'
+        '*** End Patch'
+    ))
+    $batchBomResponses = Join-Path $testRoot 'batch-bom-responses.json'
+    Save-Responses $batchBomResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bbom-r1' 'read_file' ([ordered]@{ path = 'batch/bom.txt' })),
+                (New-ToolCall 'bbom-r2' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bbom-patch' 'apply_patch' ([ordered]@{ patch = $batchBomPatch })))
+        }))
+    )
+    $prevBomFail = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        $batchBomRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchBomResponses -Checkpoint (New-ExternalCheckpoint 'batch-bom') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevBomFail)
+    }
+    Assert-equal $batchBomRun.rc 2 'rollback-backed multi-file bom rollback exit'
+    Assert-True ($batchBomRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'rollback-backed multi-file bom rollback error'
+    Assert-equal $batchBomRun.json.edit_count 0 'rollback-backed multi-file bom rollback no edits'
+    $bomBytesAfter = [System.IO.File]::ReadAllBytes($batchBom)
+    Assert-equal $bomBytesAfter.Length $bomBytesBefore.Length 'rollback-backed multi-file bom rollback byte length'
+    $bomEqual = $true
+    for ($bi = 0; $bi -lt $bomBytesBefore.Length; $bi++) {
+        if ($bomBytesAfter[$bi] -ne $bomBytesBefore[$bi]) { $bomEqual = $false; break }
+    }
+    Assert-True $bomEqual 'rollback-backed multi-file bom rollback byte-exact'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'rollback-backed multi-file bom rollback preserves b'
+
+    # rollback failure leaves divergent path accounted for (PARTIAL_AFTER_EDIT observability)
+    Write-TestText $batchA 'alpha-before'
+    Write-TestText $batchB 'beta-before'
+    $batchRbFailPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-before'
+        '+alpha-divergent'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-divergent'
+        '*** End Patch'
+    ))
+    $batchRbFailResponses = Join-Path $testRoot 'batch-rb-fail-responses.json'
+    Save-Responses $batchRbFailResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'brf-ra' 'read_file' ([ordered]@{ path = 'batch/a.txt' })),
+                (New-ToolCall 'brf-rb' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'brf-patch' 'apply_patch' ([ordered]@{ patch = $batchRbFailPatch })))
+        }))
+    )
+    $prevFailWrite2 = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    $prevFailRb = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK', 'batch\a.txt')
+        $batchRbFailRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchRbFailResponses -Checkpoint (New-ExternalCheckpoint 'batch-rb-fail') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevFailWrite2)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_ROLLBACK', $prevFailRb)
+    }
+    Assert-equal $batchRbFailRun.rc 2 'rollback-backed multi-file rollback-fail exit'
+    Assert-equal $batchRbFailRun.json.status 'PARTIAL_AFTER_EDIT' 'rollback-backed multi-file rollback-fail status'
+    Assert-True ($batchRbFailRun.json.errors.code -contains 'PATCH_BATCH_ROLLBACK_FAILED') 'rollback-backed multi-file rollback-fail error'
+    Assert-equal $batchRbFailRun.json.edit_count 1 'rollback-backed multi-file rollback-fail edit count'
+    Assert-equal $batchRbFailRun.json.patch_count 1 'rollback-backed multi-file rollback-fail patch count'
+    Assert-True ($batchRbFailRun.json.changed_paths -contains 'batch\a.txt' -or $batchRbFailRun.json.changed_paths -contains 'batch/a.txt') 'rollback-backed multi-file rollback-fail changed path'
+    Assert-True ($null -ne $batchRbFailRun.json.changed_file_hashes) 'rollback-backed multi-file rollback-fail hashes present'
+    Assert-equal (Read-TestText $batchA) 'alpha-divergent' 'rollback-backed multi-file rollback-fail leaves a divergent'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'rollback-backed multi-file rollback-fail preserves unwritten b'
+
+    # Add-batch rollback removes newly created empty directories
+    $nestedAddPath = 'batch/nested/deep/new-add.txt'
+    $nestedAddFull = Join-Path $batchDir 'nested\deep\new-add.txt'
+    $nestedDeepDir = Join-Path $batchDir 'nested\deep'
+    $nestedDir = Join-Path $batchDir 'nested'
+    Write-TestText $batchB 'beta-before'
+    $batchAddDirPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Add File: batch/nested/deep/new-add.txt'
+        '+created-nested'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-before'
+        '+beta-nested-fail'
+        '*** End Patch'
+    ))
+    $batchAddDirResponses = Join-Path $testRoot 'batch-add-dir-responses.json'
+    Save-Responses $batchAddDirResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @(
+                (New-ToolCall 'bad-r1' 'read_file' ([ordered]@{ path = 'batch/nested/deep/new-add.txt' })),
+                (New-ToolCall 'bad-r2' 'read_file' ([ordered]@{ path = 'batch/b.txt' }))
+            )
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bad-patch' 'apply_patch' ([ordered]@{ patch = $batchAddDirPatch })))
+        }))
+    )
+    $prevAddFail = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\b.txt')
+        $batchAddDirRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchAddDirResponses -Checkpoint (New-ExternalCheckpoint 'batch-add-dir') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevAddFail)
+    }
+    Assert-equal $batchAddDirRun.rc 2 'rollback-backed multi-file add-dir rollback exit'
+    Assert-True ($batchAddDirRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'rollback-backed multi-file add-dir rollback error'
+    Assert-equal $batchAddDirRun.json.edit_count 0 'rollback-backed multi-file add-dir rollback no edits'
+    Assert-True (-not (Test-Path -LiteralPath $nestedAddFull)) 'rollback-backed multi-file add-dir rollback removes file'
+    Assert-True (-not (Test-Path -LiteralPath $nestedDeepDir)) 'rollback-backed multi-file add-dir rollback removes deep dir'
+    Assert-True (-not (Test-Path -LiteralPath $nestedDir)) 'rollback-backed multi-file add-dir rollback removes nested dir'
+    Assert-equal (Read-TestText $batchB) 'beta-before' 'rollback-backed multi-file add-dir rollback preserves b'
+
+    # First Add File itself write-injected after nested dirs prepared: full cleanup, no edits
+    $firstAddRel = 'batch/nested/deep/first-add.txt'
+    $firstAddFull = Join-Path $batchDir 'nested\deep\first-add.txt'
+    $firstAddDeepDir = Join-Path $batchDir 'nested\deep'
+    $firstAddNestedDir = Join-Path $batchDir 'nested'
+    $batchFirstAddPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Add File: batch/nested/deep/first-add.txt'
+        '+first-add-content'
+        '*** End Patch'
+    ))
+    $batchFirstAddResponses = Join-Path $testRoot 'batch-first-add-fail-responses.json'
+    Save-Responses $batchFirstAddResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bfa-r1' 'read_file' ([ordered]@{ path = 'batch/nested/deep/first-add.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bfa-patch' 'apply_patch' ([ordered]@{ patch = $batchFirstAddPatch })))
+        }))
+    )
+    $prevFirstAddFail = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', 'batch\nested\deep\first-add.txt')
+        $batchFirstAddRun = Invoke-Runner -Root $testRoot -RunMode Writer -Allow @('batch') -ResponsesPath $batchFirstAddResponses -Checkpoint (New-ExternalCheckpoint 'batch-first-add-fail') -Turns 4 -Strategy ApplyPatch
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_FAIL_WRITE', $prevFirstAddFail)
+    }
+    Assert-equal $batchFirstAddRun.rc 2 'rollback-backed first-add write-fail exit'
+    Assert-True ($batchFirstAddRun.json.errors.code -contains 'PATCH_BATCH_WRITE_FAILED') 'rollback-backed first-add write-fail error'
+    Assert-equal $batchFirstAddRun.json.edit_count 0 'rollback-backed first-add write-fail no edits'
+    Assert-equal $batchFirstAddRun.json.patch_count 0 'rollback-backed first-add write-fail no patches'
+    Assert-True (-not (Test-Path -LiteralPath $firstAddFull)) 'rollback-backed first-add write-fail removes file'
+    Assert-True (-not (Test-Path -LiteralPath $firstAddDeepDir)) 'rollback-backed first-add write-fail removes deep dir'
+    Assert-True (-not (Test-Path -LiteralPath $firstAddNestedDir)) 'rollback-backed first-add write-fail removes nested dir'
+
+    Write-TestText $batchA 'alpha-ro'
+    Write-TestText $batchB 'beta-ro'
+    $batchRoPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: batch/a.txt'
+        '@@'
+        '-alpha-ro'
+        '+alpha-mutated'
+        '*** Update File: batch/b.txt'
+        '@@'
+        '-beta-ro'
+        '+beta-mutated'
+        '*** End Patch'
+    ))
+    $batchRoResponses = Join-Path $testRoot 'batch-ro-responses.json'
+    Save-Responses $batchRoResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bro-patch' 'apply_patch' ([ordered]@{ patch = $batchRoPatch })))
+        }))
+    )
+    $batchRoRun = Invoke-Runner -Root $testRoot -RunMode ReadOnly -Read @('batch') -ResponsesPath $batchRoResponses -Checkpoint (New-ExternalCheckpoint 'batch-ro') -Turns 2
+    Assert-equal $batchRoRun.rc 2 'ReadOnly multi-file no-mutation exit'
+    Assert-True ($batchRoRun.json.errors.code -contains 'WRITER_TOOL_NOT_ALLOWED' -or $batchRoRun.json.errors.code -contains 'TOOL_NOT_ALLOWED') 'ReadOnly multi-file no-mutation error'
+    Assert-equal $batchRoRun.json.edit_count 0 'ReadOnly multi-file no-mutation edit count'
+    Assert-equal (Read-TestText $batchA) 'alpha-ro' 'ReadOnly multi-file no-mutation preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-ro' 'ReadOnly multi-file no-mutation preserves b'
+
+    $roProgressResponses = Join-Path $testRoot 'ro-progress-responses.json'
+    Save-Responses $roProgressResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rop1' 'read_file' ([ordered]@{ path = 'batch/a.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rop2' 'read_file' ([ordered]@{ path = 'batch/b.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rop3' 'search_text' ([ordered]@{ pattern = 'alpha' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'ReadOnly review complete with evidence; no mutation required.'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $roProgressRun = Invoke-Runner -Root $testRoot -RunMode ReadOnly -Read @('batch') -ResponsesPath $roProgressResponses -Checkpoint (New-ExternalCheckpoint 'ro-progress') -Turns 6
+    Assert-equal $roProgressRun.rc 0 'ReadOnly no false progress stop exit'
+    Assert-equal $roProgressRun.json.status 'PASS' 'ReadOnly no false progress stop status'
+    Assert-True (-not ($roProgressRun.json.errors.code -contains 'POST_EDIT_NO_PROGRESS_LIMIT_REACHED')) 'ReadOnly no post-edit progress error'
+    Assert-equal $roProgressRun.json.edit_count 0 'ReadOnly no false progress stop edit count'
+    Assert-equal (Read-TestText $batchA) 'alpha-ro' 'ReadOnly no false progress stop preserves a'
+    Assert-equal (Read-TestText $batchB) 'beta-ro' 'ReadOnly no false progress stop preserves b'
+    Assert-equal (Read-TestText $batchC) 'gamma-before' 'ReadOnly no false progress stop preserves c'
+
+    # --- Runner 2.7.0 net-change / RunnerState contracts ---
+
+    # replace_text A==A rejected with NO_EFFECTIVE_CHANGE and no counter/progress increment
+    $noopReplaceFile = Join-Path $testRoot 'noop-replace.txt'
+    Write-TestText $noopReplaceFile 'same-text'
+    $noopReplaceResponses = Join-Path $testRoot 'noop-replace-responses.json'
+    Save-Responses $noopReplaceResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'nr-read' 'read_file' ([ordered]@{ path = 'noop-replace.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'nr-edit' 'replace_text' ([ordered]@{
+                path = 'noop-replace.txt'
+                old_text = 'same-text'
+                new_text = 'same-text'
+            })))
+        }))
+    )
+    $noopReplaceRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('noop-replace.txt') `
+        -ResponsesPath $noopReplaceResponses `
+        -Checkpoint (New-ExternalCheckpoint 'noop-replace') `
+        -Turns 4 `
+        -Strategy ReplaceText
+    Assert-equal $noopReplaceRun.rc 2 'replace_text A==A exit'
+    Assert-True ($noopReplaceRun.json.errors.code -contains 'NO_EFFECTIVE_CHANGE') 'replace_text A==A NO_EFFECTIVE_CHANGE'
+    Assert-equal $noopReplaceRun.json.edit_count 0 'replace_text A==A no edit_count'
+    Assert-equal $noopReplaceRun.json.patch_count 0 'replace_text A==A no patch_count'
+    Assert-equal @($noopReplaceRun.json.net_changed_paths).Count 0 'replace_text A==A net_changed_paths empty'
+    Assert-equal (Read-TestText $noopReplaceFile) 'same-text' 'replace_text A==A preserves file'
+
+    # context-only apply_patch rejected with NO_EFFECTIVE_CHANGE
+    $contextOnlyFile = Join-Path $testRoot 'context-only.txt'
+    Write-TestText $contextOnlyFile 'keep-me'
+    $contextOnlyPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: context-only.txt'
+        '@@'
+        ' keep-me'
+        '*** End Patch'
+    ))
+    $contextOnlyResponses = Join-Path $testRoot 'context-only-responses.json'
+    Save-Responses $contextOnlyResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'co-read' 'read_file' ([ordered]@{ path = 'context-only.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'co-patch' 'apply_patch' ([ordered]@{ patch = $contextOnlyPatch })))
+        }))
+    )
+    $contextOnlyRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('context-only.txt') `
+        -ResponsesPath $contextOnlyResponses `
+        -Checkpoint (New-ExternalCheckpoint 'context-only') `
+        -Turns 4 `
+        -Strategy ApplyPatch
+    Assert-equal $contextOnlyRun.rc 2 'context-only apply_patch exit'
+    Assert-True ($contextOnlyRun.json.errors.code -contains 'NO_EFFECTIVE_CHANGE') 'context-only apply_patch NO_EFFECTIVE_CHANGE'
+    Assert-equal $contextOnlyRun.json.edit_count 0 'context-only apply_patch no edit_count'
+    Assert-equal $contextOnlyRun.json.patch_count 0 'context-only apply_patch no patch_count'
+    Assert-equal @($contextOnlyRun.json.net_changed_paths).Count 0 'context-only apply_patch net_changed_paths empty'
+    Assert-equal (Read-TestText $contextOnlyFile) 'keep-me' 'context-only apply_patch preserves file'
+
+    # A→B→A final completion is not PASS; net_changed_paths empty
+    $abaFile = Join-Path $testRoot 'aba-net.txt'
+    Write-TestText $abaFile 'A'
+    $abaResponses = Join-Path $testRoot 'aba-net-responses.json'
+    Save-Responses $abaResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'aba-r1' 'read_file' ([ordered]@{ path = 'aba-net.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'aba-b' 'replace_text' ([ordered]@{
+                path = 'aba-net.txt'
+                old_text = 'A'
+                new_text = 'B'
+            })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'aba-r2' 'read_file' ([ordered]@{ path = 'aba-net.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'aba-a' 'replace_text' ([ordered]@{
+                path = 'aba-net.txt'
+                old_text = 'B'
+                new_text = 'A'
+            })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'reverted to baseline'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $abaRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('aba-net.txt') `
+        -ResponsesPath $abaResponses `
+        -Checkpoint (New-ExternalCheckpoint 'aba-net') `
+        -Turns 10 `
+        -Strategy ReplaceText
+    Assert-True ($abaRun.rc -ne 0) 'A→B→A nonzero exit'
+    Assert-True ($abaRun.json.status -ne 'PASS') 'A→B→A not PASS'
+    Assert-equal @($abaRun.json.net_changed_paths).Count 0 'A→B→A net_changed_paths empty'
+    Assert-True ($abaRun.json.edit_count -ge 2) 'A→B→A recorded effective edits'
+    Assert-equal (Read-TestText $abaFile) 'A' 'A→B→A final file restored to A'
+    Assert-True (
+        $abaRun.json.errors.code -contains 'WRITER_COMPLETED_WITHOUT_NET_CHANGE' -or
+        $abaRun.json.stop_reason -eq 'WRITER_COMPLETED_WITHOUT_NET_CHANGE'
+    ) 'A→B→A without net change terminal'
+
+    # Writer edit → checkpoint → resume → immediate completion PASS with full counters/maps restored
+    $writerResumeFile = Join-Path $testRoot 'writer-resume-state.txt'
+    Write-TestText $writerResumeFile 'baseline-v1'
+    $writerResumeCp = New-ExternalCheckpoint 'writer-resume-state'
+    $writerResumeFirstResponses = Join-Path $testRoot 'writer-resume-first-responses.json'
+    Save-Responses $writerResumeFirstResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'wrs-read' 'read_file' ([ordered]@{ path = 'writer-resume-state.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'wrs-edit' 'replace_text' ([ordered]@{
+                path = 'writer-resume-state.txt'
+                old_text = 'baseline-v1'
+                new_text = 'edited-v2'
+            })))
+        }))
+    )
+    $writerResumeFirst = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('writer-resume-state.txt') `
+        -ResponsesPath $writerResumeFirstResponses `
+        -Checkpoint $writerResumeCp `
+        -Turns 8 `
+        -Strategy ReplaceText
+    Assert-True $writerResumeFirst.json.checkpoint_saved 'writer resume first checkpoint saved'
+    Assert-equal $writerResumeFirst.json.edit_count 1 'writer resume first edit_count'
+    Assert-True ($writerResumeFirst.json.changed_paths -contains 'writer-resume-state.txt') 'writer resume first changed_paths'
+    Assert-True ($writerResumeFirst.json.net_changed_paths -contains 'writer-resume-state.txt') 'writer resume first net_changed_paths'
+    Assert-equal (Read-TestText $writerResumeFile) 'edited-v2' 'writer resume first file content'
+    $writerResumeCpRaw = Read-TestText $writerResumeCp
+    Assert-True ($writerResumeCpRaw.Contains('"runner_state"')) 'writer resume checkpoint has runner_state'
+    Assert-True ($writerResumeCpRaw.Contains('"base_write_state"')) 'writer resume checkpoint has base_write_state'
+    Assert-True ($writerResumeCpRaw.Contains('"edit_count"')) 'writer resume checkpoint has edit_count'
+    Assert-True ($writerResumeCpRaw.Contains('edited-v2') -or $writerResumeCpRaw.Contains('writer-resume-state.txt')) 'writer resume checkpoint references path or content'
+
+    $writerResumeSecondResponses = Join-Path $testRoot 'writer-resume-second-responses.json'
+    Save-Responses $writerResumeSecondResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'writer resume complete with preserved state'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $writerResumeSecond = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('writer-resume-state.txt') `
+        -ResponsesPath $writerResumeSecondResponses `
+        -Checkpoint $writerResumeCp `
+        -Resume $writerResumeCp `
+        -Turns 8 `
+        -Strategy ReplaceText
+    Assert-equal $writerResumeSecond.rc 0 'writer resume immediate completion exit'
+    Assert-equal $writerResumeSecond.json.status 'PASS' 'writer resume immediate completion PASS'
+    Assert-equal $writerResumeSecond.json.edit_count 1 'writer resume restored edit_count'
+    Assert-True ($writerResumeSecond.json.changed_paths -contains 'writer-resume-state.txt') 'writer resume restored changed_paths'
+    Assert-True ($writerResumeSecond.json.net_changed_paths -contains 'writer-resume-state.txt') 'writer resume restored net_changed_paths'
+    Assert-True (
+        $null -ne $writerResumeSecond.json.changed_file_hashes -and
+        @($writerResumeSecond.json.changed_file_hashes.PSObject.Properties.Name) -contains 'writer-resume-state.txt'
+    ) 'writer resume restored changed_file_hashes'
+    Assert-True (
+        $null -ne $writerResumeSecond.json.base_write_state -and
+        @($writerResumeSecond.json.base_write_state.PSObject.Properties.Name) -contains 'writer-resume-state.txt'
+    ) 'writer resume restored base_write_state'
+    Assert-True (
+        $null -ne $writerResumeSecond.json.net_changed_file_hashes -and
+        @($writerResumeSecond.json.net_changed_file_hashes.PSObject.Properties.Name) -contains 'writer-resume-state.txt'
+    ) 'writer resume restored net_changed_file_hashes'
+    Assert-True ($writerResumeSecond.json.tool_calls -ge 2) 'writer resume restored tool_calls accounting'
+    Assert-equal (Read-TestText $writerResumeFile) 'edited-v2' 'writer resume preserves edited file'
+
+    # --- Runner 2.8.0 Phase B contracts: budgets, encoding, ReadOnly prompt ---
+
+    # Pre-request wall-clock budget: request_count=0 and no tool mutation
+    $budgetPreFile = Join-Path $testRoot 'budget-pre.txt'
+    Write-TestText $budgetPreFile 'budget-pre-before'
+    $budgetPreResponses = Join-Path $testRoot 'budget-pre-responses.json'
+    Save-Responses $budgetPreResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bp-edit' 'replace_text' ([ordered]@{
+                path = 'budget-pre.txt'
+                old_text = 'budget-pre-before'
+                new_text = 'budget-pre-after'
+            })))
+        }))
+    )
+    $prevElapsed = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS')
+    $prevElapsedPost = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', '999999999')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $null)
+        $budgetPreRun = Invoke-Runner `
+            -Root $testRoot `
+            -RunMode Writer `
+            -Allow @('budget-pre.txt') `
+            -ResponsesPath $budgetPreResponses `
+            -Checkpoint (New-ExternalCheckpoint 'budget-pre') `
+            -Turns 4 `
+            -MaxElapsedMinutes 1 `
+            -MaxApiElapsedMinutes 1 `
+            -Strategy ReplaceText
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $prevElapsed)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $prevElapsedPost)
+    }
+    Assert-equal $budgetPreRun.rc 2 'pre-request elapsed budget exit'
+    Assert-True ($budgetPreRun.json.errors.code -contains 'MAX_ELAPSED_TIME_REACHED') 'pre-request MAX_ELAPSED_TIME_REACHED'
+    Assert-equal $budgetPreRun.json.request_count 0 'pre-request budget request_count=0'
+    Assert-equal $budgetPreRun.json.edit_count 0 'pre-request budget no edits'
+    Assert-equal (Read-TestText $budgetPreFile) 'budget-pre-before' 'pre-request budget preserves file'
+    Assert-True (
+        $budgetPreRun.json.status -eq 'PARTIAL' -or $budgetPreRun.json.status -eq 'PARTIAL_AFTER_EDIT'
+    ) 'pre-request budget partial status'
+
+    # Post-request wall-clock budget: request counted, tool mutation not applied
+    $budgetPostFile = Join-Path $testRoot 'budget-post.txt'
+    Write-TestText $budgetPostFile 'budget-post-before'
+    $budgetPostResponses = Join-Path $testRoot 'budget-post-responses.json'
+    Save-Responses $budgetPostResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bpost-edit' 'replace_text' ([ordered]@{
+                path = 'budget-post.txt'
+                old_text = 'budget-post-before'
+                new_text = 'budget-post-after'
+            })))
+        }))
+    )
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', '999999999')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', '1')
+        $budgetPostRun = Invoke-Runner `
+            -Root $testRoot `
+            -RunMode Writer `
+            -Allow @('budget-post.txt') `
+            -ResponsesPath $budgetPostResponses `
+            -Checkpoint (New-ExternalCheckpoint 'budget-post') `
+            -Turns 4 `
+            -MaxElapsedMinutes 1 `
+            -MaxApiElapsedMinutes 1 `
+            -Strategy ReplaceText
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $prevElapsed)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $prevElapsedPost)
+    }
+    Assert-equal $budgetPostRun.rc 2 'post-request elapsed budget exit'
+    Assert-True ($budgetPostRun.json.errors.code -contains 'MAX_ELAPSED_TIME_REACHED') 'post-request MAX_ELAPSED_TIME_REACHED'
+    Assert-True ($budgetPostRun.json.request_count -ge 1) 'post-request budget request_count>=1'
+    Assert-equal $budgetPostRun.json.edit_count 0 'post-request budget no tool mutation'
+    Assert-equal (Read-TestText $budgetPostFile) 'budget-post-before' 'post-request budget preserves file'
+
+    # Pre-request API elapsed budget via TestMode injection
+    $budgetApiFile = Join-Path $testRoot 'budget-api.txt'
+    Write-TestText $budgetApiFile 'budget-api-before'
+    $budgetApiResponses = Join-Path $testRoot 'budget-api-responses.json'
+    Save-Responses $budgetApiResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bapi-edit' 'replace_text' ([ordered]@{
+                path = 'budget-api.txt'
+                old_text = 'budget-api-before'
+                new_text = 'budget-api-after'
+            })))
+        }))
+    )
+    $prevApiElapsed = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS')
+    $prevApiPost = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', '999999999')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $null)
+        $budgetApiRun = Invoke-Runner `
+            -Root $testRoot `
+            -RunMode Writer `
+            -Allow @('budget-api.txt') `
+            -ResponsesPath $budgetApiResponses `
+            -Checkpoint (New-ExternalCheckpoint 'budget-api') `
+            -Turns 4 `
+            -MaxElapsedMinutes 60 `
+            -MaxApiElapsedMinutes 1 `
+            -Strategy ReplaceText
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', $prevApiElapsed)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $prevApiPost)
+    }
+    Assert-equal $budgetApiRun.rc 2 'pre-request api budget exit'
+    Assert-True ($budgetApiRun.json.errors.code -contains 'MAX_API_ELAPSED_TIME_REACHED') 'pre-request MAX_API_ELAPSED_TIME_REACHED'
+    Assert-equal $budgetApiRun.json.request_count 0 'pre-request api budget request_count=0'
+    Assert-equal (Read-TestText $budgetApiFile) 'budget-api-before' 'pre-request api budget preserves file'
+
+    # UTF-8 BOM replace_text preserves BOM and changes content
+    $utf8BomFile = Join-Path $testRoot 'utf8-bom.txt'
+    $utf8Enc = New-Object System.Text.UTF8Encoding($true)
+    $utf8Before = $utf8Enc.GetPreamble() + $utf8Enc.GetBytes('bom-before')
+    Write-TestBytes $utf8BomFile $utf8Before
+    $utf8BomResponses = Join-Path $testRoot 'utf8-bom-responses.json'
+    Save-Responses $utf8BomResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'u8-read' 'read_file' ([ordered]@{ path = 'utf8-bom.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'u8-edit' 'replace_text' ([ordered]@{
+                path = 'utf8-bom.txt'
+                old_text = 'bom-before'
+                new_text = 'bom-after'
+            })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'utf8 bom complete'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $utf8BomRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('utf8-bom.txt') `
+        -ResponsesPath $utf8BomResponses `
+        -Checkpoint (New-ExternalCheckpoint 'utf8-bom') `
+        -Turns 6 `
+        -Strategy ReplaceText
+    Assert-equal $utf8BomRun.rc 0 'utf8 bom replace exit'
+    Assert-equal $utf8BomRun.json.status 'PASS' 'utf8 bom replace PASS'
+    $utf8AfterBytes = Read-TestBytes $utf8BomFile
+    Assert-True ($utf8AfterBytes.Length -ge 3 -and $utf8AfterBytes[0] -eq 0xEF -and $utf8AfterBytes[1] -eq 0xBB -and $utf8AfterBytes[2] -eq 0xBF) 'utf8 bom preamble retained'
+    $utf8Expected = $utf8Enc.GetPreamble() + $utf8Enc.GetBytes('bom-after')
+    Assert-True (Test-ByteArraysEqualLocal -Left $utf8AfterBytes -Right $utf8Expected) 'utf8 bom content+encoding exact'
+
+    # UTF-16 LE replace_text preserves BOM/encoding and changes content
+    $utf16File = Join-Path $testRoot 'utf16-le.txt'
+    $utf16Enc = New-Object System.Text.UnicodeEncoding($false, $true)
+    $utf16Before = $utf16Enc.GetPreamble() + $utf16Enc.GetBytes('wide-before')
+    Write-TestBytes $utf16File $utf16Before
+    $utf16Responses = Join-Path $testRoot 'utf16-le-responses.json'
+    Save-Responses $utf16Responses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'u16-read' 'read_file' ([ordered]@{ path = 'utf16-le.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'u16-edit' 'replace_text' ([ordered]@{
+                path = 'utf16-le.txt'
+                old_text = 'wide-before'
+                new_text = 'wide-after'
+            })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'utf16 complete'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $utf16Run = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('utf16-le.txt') `
+        -ResponsesPath $utf16Responses `
+        -Checkpoint (New-ExternalCheckpoint 'utf16-le') `
+        -Turns 6 `
+        -Strategy ReplaceText
+    Assert-equal $utf16Run.rc 0 'utf16 le replace exit'
+    Assert-equal $utf16Run.json.status 'PASS' 'utf16 le replace PASS'
+    $utf16AfterBytes = Read-TestBytes $utf16File
+    Assert-True ($utf16AfterBytes.Length -ge 2 -and $utf16AfterBytes[0] -eq 0xFF -and $utf16AfterBytes[1] -eq 0xFE) 'utf16 le BOM retained'
+    $utf16Expected = $utf16Enc.GetPreamble() + $utf16Enc.GetBytes('wide-after')
+    Assert-True (Test-ByteArraysEqualLocal -Left $utf16AfterBytes -Right $utf16Expected) 'utf16 le content+encoding exact'
+
+    # BOM context-only apply_patch is NO_EFFECTIVE_CHANGE (encoding-aware)
+    $bomContextFile = Join-Path $testRoot 'bom-context.txt'
+    $bomContextBefore = $utf8Enc.GetPreamble() + $utf8Enc.GetBytes('keep-bom')
+    Write-TestBytes $bomContextFile $bomContextBefore
+    $bomContextPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: bom-context.txt'
+        '@@'
+        ' keep-bom'
+        '*** End Patch'
+    ))
+    $bomContextResponses = Join-Path $testRoot 'bom-context-responses.json'
+    Save-Responses $bomContextResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bc-read' 'read_file' ([ordered]@{ path = 'bom-context.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bc-patch' 'apply_patch' ([ordered]@{ patch = $bomContextPatch })))
+        }))
+    )
+    $bomContextRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('bom-context.txt') `
+        -ResponsesPath $bomContextResponses `
+        -Checkpoint (New-ExternalCheckpoint 'bom-context') `
+        -Turns 4 `
+        -Strategy ApplyPatch
+    Assert-equal $bomContextRun.rc 2 'bom context-only exit'
+    Assert-True ($bomContextRun.json.errors.code -contains 'NO_EFFECTIVE_CHANGE') 'bom context-only NO_EFFECTIVE_CHANGE'
+    Assert-equal $bomContextRun.json.edit_count 0 'bom context-only no edits'
+    Assert-True (Test-ByteArraysEqualLocal -Left (Read-TestBytes $bomContextFile) -Right $bomContextBefore) 'bom context-only preserves exact bytes'
+
+    # ReadOnly role prompt separation: Reviewer language, no Writer/editing directives
+    $roleRoResponses = Join-Path $testRoot 'role-ro-responses.json'
+    Save-Responses $roleRoResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'ReadOnly review complete; no mutation.'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $roleRoCp = New-ExternalCheckpoint 'role-ro'
+    $roleRoRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode ReadOnly `
+        -Read @('allowed.txt') `
+        -ResponsesPath $roleRoResponses `
+        -Checkpoint $roleRoCp `
+        -Turns 2
+    Assert-equal $roleRoRun.rc 0 'ReadOnly role prompt exit'
+    Assert-equal $roleRoRun.json.status 'PASS' 'ReadOnly role prompt PASS'
+    $roleRoCpRaw = Read-TestText $roleRoCp
+    Assert-True ($roleRoCpRaw.Contains('workspace Reviewer in ReadOnly mode')) 'ReadOnly checkpoint has Reviewer prompt'
+    Assert-True ($roleRoCpRaw.Contains('must not mutate')) 'ReadOnly checkpoint prohibits mutation'
+    Assert-True (-not $roleRoCpRaw.Contains('workspace Writer')) 'ReadOnly checkpoint has no Writer role title'
+    Assert-True (-not $roleRoCpRaw.Contains('Write strategy:')) 'ReadOnly checkpoint has no write strategy language'
+
+    $roleWriterResponses = Join-Path $testRoot 'role-writer-responses.json'
+    Save-Responses $roleWriterResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rw-read' 'read_file' ([ordered]@{ path = 'allowed.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'rw-edit' 'replace_text' ([ordered]@{
+                path = 'allowed.txt'
+                old_text = 'beta'
+                new_text = 'role-writer-ok'
+            })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'writer role complete'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    Write-TestText $allowedFile 'beta'
+    $roleWriterCp = New-ExternalCheckpoint 'role-writer'
+    $roleWriterRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('allowed.txt') `
+        -ResponsesPath $roleWriterResponses `
+        -Checkpoint $roleWriterCp `
+        -Turns 6 `
+        -Strategy ReplaceText
+    Assert-equal $roleWriterRun.rc 0 'Writer role prompt exit'
+    $roleWriterCpRaw = Read-TestText $roleWriterCp
+    Assert-True ($roleWriterCpRaw.Contains('workspace Writer')) 'Writer checkpoint has Writer prompt'
+    Assert-True (-not $roleWriterCpRaw.Contains('workspace Reviewer in ReadOnly mode')) 'Writer checkpoint has no Reviewer prompt'
+
+    # --- Resume wall-clock / API budget contracts (no sleeps; synthetic TestMode injection) ---
+
+    # First run under tighter limits writes a normal checkpoint with injected elapsed below budget.
+    $budgetResumeFile = Join-Path $testRoot 'budget-resume.txt'
+    Write-TestText $budgetResumeFile 'budget-resume-before'
+    $budgetResumeCp = New-ExternalCheckpoint 'budget-resume'
+    $budgetResumeFirstResponses = Join-Path $testRoot 'budget-resume-first-responses.json'
+    Save-Responses $budgetResumeFirstResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'br-read' 'read_file' ([ordered]@{ path = 'budget-resume.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'br-edit' 'replace_text' ([ordered]@{
+                path = 'budget-resume.txt'
+                old_text = 'budget-resume-before'
+                new_text = 'budget-resume-edited'
+            })))
+        }))
+    )
+    $prevElapsedBr = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS')
+    $prevElapsedPostBr = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST')
+    $prevApiBr = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS')
+    $prevApiPostBr = [System.Environment]::GetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST')
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', '120000')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $null)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', '90000')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $null)
+        $budgetResumeFirst = Invoke-Runner `
+            -Root $testRoot `
+            -RunMode Writer `
+            -Allow @('budget-resume.txt') `
+            -ResponsesPath $budgetResumeFirstResponses `
+            -Checkpoint $budgetResumeCp `
+            -Turns 8 `
+            -MaxElapsedMinutes 5 `
+            -MaxApiElapsedMinutes 4 `
+            -Strategy ReplaceText
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $prevElapsedBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $prevElapsedPostBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', $prevApiBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $prevApiPostBr)
+    }
+    Assert-True $budgetResumeFirst.json.checkpoint_saved 'budget resume first checkpoint saved'
+    Assert-equal $budgetResumeFirst.json.edit_count 1 'budget resume first edit_count'
+    Assert-True ([int64]$budgetResumeFirst.json.elapsed_ms -ge 120000) 'budget resume first retains injected elapsed'
+    Assert-True ([int64]$budgetResumeFirst.json.api_elapsed_ms -ge 90000) 'budget resume first retains injected api elapsed'
+    Assert-equal $budgetResumeFirst.json.max_elapsed_minutes 5 'budget resume first max_elapsed_minutes'
+    Assert-equal $budgetResumeFirst.json.max_api_elapsed_minutes 4 'budget resume first max_api_elapsed_minutes'
+    Assert-equal (Read-TestText $budgetResumeFile) 'budget-resume-edited' 'budget resume first file content'
+
+    # Resume with default (looser) CLI knobs cannot loosen saved 5/4 limits; elapsed is retained.
+    $budgetResumeSecondResponses = Join-Path $testRoot 'budget-resume-second-responses.json'
+    Save-Responses $budgetResumeSecondResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = 'budget resume complete under tightened limits'
+            tool_calls = @()
+        }) -FinishReason 'stop')
+    )
+    $budgetResumeSecond = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('budget-resume.txt') `
+        -ResponsesPath $budgetResumeSecondResponses `
+        -Checkpoint $budgetResumeCp `
+        -Resume $budgetResumeCp `
+        -Turns 8 `
+        -Strategy ReplaceText
+    Assert-equal $budgetResumeSecond.rc 0 'budget resume loosen-guard exit'
+    Assert-equal $budgetResumeSecond.json.status 'PASS' 'budget resume loosen-guard PASS'
+    Assert-equal $budgetResumeSecond.json.max_elapsed_minutes 5 'budget resume cannot loosen max_elapsed_minutes'
+    Assert-equal $budgetResumeSecond.json.max_api_elapsed_minutes 4 'budget resume cannot loosen max_api_elapsed_minutes'
+    Assert-True ([int64]$budgetResumeSecond.json.elapsed_ms -ge 120000) 'budget resume retains elapsed_ms'
+    Assert-True ([int64]$budgetResumeSecond.json.api_elapsed_ms -ge 90000) 'budget resume retains api_elapsed_ms'
+    Assert-equal $budgetResumeSecond.json.edit_count 1 'budget resume loosen-guard edit_count'
+
+    # Resume whose restored elapsed already exceeds a stricter effective limit stops before another request/mutation.
+    $budgetResumeOverFile = Join-Path $testRoot 'budget-resume-over.txt'
+    Write-TestText $budgetResumeOverFile 'over-before'
+    $budgetResumeOverCp = New-ExternalCheckpoint 'budget-resume-over'
+    $budgetResumeOverFirstResponses = Join-Path $testRoot 'budget-resume-over-first-responses.json'
+    Save-Responses $budgetResumeOverFirstResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bro-read' 'read_file' ([ordered]@{ path = 'budget-resume-over.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bro-edit' 'replace_text' ([ordered]@{
+                path = 'budget-resume-over.txt'
+                old_text = 'over-before'
+                new_text = 'over-edited'
+            })))
+        }))
+    )
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', '500000')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $null)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', $null)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $null)
+        $budgetResumeOverFirst = Invoke-Runner `
+            -Root $testRoot `
+            -RunMode Writer `
+            -Allow @('budget-resume-over.txt') `
+            -ResponsesPath $budgetResumeOverFirstResponses `
+            -Checkpoint $budgetResumeOverCp `
+            -Turns 8 `
+            -MaxElapsedMinutes 10 `
+            -MaxApiElapsedMinutes 9 `
+            -Strategy ReplaceText
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $prevElapsedBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $prevElapsedPostBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', $prevApiBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $prevApiPostBr)
+    }
+    Assert-True $budgetResumeOverFirst.json.checkpoint_saved 'budget resume-over first checkpoint saved'
+    Assert-equal $budgetResumeOverFirst.json.edit_count 1 'budget resume-over first edit_count'
+    Assert-True ([int64]$budgetResumeOverFirst.json.elapsed_ms -ge 500000) 'budget resume-over first elapsed'
+    Assert-equal (Read-TestText $budgetResumeOverFile) 'over-edited' 'budget resume-over first file'
+    # successful_write checkpoint freezes request_count before the exhausted third mock attempt.
+    $budgetResumeOverCpData = (Read-TestText $budgetResumeOverCp) | ConvertFrom-Json
+    $budgetResumeOverCpRequestCount = [int]$budgetResumeOverCpData.runner_state.request_count
+    Assert-True (
+        [int]$budgetResumeOverFirst.json.request_count -ge $budgetResumeOverCpRequestCount
+    ) 'budget resume-over first final request_count >= checkpoint boundary'
+
+    $budgetResumeOverSecondResponses = Join-Path $testRoot 'budget-resume-over-second-responses.json'
+    Save-Responses $budgetResumeOverSecondResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bro-mut' 'replace_text' ([ordered]@{
+                path = 'budget-resume-over.txt'
+                old_text = 'over-edited'
+                new_text = 'over-mutated-should-not-apply'
+            })))
+        }))
+    )
+    $budgetResumeOverSecond = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('budget-resume-over.txt') `
+        -ResponsesPath $budgetResumeOverSecondResponses `
+        -Checkpoint $budgetResumeOverCp `
+        -Resume $budgetResumeOverCp `
+        -Turns 8 `
+        -MaxElapsedMinutes 1 `
+        -MaxApiElapsedMinutes 1 `
+        -Strategy ReplaceText
+    Assert-equal $budgetResumeOverSecond.rc 2 'budget resume-over exceeded exit'
+    Assert-True ($budgetResumeOverSecond.json.errors.code -contains 'MAX_ELAPSED_TIME_REACHED') 'budget resume-over MAX_ELAPSED_TIME_REACHED'
+    Assert-equal $budgetResumeOverSecond.json.request_count $budgetResumeOverCpRequestCount 'budget resume-over no new request'
+    Assert-equal $budgetResumeOverSecond.json.edit_count 1 'budget resume-over no new edit'
+    Assert-equal (Read-TestText $budgetResumeOverFile) 'over-edited' 'budget resume-over no mutation'
+    Assert-equal $budgetResumeOverSecond.json.max_elapsed_minutes 1 'budget resume-over effective max_elapsed tightened'
+
+    # API elapsed resume + post-request API expiry without mutation
+    $budgetApiResumeFile = Join-Path $testRoot 'budget-api-resume.txt'
+    Write-TestText $budgetApiResumeFile 'api-resume-before'
+    $budgetApiResumeCp = New-ExternalCheckpoint 'budget-api-resume'
+    $budgetApiResumeFirstResponses = Join-Path $testRoot 'budget-api-resume-first-responses.json'
+    Save-Responses $budgetApiResumeFirstResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bar-read' 'read_file' ([ordered]@{ path = 'budget-api-resume.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bar-edit' 'replace_text' ([ordered]@{
+                path = 'budget-api-resume.txt'
+                old_text = 'api-resume-before'
+                new_text = 'api-resume-edited'
+            })))
+        }))
+    )
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $null)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $null)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', '150000')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $null)
+        $budgetApiResumeFirst = Invoke-Runner `
+            -Root $testRoot `
+            -RunMode Writer `
+            -Allow @('budget-api-resume.txt') `
+            -ResponsesPath $budgetApiResumeFirstResponses `
+            -Checkpoint $budgetApiResumeCp `
+            -Turns 8 `
+            -MaxElapsedMinutes 60 `
+            -MaxApiElapsedMinutes 10 `
+            -Strategy ReplaceText
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $prevElapsedBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $prevElapsedPostBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', $prevApiBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $prevApiPostBr)
+    }
+    Assert-True $budgetApiResumeFirst.json.checkpoint_saved 'budget api-resume first checkpoint saved'
+    Assert-True ([int64]$budgetApiResumeFirst.json.api_elapsed_ms -ge 150000) 'budget api-resume first api elapsed'
+    # successful_write checkpoint freezes request_count before the exhausted third mock attempt.
+    $budgetApiResumeCpData = (Read-TestText $budgetApiResumeCp) | ConvertFrom-Json
+    $budgetApiResumeCpRequestCount = [int]$budgetApiResumeCpData.runner_state.request_count
+    Assert-True (
+        [int]$budgetApiResumeFirst.json.request_count -ge $budgetApiResumeCpRequestCount
+    ) 'budget api-resume first final request_count >= checkpoint boundary'
+
+    # Resume with tighter API limit already exceeded by restored api elapsed → no new request/mutation
+    $budgetApiResumeSecondResponses = Join-Path $testRoot 'budget-api-resume-second-responses.json'
+    Save-Responses $budgetApiResumeSecondResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bar-mut' 'replace_text' ([ordered]@{
+                path = 'budget-api-resume.txt'
+                old_text = 'api-resume-edited'
+                new_text = 'api-resume-should-not'
+            })))
+        }))
+    )
+    $budgetApiResumeSecond = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('budget-api-resume.txt') `
+        -ResponsesPath $budgetApiResumeSecondResponses `
+        -Checkpoint $budgetApiResumeCp `
+        -Resume $budgetApiResumeCp `
+        -Turns 8 `
+        -MaxElapsedMinutes 60 `
+        -MaxApiElapsedMinutes 1 `
+        -Strategy ReplaceText
+    Assert-equal $budgetApiResumeSecond.rc 2 'budget api-resume exceeded exit'
+    Assert-True ($budgetApiResumeSecond.json.errors.code -contains 'MAX_API_ELAPSED_TIME_REACHED') 'budget api-resume MAX_API_ELAPSED_TIME_REACHED'
+    Assert-equal $budgetApiResumeSecond.json.request_count $budgetApiResumeCpRequestCount 'budget api-resume no new request'
+    Assert-equal $budgetApiResumeSecond.json.edit_count 1 'budget api-resume no new edit'
+    Assert-equal (Read-TestText $budgetApiResumeFile) 'api-resume-edited' 'budget api-resume no mutation'
+    Assert-equal $budgetApiResumeSecond.json.max_api_elapsed_minutes 1 'budget api-resume effective max_api tightened'
+
+    # Post-request API expiry: request counted, tools not applied
+    $budgetApiPostFile = Join-Path $testRoot 'budget-api-post.txt'
+    Write-TestText $budgetApiPostFile 'api-post-before'
+    $budgetApiPostResponses = Join-Path $testRoot 'budget-api-post-responses.json'
+    Save-Responses $budgetApiPostResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'bap-edit' 'replace_text' ([ordered]@{
+                path = 'budget-api-post.txt'
+                old_text = 'api-post-before'
+                new_text = 'api-post-after'
+            })))
+        }))
+    )
+    try {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', '999999999')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', '1')
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $null)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $null)
+        $budgetApiPostRun = Invoke-Runner `
+            -Root $testRoot `
+            -RunMode Writer `
+            -Allow @('budget-api-post.txt') `
+            -ResponsesPath $budgetApiPostResponses `
+            -Checkpoint (New-ExternalCheckpoint 'budget-api-post') `
+            -Turns 4 `
+            -MaxElapsedMinutes 60 `
+            -MaxApiElapsedMinutes 1 `
+            -Strategy ReplaceText
+    }
+    finally {
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_MS', $prevApiBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_API_ELAPSED_POST_REQUEST', $prevApiPostBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_MS', $prevElapsedBr)
+        [System.Environment]::SetEnvironmentVariable('DEEPSEEK_RUNNER_TEST_ELAPSED_POST_REQUEST', $prevElapsedPostBr)
+    }
+    Assert-equal $budgetApiPostRun.rc 2 'post-request api budget exit'
+    Assert-True ($budgetApiPostRun.json.errors.code -contains 'MAX_API_ELAPSED_TIME_REACHED') 'post-request MAX_API_ELAPSED_TIME_REACHED'
+    Assert-True ($budgetApiPostRun.json.request_count -ge 1) 'post-request api budget request_count>=1'
+    Assert-equal $budgetApiPostRun.json.edit_count 0 'post-request api budget no tool mutation'
+    Assert-equal (Read-TestText $budgetApiPostFile) 'api-post-before' 'post-request api budget preserves file'
+
+    # Mixed line-ending BOM context-only apply_patch: exact bytes unchanged
+    $mixedEolBomFile = Join-Path $testRoot 'mixed-eol-bom.txt'
+    $mixedEolBomEnc = New-Object System.Text.UTF8Encoding($true)
+    # Mixed CRLF and LF body: rematerialization would rewrite EOLs if not gated on normalized text.
+    $mixedEolBody = "keep-me`r`nsecond-line`nthird"
+    $mixedEolBomBytes = $mixedEolBomEnc.GetPreamble() + $mixedEolBomEnc.GetBytes($mixedEolBody)
+    Write-TestBytes $mixedEolBomFile $mixedEolBomBytes
+    $mixedEolPatch = [string]::Join([Environment]::NewLine, @(
+        '*** Begin Patch'
+        '*** Update File: mixed-eol-bom.txt'
+        '@@'
+        ' keep-me'
+        '*** End Patch'
+    ))
+    $mixedEolResponses = Join-Path $testRoot 'mixed-eol-bom-responses.json'
+    Save-Responses $mixedEolResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'me-read' 'read_file' ([ordered]@{ path = 'mixed-eol-bom.txt' })))
+        })),
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'me-patch' 'apply_patch' ([ordered]@{ patch = $mixedEolPatch })))
+        }))
+    )
+    $mixedEolRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('mixed-eol-bom.txt') `
+        -ResponsesPath $mixedEolResponses `
+        -Checkpoint (New-ExternalCheckpoint 'mixed-eol-bom') `
+        -Turns 4 `
+        -Strategy ApplyPatch
+    Assert-equal $mixedEolRun.rc 2 'mixed-eol bom context-only exit'
+    Assert-True ($mixedEolRun.json.errors.code -contains 'NO_EFFECTIVE_CHANGE') 'mixed-eol bom context-only NO_EFFECTIVE_CHANGE'
+    Assert-equal $mixedEolRun.json.edit_count 0 'mixed-eol bom context-only no edits'
+    Assert-True (Test-ByteArraysEqualLocal -Left (Read-TestBytes $mixedEolBomFile) -Right $mixedEolBomBytes) 'mixed-eol bom context-only exact bytes unchanged'
+
+    # Out-of-scope replace_text with old_text==new_text must prefer PATH_NOT_WRITE_ALLOWLISTED
+    $oosNoopResponses = Join-Path $testRoot 'oos-noop-responses.json'
+    Save-Responses $oosNoopResponses @(
+        (New-Response -Message ([ordered]@{
+            role = 'assistant'
+            content = $null
+            tool_calls = @((New-ToolCall 'oos-noop' 'replace_text' ([ordered]@{
+                path = 'not-allowlisted.txt'
+                old_text = 'same'
+                new_text = 'same'
+            })))
+        }))
+    )
+    Write-TestText (Join-Path $testRoot 'not-allowlisted.txt') 'same'
+    Write-TestText $allowedFile 'allowlisted-content'
+    $oosNoopRun = Invoke-Runner `
+        -Root $testRoot `
+        -RunMode Writer `
+        -Allow @('allowed.txt') `
+        -ResponsesPath $oosNoopResponses `
+        -Checkpoint (New-ExternalCheckpoint 'oos-noop') `
+        -Turns 2 `
+        -Strategy ReplaceText
+    Assert-equal $oosNoopRun.rc 2 'oos A==A exit'
+    Assert-True ($oosNoopRun.json.errors.code -contains 'PATH_NOT_WRITE_ALLOWLISTED') 'oos A==A PATH_NOT_WRITE_ALLOWLISTED'
+    Assert-True (-not ($oosNoopRun.json.errors.code -contains 'NO_EFFECTIVE_CHANGE')) 'oos A==A not NO_EFFECTIVE_CHANGE'
 }
 catch {
     $script:Failed++
