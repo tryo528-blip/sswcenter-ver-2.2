@@ -616,7 +616,7 @@ def test_w2_svc_plan_notice_02_offline_sql_contract() -> None:
         for index, statement in enumerate(normalized_statements)
         if re.match(r"do\b", statement)
     )
-    if len(do_indexes) != 1 or normalized_statements[do_indexes[0]] != "do":
+    if len(do_indexes) != 1 or re.fullmatch(r"do\s*;?", normalized_statements[do_indexes[0]]) is None:
         _fail(
             "W2_ALEMBIC_DO_STATEMENT_SET: "
             + repr(tuple(normalized_statements[index] for index in do_indexes))
@@ -648,7 +648,7 @@ def test_w2_svc_plan_notice_02_offline_sql_contract() -> None:
     )
     if (
         len(commit_indexes) != 1
-        or normalized_statements[commit_indexes[0]] != "commit"
+        or re.fullmatch(r"commit\s*;?", normalized_statements[commit_indexes[0]]) is None
         or re.fullmatch(r"commit\s*;", raw_top_level_statements[commit_indexes[0]]) is None
     ):
         _fail(

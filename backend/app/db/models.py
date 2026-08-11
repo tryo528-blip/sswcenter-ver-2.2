@@ -2063,6 +2063,64 @@ class RecipientContract(Base):
     row_version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
 
 
+class RecipientServicePlanNotice(Base):
+    __tablename__ = "recipient_service_plan_notice"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_recipient_service_plan_notice"),
+        ForeignKeyConstraint(
+            ["recipient_contract_id"],
+            ["erp.recipient_contract.id"],
+            name="fk_service_plan_notice_recipient_contract",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["replacement_service_plan_notice_id"],
+            ["erp.recipient_service_plan_notice.id"],
+            name="fk_service_plan_notice_replacement",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["created_by_account_id"],
+            ["erp.user_account.id"],
+            name="fk_service_plan_notice_created_by_account",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["updated_by_account_id"],
+            ["erp.user_account.id"],
+            name="fk_service_plan_notice_updated_by_account",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "applied_end_date >= applied_start_date",
+            name=conv("ck_service_plan_notice_date_order"),
+        ),
+        CheckConstraint(
+            "row_version > 0",
+            name=conv("ck_service_plan_notice_row_version_positive"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    recipient_contract_id: Mapped[int] = mapped_column(BigInteger)
+    notification_date: Mapped[date] = mapped_column(Date)
+    applied_start_date: Mapped[date] = mapped_column(Date)
+    applied_end_date: Mapped[date] = mapped_column(Date)
+    invalidated_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replacement_service_plan_notice_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_by_account_id: Mapped[int] = mapped_column(BigInteger)
+    created_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_by_account_id: Mapped[int] = mapped_column(BigInteger)
+    updated_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    row_version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
+
+
 class CareAssignment(Base):
     __tablename__ = "care_assignment"
     __table_args__ = (

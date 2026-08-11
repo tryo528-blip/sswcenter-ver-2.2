@@ -254,9 +254,42 @@ def _insert_recipient2_short_cert_period(
 
 def _insert_fixture_data(connection: Connection) -> W2Fixture:
     """Create minimal fixture rows needed by the live tests."""
-    # (a) Query erp.user_account FIRST, before any recipient insert.
+    # (a) Seed erp.staff -> erp.user_account so empty temp DBs have an account.
+    label = uuid4().hex
+    account_staff_id = connection.execute(
+        text(
+            """
+            INSERT INTO erp.staff
+                (name, birth_date, sex_code, display_name, row_version)
+            VALUES
+                (:name, DATE '1990-01-01', 'TEST', :display_name, 1)
+            RETURNING id
+            """
+        ),
+        {
+            "name": "W2 ACCOUNT STAFF " + label,
+            "display_name": "W2 ACCOUNT " + label,
+        },
+    ).scalar_one()
     account = connection.execute(
-        text("SELECT id FROM erp.user_account LIMIT 1")
+        text(
+            """
+            INSERT INTO erp.user_account
+                (staff_id, account_code, display_name, role_code,
+                 pin_hash, pin_lookup_hmac, pin_key_version, row_version)
+            VALUES
+                (:staff_id, :account_code, :display_name, 'ADMIN',
+                 :pin_hash, :pin_lookup_hmac, 1, 1)
+            RETURNING id
+            """
+        ),
+        {
+            "staff_id": account_staff_id,
+            "account_code": "W2_" + label,
+            "display_name": "W2 ACCOUNT " + label,
+            "pin_hash": "w2-test-pin-hash-" + label,
+            "pin_lookup_hmac": uuid4().bytes,
+        },
     ).scalar_one()
 
     # (b) Query two service_type ids by code — 'HOME_CARE' and 'HOME_BATH'
