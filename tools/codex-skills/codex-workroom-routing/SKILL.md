@@ -48,7 +48,8 @@ description: Parse Korean route aliases such as 집-코덱스-그록 or 사무�
 - 테스트 1–3과 검수 4–6을 각각 독립 worktree로 준비한다.
 - 각 방에는 [사용 설명서](references/usage-guide.md)의 grade/model/effort/fast 조합을 그대로 붙인다.
 - 최신 규칙상 방 3(5등급 테스트)은 `gpt-5.6-sol`, `max`, `fast on`이다.
-- 최종 독립검수는 Claude Opus 5, `ultra`, `fast off`로 지정한다. 현재 환경의 Claude wrapper가 다른 버전만 제공하면 대체하지 말고 `BLOCKED/UNAVAILABLE`로 표시한다.
+- 최종 독립검수의 Claude는 `invoke-opus.ps1` wrapper가 실제로 지정한 모델·effort·permission/safe mode를 그대로 사용한다. 현재 wrapper가 `claude-opus-4-8`, `xhigh`, plan/safe-mode를 지정한다면 그대로 실행하고, Opus 5/ultra를 별도로 강제하거나 버전 차이만으로 `BLOCKED` 처리하지 않는다.
+- wrapper executable, 인증 preflight, 실제 wrapper invocation이 실패할 때만 `BLOCKED/UNAVAILABLE`로 표시하고, 실제 호출 메타데이터를 보고한다.
 
 ### 클로드 오퍼레이터
 

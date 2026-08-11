@@ -70,13 +70,13 @@
 | 5 | 검수 | 3–4 | Sol / xhigh / fast on |
 | 6 | 검수 | 5 | Sol / ultra / fast off |
 
-최종 독립검수:
+최종 독립검수의 Claude는 별도 모델을 강제하지 않고 wrapper 설정을 그대로 사용한다.
 
 ```text
-Claude Opus 5 / ultra / fast off
+invoke-opus.ps1 → wrapper-defined model / wrapper-defined effort / wrapper-defined permission·safe mode
 ```
 
-실제 Claude 실행 파일이 Opus 5가 아니면 Opus 4-8 등으로 조용히 대체하지 않는다. `UNAVAILABLE` 또는 `BLOCKED`를 보고한다.
+예를 들어 현재 wrapper가 `claude-opus-4-8`, `xhigh`, `plan`, `safe-mode`를 지정하면 그 조합을 그대로 쓴다. Opus 5/ultra와 다르다는 이유만으로 막거나 수동 대체하지 않는다. executable·인증 preflight·실제 wrapper 호출이 실패할 때만 `UNAVAILABLE` 또는 `BLOCKED`를 보고하고 실제 인자를 남긴다.
 
 ## 4. 클로드 오퍼레이터 방 배정
 
@@ -98,7 +98,7 @@ gpt-5.6-sol / ultra / fast off
 - [ ] 실제 wrapper가 요구한 model/effort/fast/grade를 지원하는가?
 - [ ] wrapper에 grade flag가 없으면 grade/model을 handoff metadata로 기록했는가?
 - [ ] 각 방의 owner, writable path, read-only 경계를 적었는가?
-- [ ] 최종검수 모델의 실제 버전을 확인했는가?
+- [ ] 최종검수는 `invoke-opus.ps1`의 실제 model/effort/permission/safe 인자를 확인했는가?
 
 검증되지 않은 항목이 하나라도 있으면 실행 대신 `BLOCKED/UNKNOWN` 계획을 출력한다.
 
@@ -114,7 +114,7 @@ rooms:
   4 검수 1–2   | gpt-5.6-luna         | max   | fast on
   5 검수 3–4   | gpt-5.6-sol          | xhigh | fast on
   6 검수 5     | gpt-5.6-sol          | ultra | fast off
-final_review: Claude Opus 5 | ultra | fast off
+final_review: invoke-opus.ps1 wrapper-defined model | wrapper-defined effort | wrapper safe mode
 status: BLOCKED (실행 파일/기준 문서 미확인)
 unverified: office profile, wrapper grade flags
 ```
