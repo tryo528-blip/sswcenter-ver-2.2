@@ -37,10 +37,142 @@ VERIFY_PATH = REPO_ROOT / "scripts" / "verify-w1a-vs1-db.ps1"
 EXPECTED_HASHES = {
     ALEMBIC_0018_PATH: "AB1A7FB77498CAB7EBD1163084CA98FDF9FD350F5D32A0682F81DC17EE37D716",
     ALEMBIC_0019_PATH: "EF7FC4917015A265D4633EFAE372314B760F193C4CFC2C98240C158CFDFB21AA",
-    POSTCHECK_PATH: "24A9C045DB8DA63F0A4DDBE2AEEC3693D98B90CE4693709ABC10EE0AF798F278",
+    POSTCHECK_PATH: "CCEF1E15CB50A97940115AE4B9993848909F4987090D0D5C4783AEF8E169E8C1",
     RESTORE_PATH: "B37B9C26C27CED5794580BA00E0CAE808C94A783B1ECA0BAA0E7A1471829C5AB",
     VERIFY_PATH: "5EB67C21F12F2DAA69E791AA6AB38D64195DF7C59A52A4F85EE63D307E8EB06C",
 }
+
+W1C_CONTAINMENT_TRIGGER_PAIRS = {
+    ("ct_recipient_grade_period_containment", "recipient_grade_period"),
+    ("ct_recipient_certification_grade_containment", "recipient_certification_period"),
+}
+W1C_CONTAINMENT_TRIGGER_STATES = {
+    ("ct_recipient_grade_period_containment", "recipient_grade_period"): (True, False),
+    (
+        "ct_recipient_certification_grade_containment",
+        "recipient_certification_period",
+    ): (True, False),
+}
+W1C_APP_TABLE_PRIVILEGES = (True, True, True, False, False)
+W1C_BACKUP_TABLE_PRIVILEGES = (True, False, False, False, False)
+W1C_TRIGGER_RELATED_COLUMNS = {
+    "recipient_certification_identity": {
+        "recipient_id": ("bigint", "NO"),
+        "certification_number": ("text", "NO"),
+        "invalidated_at_utc": ("timestamp with time zone", "YES"),
+    },
+    "recipient_certification_period": {
+        "recipient_id": ("bigint", "NO"),
+        "certification_period": ("daterange", "YES"),
+        "end_date": ("date", "NO"),
+        "invalidated_at_utc": ("timestamp with time zone", "YES"),
+    },
+    "recipient_grade_period": {
+        "recipient_id": ("bigint", "NO"),
+        "end_date": ("date", "NO"),
+        "invalidated_at_utc": ("timestamp with time zone", "YES"),
+    },
+    "recipient_benefit_period": {
+        "recipient_id": ("bigint", "NO"),
+        "end_date": ("date", "YES"),
+        "invalidated_at_utc": ("timestamp with time zone", "YES"),
+        "benefit_period": ("daterange", "YES"),
+    },
+    "recipient_local_approval_amount_period": {
+        "recipient_id": ("bigint", "NO"),
+        "end_date": ("date", "YES"),
+        "amount_krw": ("bigint", "NO"),
+        "invalidated_at_utc": ("timestamp with time zone", "YES"),
+        "approval_period": ("daterange", "YES"),
+    },
+}
+W1C_GENERATED_COLUMNS = {
+    ("recipient_certification_period", "certification_period"): (
+        "daterange",
+        "daterange(start_date, (end_date + 1), '[)')",
+    ),
+    ("recipient_grade_period", "grade_period"): (
+        "daterange",
+        "daterange(start_date, (end_date + 1), '[)')",
+    ),
+    ("recipient_benefit_period", "benefit_period"): (
+        "daterange",
+        "daterange(start_date, (end_date + 1), '[)')",
+    ),
+    ("recipient_local_approval_amount_period", "approval_period"): (
+        "daterange",
+        "daterange(start_date, (end_date + 1), '[)')",
+    ),
+}
+W1C_FAKE_CONSTRAINTS = {
+    "pk_recipient_certification_identity": ("p", "constraint p"),
+    "uq_recipient_certification_identity_certification_number": (
+        "u",
+        "UNIQUE (certification_number)",
+    ),
+    "ck_recipient_certification_identity_number": (
+        "c",
+        "CHECK (certification_number ~ '^l[0-9]{10}$')",
+    ),
+    "ex_recipient_certification_period": (
+        "x",
+        "EXCLUDE USING gist (recipient_id WITH =, "
+        "certification_period WITH &&, invalidated_at_utc is null WITH =)",
+    ),
+    "fk_recipient_grade_period_certification": (
+        "f",
+        "FOREIGN KEY (recipient_certification_identity_id) "
+        "REFERENCES erp.recipient_certification_identity(id)",
+    ),
+    "ck_recipient_grade_period_grade_code": (
+        "c",
+        "CHECK (grade_code in ('1','2','3','4','5'))",
+    ),
+    "ex_recipient_grade_period": (
+        "x",
+        "EXCLUDE USING gist (recipient_id WITH =, "
+        "grade_period WITH &&, invalidated_at_utc is null WITH =)",
+    ),
+    "ck_recipient_benefit_period_benefit_code": (
+        "c",
+        "CHECK (benefit_code IN "
+        "('general', 'basic_livelihood', 'reduction_6', 'reduction_9', 'medical_6', 'medical_9'))",
+    ),
+    "ex_recipient_benefit_period": (
+        "x",
+        "EXCLUDE USING gist (recipient_id WITH =, "
+        "benefit_period WITH &&, invalidated_at_utc is null WITH =)",
+    ),
+    "ck_recipient_local_approval_amount_period_amount": (
+        "c",
+        "CHECK (amount_krw > 0)",
+    ),
+    "ex_recipient_local_approval_amount_period": (
+        "x",
+        "EXCLUDE USING gist (recipient_id WITH =, "
+        "approval_period WITH &&, invalidated_at_utc is null WITH =)",
+    ),
+}
+W1C_GRADE_CONT_FUNCTION = (
+    "CREATE OR REPLACE FUNCTION erp.fn_w1c_assert_grade_containment() RETURNS trigger "
+    "LANGUAGE plpgsql AS $$ BEGIN "
+    "FROM erp.recipient_certification_period FOR SHARE "
+    "IF NOT pg_trigger_depth() > 0 THEN RETURN NEW; END IF; "
+    "PERFORM 'ck_recipient_grade_period_containment'; "
+    "END; $$;"
+)
+W1C_IDENTITY_FN = (
+    "CREATE OR REPLACE FUNCTION erp.fn_recipient_certification_number_immutable() "
+    "RETURNS trigger AS $$ BEGIN "
+    "IF OLD.recipient_id IS DISTINCT FROM NEW.recipient_id OR "
+    "OLD.certification_number IS DISTINCT FROM NEW.certification_number THEN "
+    "RAISE EXCEPTION 'ck_recipient_certification_identity_immutable'; END IF; "
+    "RETURN NEW; END; $$;"
+)
+W1C_IDENTITY_TRIGGER = (
+    "CREATE TRIGGER bu_recipient_certification_number_immutable"
+    " UPDATE OF recipient_id, certification_number ON erp.recipient_certification_identity"
+)
 
 
 def _to_posix(path: Path) -> str:
@@ -326,6 +458,11 @@ class _FakeResult:
             return None
         return self.scalar()
 
+    def scalar_one(self) -> Any:
+        if len(self._rows) != 1:
+            raise AssertionError("exactly one row expected")
+        return self.scalar()
+
     def scalars(self) -> list[Any]:
         return [row[0] for row in self._rows]
 
@@ -513,6 +650,155 @@ class _FakeConnection:
         raise AssertionError(f"Unhandled SQL in fake catalog: {sql_text[:120]}")
 
 
+class _FakeW1CConnection(_FakeConnection):
+    def __init__(
+        self,
+        *,
+        trigger_pairs: set[tuple[str, str]] | None = None,
+        trigger_states: Mapping[str, tuple[bool, bool]] | None = None,
+    ) -> None:
+        self.w1c_trigger_states = dict(W1C_CONTAINMENT_TRIGGER_STATES)
+        if trigger_states:
+            self.w1c_trigger_states.update(trigger_states)
+        trigger_pairs = set(trigger_pairs or W1C_CONTAINMENT_TRIGGER_PAIRS)
+        super().__init__(
+            read_only=False,
+            constraints={},
+            app_table_privileges=W1C_APP_TABLE_PRIVILEGES,
+            backup_table_privileges=W1C_BACKUP_TABLE_PRIVILEGES,
+            app_sequence_privileges=(False, False, False),
+            backup_sequence_privileges=(False, False, False),
+            trigger_pairs=trigger_pairs,
+            ownership=(postcheck.W2_OWNER, postcheck.W2_OWNER, postcheck.W2_OWNED_SEQUENCE),
+            function_names=postcheck.W1C_FUNCTIONS,
+            columns_with_iur_priv=(),
+        )
+
+    def execute(self, statement: Any, parameters: Mapping[str, Any] | None = None) -> _FakeResult:
+        sql = getattr(statement, "text", None)
+        if sql is None:
+            sql = str(statement)
+        sql_text = str(sql).lower()
+        params = dict(parameters or {})
+
+        if (
+            "information_schema.columns" in sql_text
+            and "table_name = any(:table_names)" in sql_text
+            and "generation_expression" not in sql_text
+        ):
+            rows = [
+                _FakeRow(("column_name",), (column,))
+                for table_name in params.get("table_names", ())
+                for column in W1C_TRIGGER_RELATED_COLUMNS.get(str(table_name), {})
+            ]
+            return _FakeResult(rows)
+
+        if (
+            "information_schema.columns" in sql_text
+            and "is_generated = 'always'" in sql_text
+        ):
+            table_names = {str(table_name) for table_name in params.get("table_names", ())}
+            rows = [
+                _FakeRow(
+                    ("table_name", "column_name", "udt_name", "generation_expression"),
+                    (table_name, column_name, udt_name, generation_expression),
+                )
+                for (table_name, column_name), (
+                    udt_name,
+                    generation_expression,
+                ) in W1C_GENERATED_COLUMNS.items()
+                if table_name in table_names
+            ]
+            return _FakeResult(rows)
+
+        if (
+            "information_schema.columns" in sql_text
+            and "table_name = :table_name" in sql_text
+        ):
+            table_name = str(params.get("table_name"))
+            rows = [
+                _FakeRow(("column_name", "data_type", "is_nullable"), (name, dtype, nullable))
+                for name, (dtype, nullable) in W1C_TRIGGER_RELATED_COLUMNS.get(
+                    table_name, {}
+                ).items()
+            ]
+            return _FakeResult(rows)
+
+        if (
+            "has_table_privilege('erp_app'" in sql_text
+            and "references" not in sql_text
+            and "trigger" not in sql_text
+        ):
+            return _FakeResult(
+                [
+                    _FakeRow(
+                        ("select", "insert", "update", "delete", "truncate"),
+                        W1C_APP_TABLE_PRIVILEGES,
+                    )
+                ]
+            )
+
+        if (
+            "has_table_privilege('erp_backup'" in sql_text
+            and "references" not in sql_text
+            and "trigger" not in sql_text
+        ):
+            return _FakeResult(
+                [
+                    _FakeRow(
+                        ("select", "insert", "update", "delete", "truncate"),
+                        W1C_BACKUP_TABLE_PRIVILEGES,
+                    )
+                ]
+            )
+
+        if "from pg_constraint" in sql_text:
+            rows = [
+                _FakeRow(("conname", "contype", "definition"), (name, contype, definition))
+                for name, (contype, definition) in sorted(W1C_FAKE_CONSTRAINTS.items())
+            ]
+            return _FakeResult(rows)
+
+        if "pg_get_functiondef(" in sql_text:
+            if "fn_w1c_assert_grade_containment" in sql_text:
+                return _FakeResult(
+                    [_FakeRow(("pg_get_functiondef",), (W1C_GRADE_CONT_FUNCTION,))]
+                )
+            if "fn_recipient_certification_number_immutable" in sql_text:
+                return _FakeResult(
+                    [_FakeRow(("pg_get_functiondef",), (W1C_IDENTITY_FN,))]
+                )
+
+        if (
+            "pg_get_triggerdef(oid)" in sql_text
+            and "bu_recipient_certification_number_immutable" in sql_text
+        ):
+            return _FakeResult([_FakeRow(("pg_get_triggerdef",), (W1C_IDENTITY_TRIGGER,))])
+
+        if "from pg_trigger" in sql_text:
+            tgname_filters = re.findall(r"tgname\s+in\s*\(([^)]*)\)", sql_text)
+            in_clause = set()
+            if tgname_filters:
+                in_clause = set(re.findall(r"'([^']+)'", tgname_filters[0]))
+            names = set(params.get("names", ()))
+            rows = [
+                _FakeRow(
+                    ("tgname", "relname", "tgdeferrable", "tginitdeferred"),
+                    (
+                        name,
+                        table,
+                        *self.w1c_trigger_states.get((name, table), (True, False)),
+                    ),
+                )
+                for name, table in sorted(self.trigger_pairs)
+                if (not names or name in names)
+                and (not in_clause or name in in_clause)
+            ]
+            return _FakeResult(rows)
+
+        return super().execute(statement, parameters)
+
+
 def _expected_table_privileges(read_only: bool) -> tuple[bool, ...]:
     return (
         True,
@@ -589,6 +875,17 @@ def _default_catalog(
         ownership=ownership or _expected_ownership(),
         function_names=postcheck.W2_FUNCTIONS,
         columns_with_iur_priv=columns_with_iur_priv or (),
+    )
+
+
+def _default_w1c_catalog(
+    *,
+    trigger_pairs: set[tuple[str, str]] | None = None,
+    trigger_states: Mapping[str, tuple[bool, bool]] | None = None,
+) -> _FakeW1CConnection:
+    return _FakeW1CConnection(
+        trigger_pairs=trigger_pairs or set(W1C_CONTAINMENT_TRIGGER_PAIRS),
+        trigger_states=trigger_states,
     )
 
 
@@ -719,3 +1016,41 @@ def test_r0_w2_read_only_contract_09_trigger_pair_matching_allows_same_name_othe
         _default_catalog(read_only=False, trigger_pairs=trigger_pairs),
         read_only=False,
     )
+
+
+def test_r0_w2_read_only_contract_10_w1c_containment_trigger_contract_is_targeted() -> None:
+    unrelated_pairs = set(W1C_CONTAINMENT_TRIGGER_PAIRS) | {
+        ("ct_service_plan_notice_before_contract_start", "recipient_service_plan_notice"),
+        ("ct_service_plan_notice_within_contract", "recipient_service_plan_notice"),
+        ("ct_recipient_contract_service_plan_reverse_guard", "recipient_contract"),
+    }
+    postcheck._verify_w1c_contract(_default_w1c_catalog(trigger_pairs=unrelated_pairs))
+
+    missing_pairs = {
+        pair
+        for pair in W1C_CONTAINMENT_TRIGGER_PAIRS
+        if pair != ("ct_recipient_grade_period_containment", "recipient_grade_period")
+    }
+    with pytest.raises(SystemExit):
+        postcheck._verify_w1c_contract(_default_w1c_catalog(trigger_pairs=missing_pairs))
+
+    wrong_table_pairs = {
+        ("ct_recipient_grade_period_containment", "recipient_contract"),
+        ("ct_recipient_certification_grade_containment", "recipient_grade_period"),
+    }
+    with pytest.raises(SystemExit):
+        postcheck._verify_w1c_contract(_default_w1c_catalog(trigger_pairs=wrong_table_pairs))
+
+    for trigger in W1C_CONTAINMENT_TRIGGER_STATES:
+        bad_states = dict(W1C_CONTAINMENT_TRIGGER_STATES)
+        baseline_state = W1C_CONTAINMENT_TRIGGER_STATES[trigger]
+        bad_states[trigger] = (False, baseline_state[1])
+        with pytest.raises(SystemExit):
+            postcheck._verify_w1c_contract(_default_w1c_catalog(trigger_states=bad_states))
+
+    for trigger in W1C_CONTAINMENT_TRIGGER_STATES:
+        bad_states = dict(W1C_CONTAINMENT_TRIGGER_STATES)
+        baseline_state = W1C_CONTAINMENT_TRIGGER_STATES[trigger]
+        bad_states[trigger] = (baseline_state[0], True)
+        with pytest.raises(SystemExit):
+            postcheck._verify_w1c_contract(_default_w1c_catalog(trigger_states=bad_states))
