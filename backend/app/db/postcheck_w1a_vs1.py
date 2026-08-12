@@ -4110,6 +4110,7 @@ def _verify_w2_service_plan_notice_contract(
                 ) AS ref_columns
             FROM pg_constraint c
             WHERE c.conrelid = 'erp.recipient_service_plan_notice'::regclass
+              AND c.contype IN ('p', 'f', 'c')
             ORDER BY c.conname
             """
         )
