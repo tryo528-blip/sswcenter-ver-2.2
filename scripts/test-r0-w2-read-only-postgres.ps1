@@ -13,7 +13,7 @@ $WorkspaceRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot
 $BackendRoot = Join-Path $WorkspaceRoot "backend"
 $TestFile = Join-Path $BackendRoot "tests\test_r0_w2_read_only_postgres.py"
 $VerifyScript = Join-Path $PSScriptRoot "verify-w1a-vs1-db.ps1"
-$ExpectedHead = "91cff4e96f4f31b3f76c370faf852393e9008839"
+$ExpectedHead = "e3b0843870bd52137e7903fb403154899b7f4366"
 $CurrentDatabase = "sswcenter_r0_current_test"
 $FreshDatabase = "sswcenter_r0_fresh_test"
 $ClusterPrefix = "sswcenter-r0-room2-"
@@ -188,7 +188,7 @@ $ExpectedProductHashes = [ordered]@{
     "backend\alembic\versions\20260812_0019_r0_w2_read_only.py" =
         "EF7FC4917015A265D4633EFAE372314B760F193C4CFC2C98240C158CFDFB21AA"
     "backend\app\db\postcheck_w1a_vs1.py" =
-        "24A9C045DB8DA63F0A4DDBE2AEEC3693D98B90CE4693709ABC10EE0AF798F278"
+        "CCEF1E15CB50A97940115AE4B9993848909F4987090D0D5C4783AEF8E169E8C1"
     "scripts\restore-drill.ps1" =
         "B37B9C26C27CED5794580BA00E0CAE808C94A783B1ECA0BAA0E7A1471829C5AB"
     "scripts\verify-w1a-vs1-db.ps1" =
