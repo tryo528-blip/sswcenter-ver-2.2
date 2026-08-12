@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$ExpectedHead = "91cff4e96f4f31b3f76c370faf852393e9008839"
+$ExpectedHead = "e3b0843870bd52137e7903fb403154899b7f4366"
 $Source0018Database = "sswcenter_r0_0018_test"
 $Source0019Database = "sswcenter_r0_0019_test"
 $Review0018Database = "sswcenter_r0_0018_restore_review"
@@ -25,16 +25,17 @@ $ExpectedProductHashes = [ordered]@{
     "backend/alembic/versions/20260812_0019_r0_w2_read_only.py" =
         "EF7FC4917015A265D4633EFAE372314B760F193C4CFC2C98240C158CFDFB21AA"
     "backend/app/db/postcheck_w1a_vs1.py" =
-        "24A9C045DB8DA63F0A4DDBE2AEEC3693D98B90CE4693709ABC10EE0AF798F278"
+        "CCEF1E15CB50A97940115AE4B9993848909F4987090D0D5C4783AEF8E169E8C1"
     "scripts/restore-drill.ps1" =
         "B37B9C26C27CED5794580BA00E0CAE808C94A783B1ECA0BAA0E7A1471829C5AB"
     "scripts/verify-w1a-vs1-db.ps1" =
         "5EB67C21F12F2DAA69E791AA6AB38D64195DF7C59A52A4F85EE63D307E8EB06C"
 }
-$AllowedStatusLines = @(
-    "?? backend/tests/test_r0_w2_read_only_lifecycle.py",
-    "?? scripts/test-r0-w2-read-only-lifecycle.ps1"
+$AllowedTrackedPaths = @(
+    "backend/tests/test_r0_w2_read_only_lifecycle.py",
+    "scripts/test-r0-w2-read-only-lifecycle.ps1"
 )
+$AllowedStatusLines = @($AllowedTrackedPaths | ForEach-Object { " M $_" })
 
 $WorkspaceRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $BackendRoot = Join-Path $WorkspaceRoot "backend"
@@ -109,8 +110,13 @@ function Get-R0UnexpectedGitCount {
         return 1
     }
     $tracked = @(& $GitExe -C $WorkspaceRoot diff --name-only)
-    if ($LASTEXITCODE -ne 0 -or $tracked.Count -ne 0) {
-        return [Math]::Max(1, $tracked.Count)
+    if ($LASTEXITCODE -ne 0) {
+        return 1
+    }
+    $unexpectedTracked = @($tracked | Where-Object { $AllowedTrackedPaths -notcontains $_ })
+    $missingTracked = @($AllowedTrackedPaths | Where-Object { $tracked -notcontains $_ })
+    if ($unexpectedTracked.Count -ne 0 -or $missingTracked.Count -ne 0) {
+        return ($unexpectedTracked.Count + $missingTracked.Count)
     }
     $staged = @(& $GitExe -C $WorkspaceRoot diff --cached --name-only)
     if ($LASTEXITCODE -ne 0 -or $staged.Count -ne 0) {
@@ -408,7 +414,7 @@ catch {
 finally {
     if ($ClusterStarted) {
         foreach ($database in $DatabaseNames) {
-            & $DropDbExe -h 127.0.0.1 -p $Port -U postgres --if-exists $database 2>&1 |
+            & $DropDbExe -h 127.0.0.1 -p $Port -U postgres --if-exists $database 2>$null |
                 Out-Null
             if ($LASTEXITCODE -ne 0) {
                 $CleanupFailures.Add("dropdb:$database")

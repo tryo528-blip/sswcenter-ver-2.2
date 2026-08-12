@@ -57,7 +57,7 @@ IMMUTABLE_TRIGGER_PAIRS = {
     ("ct_recipient_certification_period_recipient_id_immutable", "recipient_certification_period"),
     ("ct_recipient_contract_recipient_id_immutable", "recipient_contract"),
 }
-CONSTRAINT_NAMES = {
+BASE_CONSTRAINT_NAMES = {
     "ck_service_plan_notice_date_order",
     "ck_service_plan_notice_row_version_positive",
     "fk_service_plan_notice_created_by_account",
@@ -65,6 +65,11 @@ CONSTRAINT_NAMES = {
     "fk_service_plan_notice_replacement",
     "fk_service_plan_notice_updated_by_account",
     "pk_recipient_service_plan_notice",
+}
+GUARD_CONSTRAINT_NAMES = {
+    "ct_service_plan_notice_before_contract_start",
+    "ct_service_plan_notice_within_certification",
+    "ct_service_plan_notice_within_contract",
 }
 PRODUCT_HASHES = {
     "backend/alembic/versions/20260809_0018_w2_service_plan_notice.py": (
@@ -74,7 +79,7 @@ PRODUCT_HASHES = {
         "EF7FC4917015A265D4633EFAE372314B760F193C4CFC2C98240C158CFDFB21AA"
     ),
     "backend/app/db/postcheck_w1a_vs1.py": (
-        "24A9C045DB8DA63F0A4DDBE2AEEC3693D98B90CE4693709ABC10EE0AF798F278"
+        "CCEF1E15CB50A97940115AE4B9993848909F4987090D0D5C4783AEF8E169E8C1"
     ),
     "scripts/restore-drill.ps1": (
         "B37B9C26C27CED5794580BA00E0CAE808C94A783B1ECA0BAA0E7A1471829C5AB"
@@ -773,8 +778,24 @@ def _assert_snapshot_contract(snapshot: dict[str, Any], *, revision: str) -> Non
     if len(snapshot["columns"]) != 12:
         _fail(f"R0_ROOM3_COLUMN_COUNT_MISMATCH: {len(snapshot['columns'])}")
     constraint_names = {row["conname"] for row in snapshot["constraints"]}
-    if constraint_names != CONSTRAINT_NAMES:
+    expected_constraint_names = set(BASE_CONSTRAINT_NAMES)
+    if revision == REVISION_0018:
+        expected_constraint_names |= GUARD_CONSTRAINT_NAMES
+    if constraint_names != expected_constraint_names:
         _fail(f"R0_ROOM3_CONSTRAINT_SET_MISMATCH: {sorted(constraint_names)!r}")
+    guard_constraints = {
+        row["conname"]: row
+        for row in snapshot["constraints"]
+        if row["conname"] in GUARD_CONSTRAINT_NAMES
+    }
+    for name, row in guard_constraints.items():
+        if (
+            row["contype"] != "t"
+            or not row["condeferrable"]
+            or not row["condeferred"]
+            or not row["convalidated"]
+        ):
+            _fail(f"R0_ROOM3_GUARD_CONSTRAINT_MISMATCH: {name}={row!r}")
     if [row["proname"] for row in snapshot["functions"]] != list(W2_FUNCTIONS):
         _fail("R0_ROOM3_FUNCTION_SET_MISMATCH")
     trigger_pairs = {(row["tgname"], row["table_name"]) for row in snapshot["triggers"]}
@@ -1037,7 +1058,6 @@ def test_r0_w2_read_only_backup_restore_lifecycle() -> None:
         "sequence_state",
         "sequence_catalog",
         "columns",
-        "constraints",
         "indexes",
         "identity",
         "functions",
@@ -1049,6 +1069,19 @@ def test_r0_w2_read_only_backup_restore_lifecycle() -> None:
             source_snapshots["0018"][key],
             source_snapshots["0019"][key],
         )
+    base_constraints = {
+        label: [
+            row
+            for row in source_snapshots[label]["constraints"]
+            if row["conname"] in BASE_CONSTRAINT_NAMES
+        ]
+        for label in ("0018", "0019")
+    }
+    _assert_equal(
+        "0018_0019_BASE_CONSTRAINTS",
+        base_constraints["0018"],
+        base_constraints["0019"],
+    )
 
     before_downgrade = source_snapshots["0019"]
     downgrade = _alembic(
