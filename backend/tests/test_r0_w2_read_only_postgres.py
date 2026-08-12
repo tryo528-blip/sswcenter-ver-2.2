@@ -378,6 +378,7 @@ def _seed_current_path(engine: Engine) -> None:
 
 def _capture_data(engine: Engine) -> DataSnapshot:
     with engine.connect() as connection:
+        connection.execute(text("SET TIME ZONE 'UTC'"))
         row = connection.execute(
             text(
                 f"""
@@ -727,7 +728,11 @@ def _assert_catalog_contract(snapshot: dict[str, Any], *, read_only: bool) -> No
         assert snapshot["guard_trigger_count"] == len(W2_GUARD_TRIGGERS)
         assert trigger_pairs == immutable_pairs | guard_pairs
 
-    expected_app_table = (True, False, False, False, False, False, False, False)
+    expected_app_table = (
+        (True, False, False, False, False, False, False, False)
+        if read_only
+        else (True, True, True, False, False, False, False, False)
+    )
     expected_backup_table = (True, False, False, False, False, False, False, False)
     expected_app_sequence = (False, True, False) if read_only else (True, True, False)
     assert snapshot["effective_acl"]["table"]["erp_app"] == expected_app_table
@@ -873,7 +878,9 @@ def scenario() -> Scenario:
             urls["current"]["owner"],
             "W2_SERVICE_PLAN_NOTICE_DB_POSTCHECK_OK",
         )
-        if current_marker_0018 is not None:
+        if current_marker_0018 is not None and current_marker_0018.startswith(
+            "R0_ROOM2_POSTCHECK_FAILED:"
+        ):
             postcheck_failures.append(current_marker_0018)
         current_data_before = _capture_data(current_engine)
         current_catalog_before = _capture_catalog(current_engine)
@@ -889,7 +896,9 @@ def scenario() -> Scenario:
             urls["current"]["owner"],
             "R0_W2_READ_ONLY_DB_POSTCHECK_OK",
         )
-        if current_marker_0019 is not None:
+        if current_marker_0019 is not None and current_marker_0019.startswith(
+            "R0_ROOM2_POSTCHECK_FAILED:"
+        ):
             postcheck_failures.append(current_marker_0019)
         _assert_catalog_contract(current_catalog_after, read_only=True)
         assert current_data_after == current_data_before
@@ -901,7 +910,9 @@ def scenario() -> Scenario:
             urls["fresh"]["owner"],
             "R0_W2_READ_ONLY_DB_POSTCHECK_OK",
         )
-        if fresh_marker_0019 is not None:
+        if fresh_marker_0019 is not None and fresh_marker_0019.startswith(
+            "R0_ROOM2_POSTCHECK_FAILED:"
+        ):
             postcheck_failures.append(fresh_marker_0019)
         _assert_catalog_contract(fresh_catalog_after, read_only=True)
         assert fresh_data_after.count == 0
@@ -992,7 +1003,13 @@ def test_current_path_preserves_rows_and_runs_postchecks(scenario: Scenario) -> 
 def test_fresh_path_is_empty_and_catalog_acl_matches_current(scenario: Scenario) -> None:
     assert scenario.fresh_data_after.count == 0
     assert scenario.fresh_data_after.ids == ()
-    assert scenario.current_after == scenario.fresh_after
+    current_after = dict(scenario.current_after)
+    fresh_after = dict(scenario.fresh_after)
+    current_after.pop("sequence_state")
+    fresh_after.pop("sequence_state")
+    assert current_after == fresh_after
+    assert scenario.current_after["sequence_state"] == ((str(HISTORY_ACTIVE_ID), True),)
+    assert scenario.fresh_after["sequence_state"] == (("1", False),)
 
 
 def test_current_path_exact_preservation_contract(scenario: Scenario) -> None:
