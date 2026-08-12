@@ -2388,25 +2388,41 @@ def _verify_w1c_contract(connection: Connection) -> None:
     if "benefit_code with" in constraints["ex_recipient_benefit_period"][1]:
         raise SystemExit("W1C benefit exclusion must be recipient-wide across codes")
 
+    # W1C owns only these two containment triggers. Ignore W2 (and any other)
+    # non-internal triggers on the same tables; W2 lifecycle is checked later.
     containment_triggers = {
-        str(row.tgname): (bool(row.tgdeferrable), bool(row.tginitdeferred))
+        (str(row.tgname), str(row.relname)): (
+            bool(row.tgdeferrable),
+            bool(row.tginitdeferred),
+        )
         for row in connection.execute(
             text(
                 """
-                SELECT tgname, tgdeferrable, tginitdeferred
-                FROM pg_trigger
-                WHERE tgrelid IN (
+                SELECT t.tgname, c.relname, t.tgdeferrable, t.tginitdeferred
+                FROM pg_trigger t
+                JOIN pg_class c ON c.oid = t.tgrelid
+                WHERE t.tgrelid IN (
                     'erp.recipient_certification_period'::regclass,
                     'erp.recipient_grade_period'::regclass
                 )
-                  AND NOT tgisinternal
+                  AND NOT t.tgisinternal
+                  AND t.tgname IN (
+                      'ct_recipient_grade_period_containment',
+                      'ct_recipient_certification_grade_containment'
+                  )
                 """
             )
         )
     }
     if containment_triggers != {
-        "ct_recipient_grade_period_containment": (True, False),
-        "ct_recipient_certification_grade_containment": (True, False),
+        ("ct_recipient_grade_period_containment", "recipient_grade_period"): (
+            True,
+            False,
+        ),
+        (
+            "ct_recipient_certification_grade_containment",
+            "recipient_certification_period",
+        ): (True, False),
     }:
         raise SystemExit("W1C containment triggers are invalid")
 
