@@ -431,7 +431,7 @@ class _FakeConnection:
         if "from pg_proc" in sql_text:
             names = set(params.get("names", ()))
             rows = [
-                _FakeRow(("proname",), (name,)) 
+                _FakeRow(("proname",), (name,))
                 for name in sorted(self.function_names)
                 if name in names
             ]
